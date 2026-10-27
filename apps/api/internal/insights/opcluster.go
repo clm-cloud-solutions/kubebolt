@@ -29,7 +29,9 @@ import (
 //     menos de MinBurst episodios no es un evento operacional — se queda
 //     como hallazgos sueltos.
 //  2. Clasificación por semilla, en orden de precedencia: node-not-ready →
-//     node_rotation; evicted-pods → node_pressure; ola de reglas de
+//     node_rotation; evicted-pods → node_pressure (salvo la eviction de un pod
+//     que superó su propio límite de almacenamiento, que no dice nada del
+//     nodo); ola de reglas de
 //     despliegue sobre ≥ RolloutMinWorkloads workloads distintos →
 //     mass_rollout; nada reconocible → unknown_burst (se admite no saber).
 //  3. Blast radius por conteo sobre los miembros: afectados,
@@ -246,7 +248,10 @@ func classifyBurst(group []Episode) (string, []string) {
 		switch {
 		case seedRulesRotation[ep.RuleID]:
 			rotation = append(rotation, ep.ID)
-		case seedRulesPressure[ep.RuleID]:
+		case seedRulesPressure[ep.RuleID] && ep.Title != evictedOwnLimitTitle:
+			// Un pod que superó su propio límite no habla del nodo: con cinco
+			// así, el parte decía node_pressure en un nodo sin presión, y Kobi
+			// lo siguió (caso report-gen-evicted, 2026-10-11).
 			pressure = append(pressure, ep.ID)
 		case seedRulesRollout[ep.RuleID]:
 			rollout = append(rollout, ep.ID)

@@ -12,6 +12,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/fieldmanager"
 )
 
 // ResourcePermission represents access rights for a single resource type.
@@ -40,6 +42,12 @@ func (p ResourcePermissions) CanListWatch(key string) bool {
 		return true // unknown resources assumed permitted
 	}
 	return perm.CanList && perm.CanWatch
+}
+
+// Absent reports whether key is an optional CRD this cluster does not have.
+func (p ResourcePermissions) Absent(key string) bool {
+	perm, ok := p[key]
+	return ok && perm != nil && perm.Absent
 }
 
 // ScopedNamespaces returns the list of accessible namespaces if any permission
@@ -167,7 +175,7 @@ func checkSSAR(clientset kubernetes.Interface, group, resource, verb, namespace 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	resp, err := clientset.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, review, metav1.CreateOptions{})
+	resp, err := clientset.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, review, metav1.CreateOptions{FieldManager: fieldmanager.Name})
 	return err == nil && resp.Status.Allowed
 }
 
@@ -237,7 +245,7 @@ func probePermissions(clientset kubernetes.Interface) ResourcePermissions {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := clientset.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, testReview, metav1.CreateOptions{})
+	_, err := clientset.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, testReview, metav1.CreateOptions{FieldManager: fieldmanager.Name})
 	if err != nil {
 		log.Printf("Warning: SelfSubjectAccessReview not available (%v) — assuming full permissions", err)
 		return AllPermitted()

@@ -50,6 +50,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	metricsv "k8s.io/metrics/pkg/client/clientset/versioned"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/fieldmanager"
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 	sigsyaml "sigs.k8s.io/yaml"
@@ -142,6 +143,12 @@ type Connector struct {
 	optionalCounts          map[string]int
 	optionalCountsCheckedAt time.Time
 	optionalCountsFetching  bool
+	// ciliumCoverage caches the Cilium policy counts the policy-orphan
+	// insight reads (state.go, CiliumPolicyCoverage).
+	ciliumCoverage ciliumCoverage
+	// gatewayAddrs caches the Gateways' status addresses for ExternalAddresses,
+	// refreshed off the request path for the same reason (external_addresses.go).
+	gatewayAddrs gatewayAddrCache
 
 	// Listers
 	podLister                corelisters.PodLister
@@ -2458,7 +2465,8 @@ func (c *Connector) GetResources(resourceType, namespace, search, status, node, 
 		permKey = "hpas"
 	}
 	if permKey != "gateways" && permKey != "httproutes" && !c.permissions.CanListWatch(permKey) {
-		return models.ResourceList{Kind: resourceType, Items: []map[string]interface{}{}, Total: 0, Forbidden: true}
+		return models.ResourceList{Kind: resourceType, Items: []map[string]interface{}{}, Total: 0, Forbidden: true,
+			NotInstalled: c.permissions.Absent(permKey)}
 	}
 
 	if page < 1 {
@@ -3044,11 +3052,24 @@ func everythingSelector() labels.Selector {
 	return labels.Everything()
 }
 
+// deploymentStatus measures available pods against the replicas the
+// Deployment asks for, not only against the pods that exist: counting
+// only what exists, a Deployment scaled to 0 had nothing missing and read
+// "Running", and one whose other pods a ResourceQuota refused read
+// "Running" at 1 of 3. The pods that exist still count, so a rollout's
+// surge pod that is not available yet keeps it at "Warning".
 func deploymentStatus(d *appsv1.Deployment) string {
-	if d.Status.AvailableReplicas == 0 && d.Status.Replicas > 0 {
-		return "Error"
+	desired := int32(1)
+	if d.Spec.Replicas != nil {
+		desired = *d.Spec.Replicas
 	}
-	if d.Status.AvailableReplicas < d.Status.Replicas {
+	available := d.Status.AvailableReplicas
+	switch {
+	case desired == 0:
+		return "Scaled to 0"
+	case available == 0:
+		return "Error"
+	case available < desired || available < d.Status.Replicas:
 		return "Warning"
 	}
 	return "Running"
@@ -3395,6 +3416,17 @@ func addNodeAllocation(m map[string]interface{}, node *corev1.Node, pods []*core
 	m["topMemConsumers"] = topMem
 }
 
+// nodeAddress is the node's first address of that type, as kubectl shows it;
+// empty when it reports none.
+func nodeAddress(node *corev1.Node, t corev1.NodeAddressType) string {
+	for _, a := range node.Status.Addresses {
+		if a.Type == t {
+			return a.Address
+		}
+	}
+	return ""
+}
+
 func nodeToMap(node *corev1.Node) map[string]interface{} {
 	status := "NotReady"
 	for _, cond := range node.Status.Conditions {
@@ -3424,24 +3456,15 @@ func nodeToMap(node *corev1.Node) map[string]interface{} {
 		// badge + decide which action menu items to show without an
 		// extra round-trip per card.
 		"unschedulable": node.Spec.Unschedulable,
-		// The node's own address and pod range, in the LIST row: Kobi's
-		// prompt tells it to classify a dependency IP as in-cluster only when
-		// it matches a listed node's InternalIP exactly or falls inside its
-		// pod CIDR — which the list could not answer without a detail read
-		// per node.
-		"internalIP": nodeInternalIP(node),
+		// The INTERNAL-IP / EXTERNAL-IP columns of `kubectl get nodes -o wide`
+		// and the node's pod range, in the LIST row: Kobi's prompt tells it to
+		// classify a dependency IP as in-cluster only when it matches a listed
+		// node's address exactly or falls inside its pod CIDR, which the list
+		// could not answer without a detail read per node.
+		"internalIP": nodeAddress(node, corev1.NodeInternalIP),
+		"externalIP": nodeAddress(node, corev1.NodeExternalIP),
 		"podCIDR":    node.Spec.PodCIDR,
 	}
-}
-
-// nodeInternalIP is the node's InternalIP address, or "".
-func nodeInternalIP(node *corev1.Node) string {
-	for _, a := range node.Status.Addresses {
-		if a.Type == corev1.NodeInternalIP {
-			return a.Address
-		}
-	}
-	return ""
 }
 
 func statefulSetToMap(ss *appsv1.StatefulSet) map[string]interface{} {
@@ -4416,12 +4439,81 @@ type LogQuery struct {
 // runaway stream when no upper window is set.
 const hardLogByteCap = 10 * 1024 * 1024
 
+// LogWindow describes what a read held and where it stopped. For a bounded
+// read (EndTime set): how many lines fell inside the window, how many of its
+// oldest lines TailLines left out, and whether the log goes on past EndTime —
+// so a caller tells "nothing was logged in this window" from "the window was
+// cut". For any read: whether it stopped before the end of what was asked.
+type LogWindow struct {
+	Bounded bool // EndTime was set; Lines, Dropped and PastEnd are meaningful
+	Lines   int  // lines inside the window, before TailLines
+	Dropped int  // oldest lines of the window left out by TailLines
+	PastEnd bool // the log has lines after EndTime
+
+	// Capped: the read stopped at hardLogByteCap with more log behind it —
+	// for a bounded read, before EndTime. The kubelet streams oldest first,
+	// so what came back is the START of what was asked; its end is missing.
+	Capped bool
+	// Interrupted: the stream failed part-way (the 30 s deadline, a dropped
+	// agent tunnel); what was read before it is returned.
+	Interrupted string
+	// ReadUntil: on a bounded read that stopped early (Capped or
+	// Interrupted), the timestamp of the last line read.
+	ReadUntil time.Time
+}
+
 // GetPodLogs returns the logs for a specific pod container, applying the
 // optional filters carried in LogQuery. Returns the raw log text (possibly
-// containing kubelet-prefixed timestamps when q.Timestamps is true).
+// containing kubelet-prefixed timestamps when q.Timestamps is true). A read
+// cut part-way is an error here, as it always was; GetPodLogsWindow returns
+// what it read and says so.
 func (c *Connector) GetPodLogs(namespace, name string, q LogQuery) (string, error) {
+	logs, win, err := c.GetPodLogsWindow(namespace, name, q)
+	if err == nil && win.Interrupted != "" {
+		return "", fmt.Errorf("failed to read logs: %s", win.Interrupted)
+	}
+	return logs, err
+}
+
+// GetPodLogsWindow is GetPodLogs plus what the read held and where it
+// stopped: for a bounded read, what the window held and what was left out
+// of it; for any read, whether it stopped at the byte cap or was cut, in
+// which case the lines read so far are returned instead of an error.
+func (c *Connector) GetPodLogsWindow(namespace, name string, q LogQuery) (string, LogWindow, error) {
+	opts := podLogOptions(q)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req := c.clientset.CoreV1().Pods(namespace).GetLogs(name, opts)
+	stream, err := req.Stream(ctx)
+	if err != nil {
+		return "", LogWindow{}, fmt.Errorf("failed to get logs: %w", err)
+	}
+	defer stream.Close()
+
+	var logs string
+	var win LogWindow
+	if q.EndTime.IsZero() {
+		// No upper bound — read everything up to the hard cap.
+		logs, win, err = readLogAll(stream, hardLogByteCap)
+	} else {
+		logs, win, err = readLogWindowCapped(stream, q.EndTime, q.TailLines, hardLogByteCap)
+	}
+	if err != nil {
+		return "", LogWindow{}, fmt.Errorf("failed to read logs: %w", err)
+	}
+	return logs, win, nil
+}
+
+// podLogOptions turns a LogQuery into the kubelet's options. With EndTime set
+// it never sends TailLines: the kubelet counts a tail back from the end of the
+// log (now), not from the end of the window, so any window older than the
+// last TailLines lines came back empty — Kobi read "no logs" for an incident
+// 17 minutes old (three-tier-shop lab, 2026-10-09). readLogWindow applies the
+// tail inside the window instead.
+func podLogOptions(q LogQuery) *corev1.PodLogOptions {
 	opts := &corev1.PodLogOptions{}
-	if q.TailLines > 0 {
+	if q.TailLines > 0 && q.EndTime.IsZero() {
 		tl := q.TailLines
 		opts.TailLines = &tl
 	}
@@ -4444,49 +4536,175 @@ func (c *Connector) GetPodLogs(namespace, name string, q LogQuery) (string, erro
 	if q.Timestamps || !q.EndTime.IsZero() {
 		opts.Timestamps = true
 	}
+	return opts
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	req := c.clientset.CoreV1().Pods(namespace).GetLogs(name, opts)
-	stream, err := req.Stream(ctx)
-	if err != nil {
-		return "", fmt.Errorf("failed to get logs: %w", err)
-	}
-	defer stream.Close()
+// cappedReader passes at most left bytes of r through and records whether r
+// had more, so a read that stopped at the cap can say so instead of passing
+// for the whole log. io.LimitReader cannot tell the two apart.
+type cappedReader struct {
+	r      io.Reader
+	left   int64
+	over   bool // r had bytes past the cap
+	probed bool
+	last   byte // the last byte passed through
+}
 
-	// Fast path: no upper bound — read everything up to the hard cap.
-	if q.EndTime.IsZero() {
-		buf := new(bytes.Buffer)
-		_, err = io.Copy(buf, io.LimitReader(stream, hardLogByteCap))
-		if err != nil {
-			return "", fmt.Errorf("failed to read logs: %w", err)
+func (c *cappedReader) Read(p []byte) (int, error) {
+	if c.left <= 0 {
+		if !c.probed {
+			c.probed = true
+			var one [1]byte
+			if n, _ := io.ReadFull(c.r, one[:]); n > 0 {
+				c.over = true
+			}
 		}
-		return buf.String(), nil
+		return 0, io.EOF
 	}
+	if int64(len(p)) > c.left {
+		p = p[:c.left]
+	}
+	n, err := c.r.Read(p)
+	c.left -= int64(n)
+	if n > 0 {
+		c.last = p[n-1]
+	}
+	return n, err
+}
 
-	// Bounded path: parse the kubelet timestamp prefix and stop once we cross
-	// EndTime. The kubelet emits lines in chronological order, so the first
-	// line past EndTime is our cut-off (small skew tolerated by ScanWindow).
+// readLogAll reads an open read (no EndTime) up to max bytes. A read that
+// stops early — at the cap or on a stream error after some bytes — returns
+// what it read, without the line it was cut in the middle of.
+func readLogAll(r io.Reader, max int64) (string, LogWindow, error) {
+	cr := &cappedReader{r: r, left: max}
+	var buf bytes.Buffer
+	var win LogWindow
+	if _, err := io.Copy(&buf, cr); err != nil {
+		if buf.Len() == 0 {
+			return "", LogWindow{}, err
+		}
+		win.Interrupted = err.Error()
+	}
+	win.Capped = cr.over
+	if (win.Capped || win.Interrupted != "") && cr.last != '\n' {
+		// Drop the line the read stopped in the middle of.
+		b := buf.Bytes()
+		buf.Truncate(bytes.LastIndexByte(b, '\n') + 1)
+	}
+	return buf.String(), win, nil
+}
+
+// readLogWindow reads timestamped kubelet lines up to endTime (plus a small
+// skew) and keeps the last tail of them (tail <= 0 keeps them all). The
+// kubelet emits lines in chronological order, so the first line past the
+// cut-off ends the read.
+func readLogWindow(r io.Reader, endTime time.Time, tail int64) (string, LogWindow, error) {
+	return readLogWindowCapped(r, endTime, tail, hardLogByteCap)
+}
+
+// readLogWindowCapped is readLogWindow over at most max bytes of r. When the
+// read stops before endTime — at the cap, or on a stream error after some
+// lines — it returns the lines it read (without the one it was cut in the
+// middle of) and says where it stopped.
+func readLogWindowCapped(r io.Reader, endTime time.Time, tail int64, max int64) (string, LogWindow, error) {
 	const scanSkew = 2 * time.Second
-	cutoff := q.EndTime.Add(scanSkew)
+	cutoff := endTime.Add(scanSkew)
+	win := LogWindow{Bounded: true}
+	cr := &cappedReader{r: r, left: max}
 
+	// tail <= 0: every line goes straight to out. tail > 0: a ring of the
+	// last tail lines, written out in order at the end. The newest line waits
+	// in pending until the next one arrives: if the read stops in the middle
+	// of it, it is dropped without having pushed a whole line out of the ring.
 	var out bytes.Buffer
-	scanner := bufio.NewScanner(io.LimitReader(stream, hardLogByteCap))
+	lastStart := 0 // where the newest line starts in out
+	var kept [][]byte
+	next := 0
+	var pending []byte
+	push := func(l []byte) {
+		if int64(len(kept)) == tail {
+			kept[next] = l
+			next = (next + 1) % len(kept)
+			return
+		}
+		kept = append(kept, l)
+	}
+	var lastTS time.Time
+
+	scanner := bufio.NewScanner(cr)
 	// Allow long lines (default 64KB is too small for some apps).
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Bytes()
-		ts, ok := parseLogLineTimestamp(line)
-		if ok && ts.After(cutoff) {
-			break
+		if ts, ok := parseLogLineTimestamp(line); ok {
+			if ts.After(cutoff) {
+				win.PastEnd = true
+				break
+			}
+			lastTS = ts
 		}
-		out.Write(line)
-		out.WriteByte('\n')
+		win.Lines++
+		if tail <= 0 {
+			lastStart = out.Len()
+			out.Write(line)
+			out.WriteByte('\n')
+			continue
+		}
+		if pending != nil {
+			push(pending)
+		}
+		pending = append([]byte(nil), line...)
 	}
 	if err := scanner.Err(); err != nil && err != io.EOF {
-		return "", fmt.Errorf("failed to read logs: %w", err)
+		if win.Lines == 0 {
+			return "", LogWindow{}, err
+		}
+		win.Interrupted = err.Error()
 	}
-	return out.String(), nil
+	if !win.PastEnd && cr.over {
+		win.Capped = true
+	}
+	cut := (win.Capped || win.Interrupted != "") && cr.last != '\n' && win.Lines > 0
+	if win.Capped || win.Interrupted != "" {
+		win.ReadUntil = lastTS
+	}
+
+	if tail <= 0 {
+		if cut {
+			// The newest line is the one the read stopped in the middle of.
+			out.Truncate(lastStart)
+			win.Lines--
+		}
+		return out.String(), win, nil
+	}
+	if cut {
+		// pending is the line the read stopped in the middle of.
+		win.Lines--
+	} else if pending != nil {
+		push(pending)
+	}
+	win.Dropped = win.Lines - len(kept)
+	for i := range kept {
+		out.Write(kept[(next+i)%len(kept)])
+		out.WriteByte('\n')
+	}
+	return out.String(), win, nil
+}
+
+// SplitLogTimestamp splits a line read with Timestamps=true into the kubelet's
+// stamp and the line as the container wrote it; ok is false when the line does
+// not start with one. A filter must run on the message: the stamp's
+// nanoseconds contain any digits ("…:01.500123456Z" matches "500").
+func SplitLogTimestamp(line string) (time.Time, string, bool) {
+	sp := strings.IndexByte(line, ' ')
+	if sp <= 0 {
+		return time.Time{}, line, false
+	}
+	t, err := time.Parse(time.RFC3339Nano, line[:sp])
+	if err != nil {
+		return time.Time{}, line, false
+	}
+	return t, line[sp+1:], true
 }
 
 // parseLogLineTimestamp extracts the RFC3339Nano stamp the kubelet prefixes
@@ -4535,6 +4753,19 @@ func (c *Connector) ResolveEndpointsName(namespace, name string) string {
 
 // GetResourceYAML fetches a single resource via the dynamic client and returns its YAML representation.
 func (c *Connector) GetResourceYAML(resourceType, namespace, name string) ([]byte, error) {
+	return c.resourceYAML(resourceType, namespace, name, nil)
+}
+
+// GetResourceYAMLWithWrites is GetResourceYAML plus each field manager's
+// latest write to the object (managedFields, summarized: managed_writes.go),
+// for Kobi. The YAML is the same one the viewer gets.
+func (c *Connector) GetResourceYAMLWithWrites(resourceType, namespace, name string) ([]byte, []ManagedWrite, error) {
+	var writes []ManagedWrite
+	y, err := c.resourceYAML(resourceType, namespace, name, &writes)
+	return y, writes, err
+}
+
+func (c *Connector) resourceYAML(resourceType, namespace, name string, writes *[]ManagedWrite) ([]byte, error) {
 	if c.dynamicClient == nil {
 		return nil, fmt.Errorf("dynamic client not available")
 	}
@@ -4577,6 +4808,9 @@ func (c *Connector) GetResourceYAML(resourceType, namespace, name string) ([]byt
 
 	// Strip managedFields and last-applied-configuration — internal metadata that adds noise
 	if metadata, ok := obj.Object["metadata"].(map[string]interface{}); ok {
+		if writes != nil {
+			*writes = summarizeManagedFields(metadata["managedFields"])
+		}
 		delete(metadata, "managedFields")
 		// Remove last-applied-configuration — it's verbose and for secrets it contains unredacted data
 		if annotations, ok := metadata["annotations"].(map[string]interface{}); ok {
@@ -4773,9 +5007,9 @@ func (c *Connector) CreateResource(ctx context.Context, resourceType, namespace 
 		return nil, fmt.Errorf("unsupported resource type: %s", resourceType)
 	}
 	if isClusterScoped(resourceType) {
-		return c.dynamicClient.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{})
+		return c.dynamicClient.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{FieldManager: fieldmanager.Name})
 	}
-	return c.dynamicClient.Resource(gvr).Namespace(namespace).Create(ctx, obj, metav1.CreateOptions{})
+	return c.dynamicClient.Resource(gvr).Namespace(namespace).Create(ctx, obj, metav1.CreateOptions{FieldManager: fieldmanager.Name})
 }
 
 // IsClusterScopedType is the public wrapper around isClusterScoped so
@@ -4818,9 +5052,9 @@ func (c *Connector) PatchResourceMetadata(ctx context.Context, resourceType, nam
 		err error
 	)
 	if isClusterScoped(resourceType) {
-		obj, err = c.dynamicClient.Resource(gvr).Patch(ctx, name, types.MergePatchType, patchJSON, metav1.PatchOptions{})
+		obj, err = c.dynamicClient.Resource(gvr).Patch(ctx, name, types.MergePatchType, patchJSON, metav1.PatchOptions{FieldManager: fieldmanager.Name})
 	} else {
-		obj, err = c.dynamicClient.Resource(gvr).Namespace(namespace).Patch(ctx, name, types.MergePatchType, patchJSON, metav1.PatchOptions{})
+		obj, err = c.dynamicClient.Resource(gvr).Namespace(namespace).Patch(ctx, name, types.MergePatchType, patchJSON, metav1.PatchOptions{FieldManager: fieldmanager.Name})
 	}
 	if err != nil {
 		return nil, err
@@ -4849,12 +5083,12 @@ func (c *Connector) ApplyResourceYAML(resourceType, namespace, name string, yaml
 	defer cancel()
 
 	if isClusterScoped(resourceType) {
-		_, err := c.dynamicClient.Resource(gvr).Update(ctx, obj, metav1.UpdateOptions{})
+		_, err := c.dynamicClient.Resource(gvr).Update(ctx, obj, metav1.UpdateOptions{FieldManager: fieldmanager.Name})
 		if err != nil {
 			return err
 		}
 	} else {
-		_, err := c.dynamicClient.Resource(gvr).Namespace(namespace).Update(ctx, obj, metav1.UpdateOptions{})
+		_, err := c.dynamicClient.Resource(gvr).Namespace(namespace).Update(ctx, obj, metav1.UpdateOptions{FieldManager: fieldmanager.Name})
 		if err != nil {
 			return err
 		}
@@ -5951,52 +6185,9 @@ func (c *Connector) GetDeploymentHistory(namespace, deploymentName string) []map
 	replicaSets, _ := c.replicaSetLister.List(everythingSelector())
 
 	var items []map[string]interface{}
-	for _, rs := range replicaSets {
-		if rs.Namespace != namespace {
-			continue
-		}
-		ownedByDeployment := false
-		for _, ref := range rs.OwnerReferences {
-			if ref.Kind == "Deployment" && ref.Name == deploymentName {
-				ownedByDeployment = true
-				break
-			}
-		}
-		if !ownedByDeployment {
-			continue
-		}
-
-		revision := ""
-		if rs.Annotations != nil {
-			revision = rs.Annotations["deployment.kubernetes.io/revision"]
-		}
-
-		image := ""
-		if len(rs.Spec.Template.Spec.Containers) > 0 {
-			image = rs.Spec.Template.Spec.Containers[0].Image
-		}
-
-		item := map[string]interface{}{
-			"revision":      revision,
-			"name":          rs.Name,
-			"namespace":     rs.Namespace,
-			"replicas":      rs.Status.Replicas,
-			"readyReplicas": rs.Status.ReadyReplicas,
-			"createdAt":     rs.CreationTimestamp.Format(time.RFC3339),
-			"age":           formatAge(rs.CreationTimestamp.Time),
-			"image":         image,
-			"active":        rs.Status.Replicas > 0,
-		}
-		items = append(items, item)
+	for _, row := range deploymentRevisionRows(replicaSets, namespace, deploymentName) {
+		items = append(items, row.item)
 	}
-
-	// Sort by revision number descending (highest/newest first)
-	sort.Slice(items, func(i, j int) bool {
-		ri, _ := strconv.Atoi(items[i]["revision"].(string))
-		rj, _ := strconv.Atoi(items[j]["revision"].(string))
-		return ri > rj
-	})
-
 	return items
 }
 
@@ -6095,7 +6286,7 @@ func (c *Connector) RollbackDeployment(namespace, name string, toRevision int, d
 	}
 	dep.Spec.Template = *newTemplate
 
-	upOpts := metav1.UpdateOptions{}
+	upOpts := metav1.UpdateOptions{FieldManager: fieldmanager.Name}
 	if dryRun {
 		upOpts.DryRun = []string{"All"}
 	}
@@ -6281,52 +6472,10 @@ func (c *Connector) GetJobPods(namespace, jobName string) []map[string]interface
 
 // GetWorkloadHistory returns the revision history of a StatefulSet or DaemonSet via ControllerRevisions.
 func (c *Connector) GetWorkloadHistory(resourceType, namespace, name string) []map[string]interface{} {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	revisions, err := c.clientset.AppsV1().ControllerRevisions(namespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil
-	}
-
-	var kind string
-	switch resourceType {
-	case "statefulsets":
-		kind = "StatefulSet"
-	case "daemonsets":
-		kind = "DaemonSet"
-	default:
-		return nil
-	}
-
 	var items []map[string]interface{}
-	for _, rev := range revisions.Items {
-		owned := false
-		for _, ref := range rev.OwnerReferences {
-			if ref.Kind == kind && ref.Name == name {
-				owned = true
-				break
-			}
-		}
-		if !owned {
-			continue
-		}
-
-		items = append(items, map[string]interface{}{
-			"revision":  rev.Revision,
-			"name":      rev.Name,
-			"createdAt": rev.CreationTimestamp.Format(time.RFC3339),
-			"age":       formatAge(rev.CreationTimestamp.Time),
-		})
+	for _, row := range c.controllerRevisionRows(resourceType, namespace, name) {
+		items = append(items, row.item)
 	}
-
-	// Sort by revision descending (newest first)
-	sort.Slice(items, func(i, j int) bool {
-		ri, _ := items[i]["revision"].(int64)
-		rj, _ := items[j]["revision"].(int64)
-		return ri > rj
-	})
-
 	return items
 }
 

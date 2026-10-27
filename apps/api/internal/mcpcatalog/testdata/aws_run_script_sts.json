@@ -1,0 +1,1 @@
+{"status":"success","return_value":{"UserId":"AIDAEXAMPLEEXAMPLE01","Account":"123456789012","Arn":"arn:aws:sts::123456789012:assumed-role/KubeBoltReadOnly/kubebolt-kobi"},"api_calls":[{"service":"sts","operation":"GetCallerIdentity","status":"success"}],"stdout":"","stderr":null,"warning":null}

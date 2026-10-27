@@ -22,11 +22,24 @@ type Message struct {
 	ToolCalls   []ToolCall   `json:"toolCalls,omitempty"`
 	ToolResults []ToolResult `json:"toolResults,omitempty"`
 	// Timestamp is when this turn happened. Stamped server-side on messages the
-	// chat loop appends and preserved from the client for the rest, so a
-	// persisted conversation reconstructs its real timeline on resume / export
-	// instead of collapsing to "now". Never sent to the LLM (the provider
-	// adapters read role/content/tools only). Optional for backward-compat.
+	// chat loop appends and on the operator message the turn answers
+	// (StampTurn), and preserved from the client for the rest, so a persisted
+	// conversation reconstructs its real timeline on resume / export instead
+	// of collapsing to "now". The provider adapters never read it; an operator
+	// message's "# Now" block is built from it (PrefixSessionNotes).
+	// Optional for backward-compat.
 	Timestamp time.Time `json:"timestamp,omitempty"`
+	// View is the page the operator was on when they sent this message
+	// (current_view), stamped on the turn's message by StampTurn. Like
+	// Timestamp it lets every operator message read the same on each later
+	// turn, so the provider's cache keeps the history. Never sent to the LLM
+	// on its own.
+	View string `json:"view,omitempty"`
+	// Trigger is the chat request's trigger on the user message it came with
+	// ("insight", "action_stalled", "cluster_switch"…); empty when the operator
+	// typed it. Kept on the message so a later turn still knows which words
+	// were the operator's (OperatorLanguage). Never sent to the LLM.
+	Trigger string `json:"trigger,omitempty"`
 	// TurnID names the chat turn this message ANSWERED: stamped by the chat
 	// handler on the final assistant message of a turn, the same id as the
 	// turn's SessionRecord. A 👍/👎 is given against it (copilot_feedback).
@@ -46,6 +59,26 @@ type ToolResult struct {
 	ToolCallID string `json:"toolCallId"`
 	Content    string `json:"content"`
 	IsError    bool   `json:"isError,omitempty"`
+	// NotSent marks a connector call KubeBolt refused itself, on its own
+	// allowlist, before anything reached the provider: it read nothing, so
+	// the per-turn connector budget does not count it. Never stored.
+	NotSent bool `json:"-"`
+	// Status and DurationMs are what the chat showed for this call while it
+	// ran (ToolResultOK…, ToolResultNotSent) and how long it took; stored so
+	// a reloaded conversation reads the same. The provider adapters never
+	// send them to the model.
+	Status     string `json:"status,omitempty"`
+	DurationMs int64  `json:"durationMs,omitempty"`
+	// Digest is the line the chat shows under the call once it is back:
+	// what came back, counted and listed, never what it means
+	// (digestToolResult; the connector bindings write their own). Computed
+	// from the whole result before it is capped or stubbed, and never sent
+	// to the model.
+	Digest string `json:"digest,omitempty"`
+	// Reason is the one line the chat shows for a call that did not read
+	// (CallStatus): the error's first sentence, never the instructions a
+	// result gives the model.
+	Reason string `json:"reason,omitempty"`
 }
 
 // ToolDefinition describes a callable tool that the LLM can invoke.
@@ -57,7 +90,7 @@ type ToolDefinition struct {
 
 // StreamEvent is sent over SSE to the frontend during chat streaming.
 type StreamEvent struct {
-	Type     string `json:"type"`               // "text" | "tool_call" | "tool_result" | "done" | "error" | "meta" | "usage"
+	Type     string `json:"type"` // "text" | "tool_call" | "tool_result" | "done" | "error" | "meta" | "usage"
 	Text     string `json:"text,omitempty"`
 	ToolName string `json:"toolName,omitempty"`
 	Error    string `json:"error,omitempty"`
@@ -91,8 +124,8 @@ type Usage struct {
 	// were large is only known per call, so TagLongContext fills these where
 	// the call is made and Add carries them through the sums. Zero for every
 	// model with a single rate card, and for records written before them.
-	LongInputTokens         int `json:"longInputTokens,omitempty"`
-	LongOutputTokens        int `json:"longOutputTokens,omitempty"`
+	LongInputTokens           int `json:"longInputTokens,omitempty"`
+	LongOutputTokens          int `json:"longOutputTokens,omitempty"`
 	LongCacheCreationTokens   int `json:"longCacheCreationTokens,omitempty"`
 	LongCacheReadTokens       int `json:"longCacheReadTokens,omitempty"`
 	LongCacheCreation1hTokens int `json:"longCacheCreation1hTokens,omitempty"`

@@ -185,10 +185,14 @@ export function HoverTooltip({
           the natural display of its parent context — block in a
           grid cell, inline-block in a flex row — by leaving display
           unset and letting the children dictate sizing. */}
+      {/* Focus opens it too, so a trigger that is a button reads from
+          the keyboard the same as from the mouse. */}
       <div
         ref={triggerRef}
         onMouseEnter={handleEnter}
         onMouseLeave={handleLeave}
+        onFocus={handleEnter}
+        onBlur={handleLeave}
       >
         {children}
       </div>

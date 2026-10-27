@@ -13,6 +13,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	sigsyaml "sigs.k8s.io/yaml"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/fieldmanager"
 )
 
 // DetailedRevision is the per-revision shape returned by the
@@ -482,7 +484,7 @@ func (c *Connector) RollbackStatefulSet(namespace, name string, toRevision int64
 	}
 
 	sts.Spec.Template = *template
-	stsOpts := metav1.UpdateOptions{}
+	stsOpts := metav1.UpdateOptions{FieldManager: fieldmanager.Name}
 	if dryRun {
 		stsOpts.DryRun = []string{"All"}
 	}
@@ -534,7 +536,7 @@ func (c *Connector) RollbackDaemonSet(namespace, name string, toRevision int64, 
 	}
 
 	ds.Spec.Template = *template
-	dsOpts := metav1.UpdateOptions{}
+	dsOpts := metav1.UpdateOptions{FieldManager: fieldmanager.Name}
 	if dryRun {
 		dsOpts.DryRun = []string{"All"}
 	}

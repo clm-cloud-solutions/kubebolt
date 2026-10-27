@@ -22,6 +22,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/audit"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
+	"github.com/kubebolt/kubebolt/apps/api/internal/fieldmanager"
 )
 
 var restartableTypes = map[string]bool{
@@ -182,7 +183,7 @@ func (h *handlers) handleRestart(w http.ResponseWriter, r *http.Request) {
 	)
 	patchBytes := []byte(restartPatch)
 	dryRun := dryRunRequested(r)
-	opts := metav1.PatchOptions{DryRun: dryRunAll(dryRun)}
+	opts := metav1.PatchOptions{FieldManager: fieldmanager.Name, DryRun: dryRunAll(dryRun)}
 
 	var err error
 	switch resourceType {
@@ -278,7 +279,7 @@ func (h *handlers) handleScale(w http.ResponseWriter, r *http.Request) {
 		}
 		currentReplicas = scale.Spec.Replicas
 		scale.Spec.Replicas = body.Replicas
-		_, err = clientset.AppsV1().Deployments(namespace).UpdateScale(ctx, name, scale, metav1.UpdateOptions{DryRun: dryRunAll(dryRun)})
+		_, err = clientset.AppsV1().Deployments(namespace).UpdateScale(ctx, name, scale, metav1.UpdateOptions{FieldManager: fieldmanager.Name, DryRun: dryRunAll(dryRun)})
 	case "statefulsets":
 		scale, gErr := clientset.AppsV1().StatefulSets(namespace).GetScale(ctx, name, metav1.GetOptions{})
 		if gErr != nil {
@@ -287,7 +288,7 @@ func (h *handlers) handleScale(w http.ResponseWriter, r *http.Request) {
 		}
 		currentReplicas = scale.Spec.Replicas
 		scale.Spec.Replicas = body.Replicas
-		_, err = clientset.AppsV1().StatefulSets(namespace).UpdateScale(ctx, name, scale, metav1.UpdateOptions{DryRun: dryRunAll(dryRun)})
+		_, err = clientset.AppsV1().StatefulSets(namespace).UpdateScale(ctx, name, scale, metav1.UpdateOptions{FieldManager: fieldmanager.Name, DryRun: dryRunAll(dryRun)})
 	}
 
 	// Dry-run: report would-apply / rejection without auditing or side effects.
@@ -542,7 +543,7 @@ func (h *handlers) handleSetImage(w http.ResponseWriter, r *http.Request) {
 		"toImages":   body.Images,
 	}
 
-	imgOpts := metav1.PatchOptions{DryRun: dryRunAll(dryRun)}
+	imgOpts := metav1.PatchOptions{FieldManager: fieldmanager.Name, DryRun: dryRunAll(dryRun)}
 	switch resourceType {
 	case "deployments":
 		_, err = clientset.AppsV1().Deployments(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, imgOpts)
@@ -778,7 +779,7 @@ func (h *handlers) handleSetNodeSchedulability(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	if _, err := clientset.CoreV1().Nodes().Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
+	if _, err := clientset.CoreV1().Nodes().Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{FieldManager: fieldmanager.Name}); err != nil {
 		auditMutation(r, action, resourceType, "", name, params, err)
 		log.Printf("%s failed for node/%s: %v", action, name, err)
 		respondMutationError(w, err)

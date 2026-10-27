@@ -1,6 +1,7 @@
 package insights
 
 import (
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -150,4 +151,38 @@ func statusOf(t *testing.T, store InsightStore, e *Engine) string {
 		t.Fatalf("want exactly 1 record, got %d", len(recs))
 	}
 	return recs[0].Status
+}
+
+// A title names the cause the rule read, so a still-firing insight must take
+// the current one — including one hydrated after a deploy that renamed it —
+// and its current evidence with it. Before, the refresh copied neither, and
+// the record kept the old title (seen live 2026-10-11). The evidence check
+// reads the in-memory store, which keeps the struct; Bolt and Postgres do not
+// persist a record's evidence at all (TestInsightRecord_EvidenceIsNotPersisted).
+func TestEngine_RefreshesTitleAndEvidenceOfAStillFiringInsight(t *testing.T) {
+	store := NewMemoryInsightStore()
+	state := func(msg string) *ClusterState {
+		return &ClusterState{Pods: []*corev1.Pod{configErrorPod(msg)}}
+	}
+	e1 := newHydratedEngine(store)
+	e1.Evaluate(state("failed to sync configmap cache: timed out waiting for the condition"))
+
+	// Restart, and the kubelet now reports what is really wrong.
+	e2 := newHydratedEngine(store)
+	e2.Evaluate(state("couldn't find key DATABASE_URL in ConfigMap shop/app-settings"))
+
+	got := e2.GetAllInsights()
+	if len(got) != 1 || got[0].Title != "Pod references a missing ConfigMap key" {
+		t.Fatalf("in-memory insight: %+v", got)
+	}
+	recs, err := store.List(InsightQuery{TenantID: "t1", ClusterID: "c1"})
+	if err != nil || len(recs) != 1 {
+		t.Fatalf("records: %v %+v", err, recs)
+	}
+	if recs[0].Title != "Pod references a missing ConfigMap key" {
+		t.Errorf("record title %q", recs[0].Title)
+	}
+	if len(recs[0].Evidence) == 0 || !strings.Contains(recs[0].Evidence[0].Detail, "DATABASE_URL") {
+		t.Errorf("record evidence %+v", recs[0].Evidence)
+	}
 }

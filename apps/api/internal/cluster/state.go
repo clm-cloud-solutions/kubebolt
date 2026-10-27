@@ -2,13 +2,16 @@ package cluster
 
 import (
 	"log"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	storagev1 "k8s.io/api/storage/v1"
 )
 
 // GetPods returns all pods from the cache.
@@ -141,4 +144,96 @@ func (c *Connector) GetPodDisruptionBudgets() []*policyv1.PodDisruptionBudget {
 		return nil
 	}
 	return pdbs
+}
+
+// GetStatefulSets returns all StatefulSets from the informer cache.
+func (c *Connector) GetStatefulSets() []*appsv1.StatefulSet {
+	if c.statefulSetLister == nil {
+		return nil
+	}
+	items, err := c.statefulSetLister.List(everythingSelector())
+	if err != nil {
+		log.Printf("Error listing statefulsets: %v", err)
+		return nil
+	}
+	return items
+}
+
+// GetDaemonSets returns all DaemonSets from the informer cache.
+func (c *Connector) GetDaemonSets() []*appsv1.DaemonSet {
+	if c.daemonSetLister == nil {
+		return nil
+	}
+	items, err := c.daemonSetLister.List(everythingSelector())
+	if err != nil {
+		log.Printf("Error listing daemonsets: %v", err)
+		return nil
+	}
+	return items
+}
+
+// GetJobs returns all Jobs from the informer cache.
+func (c *Connector) GetJobs() []*batchv1.Job {
+	if c.jobLister == nil {
+		return nil
+	}
+	items, err := c.jobLister.List(everythingSelector())
+	if err != nil {
+		log.Printf("Error listing jobs: %v", err)
+		return nil
+	}
+	return items
+}
+
+// GetCronJobs returns all CronJobs from the informer cache.
+func (c *Connector) GetCronJobs() []*batchv1.CronJob {
+	if c.cronJobLister == nil {
+		return nil
+	}
+	items, err := c.cronJobLister.List(everythingSelector())
+	if err != nil {
+		log.Printf("Error listing cronjobs: %v", err)
+		return nil
+	}
+	return items
+}
+
+// GetStorageClasses returns all StorageClasses from the informer cache.
+func (c *Connector) GetStorageClasses() []*storagev1.StorageClass {
+	if c.storageClassLister == nil {
+		return nil
+	}
+	items, err := c.storageClassLister.List(everythingSelector())
+	if err != nil {
+		log.Printf("Error listing storageclasses: %v", err)
+		return nil
+	}
+	return items
+}
+
+// ciliumPolicyTTL: how long the insight engine reuses its count of Cilium
+// policies. They are not informer-backed (a dynamic LIST each), and the
+// engine ticks every 30 s; policies change far less often than that.
+const ciliumPolicyTTL = 5 * time.Minute
+
+// CiliumPolicyCoverage reports how many CiliumNetworkPolicies each namespace
+// has and how many CiliumClusterwideNetworkPolicies exist, for the
+// policy-orphan insight: a namespace with no NetworkPolicy may still be
+// governed by Cilium's own policies. known is false until a LIST has
+// succeeded or reported the CRDs absent — never guessed as zero.
+func (c *Connector) CiliumPolicyCoverage() (byNamespace map[string]int, clusterwide int, known bool) {
+	c.mu.RLock()
+	cov := c.ciliumCoverage
+	c.mu.RUnlock()
+	if cov.known && time.Since(cov.at) < ciliumPolicyTTL {
+		return cov.byNamespace, cov.clusterwide, true
+	}
+	fresh, ok := c.readCiliumCoverage()
+	if !ok {
+		return cov.byNamespace, cov.clusterwide, cov.known
+	}
+	c.mu.Lock()
+	c.ciliumCoverage = fresh
+	c.mu.Unlock()
+	return fresh.byNamespace, fresh.clusterwide, true
 }

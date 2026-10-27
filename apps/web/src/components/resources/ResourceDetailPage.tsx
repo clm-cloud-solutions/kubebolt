@@ -7,6 +7,7 @@ import { oneDark } from '@codemirror/theme-one-dark'
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { canonicalListRoute } from '@/utils/routes'
 import { buildCpuRefs, buildMemRefs, formatMemoryShort } from '@/utils/metricRefs'
+import { getDotColor } from '@/utils/colors'
 import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause, AlertCircle, Cpu, Variable, Tag, Eye, Trash2, RefreshCw, FileText, Search, Clock, X, LogOut, Bug } from 'lucide-react'
 import { SetImageModal } from '@/components/resources/SetImageModal'
 import { SetResourcesModal } from '@/components/resources/SetResourcesModal'
@@ -427,8 +428,8 @@ function StatusOverview({ type, item }: { type: string; item: ResourceItem }) {
     }
     case 'deployments':
       metrics.push(
-        { label: 'Status', value: <div className="flex items-center gap-2"><span className={`w-2.5 h-2.5 rounded-full ${item.status === 'Available' || item.status === 'Running' ? 'bg-status-ok' : 'bg-status-warn'}`} />{item.status}</div> },
-        { label: 'Ready Replicas', value: `${item.readyReplicas ?? 0} / ${item.replicas ?? 0}` },
+        { label: 'Status', value: <div className="flex items-center gap-2"><span className={`w-2.5 h-2.5 rounded-full ${getDotColor(item.status ?? '')}`} />{item.status}</div> },
+        { label: 'Ready Replicas', value: `${item.readyReplicas ?? 0} / ${item.specReplicas ?? item.replicas ?? 0}` },
         { label: 'Updated Replicas', value: String(item.updatedReplicas ?? 0) },
         { label: 'Available Replicas', value: String(item.availableReplicas ?? 0) },
       )

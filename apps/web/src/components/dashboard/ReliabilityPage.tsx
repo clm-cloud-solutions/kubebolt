@@ -1,10 +1,10 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Activity } from 'lucide-react'
+import { Activity, Clock } from 'lucide-react'
 import { api } from '@/services/api'
 import { useClusterOverview } from '@/hooks/useClusterOverview'
 import { useDashboardRange } from '@/hooks/useDashboardRange'
-import { useHubbleAvailable, useHubbleL7Available } from '@/hooks/useHubbleAvailable'
+import { isHubbleStale, useHubbleAvailable, useHubbleL7Available } from '@/hooks/useHubbleAvailable'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { MetricChart } from '@/components/shared/MetricChart'
@@ -38,8 +38,11 @@ export function ReliabilityPage() {
   // Shared session-scoped range — sticky across the Capacity/
   // Reliability tab switch (see useDashboardRange).
   const [rangeMinutes, setRangeMinutes] = useDashboardRange()
-  const { available: hubbleAvailable, isLoading: hubbleLoading } = useHubbleAvailable()
-  const { available: hubbleL7Available } = useHubbleL7Available()
+  const { available: hubbleAvailable, isLoading: hubbleLoading } = useHubbleAvailable(rangeMinutes)
+  const { available: hubbleL7Available, lastSeen: l7LastSeen } = useHubbleL7Available(rangeMinutes)
+  // HTTP data in the range, but none lately: the panels still show
+  // the range, and a notice says since when nothing has arrived.
+  const l7Stale = isHubbleStale(l7LastSeen)
 
   // Volume context for the chart's tooltip — req/s broken down by
   // status_class over the same time window. The chart shows error
@@ -85,7 +88,7 @@ export function ReliabilityPage() {
           overview={overview}
           tab="Reliability"
           badge={
-            hubbleAvailable && hubbleL7Available ? (
+            hubbleAvailable && hubbleL7Available && !l7Stale ? (
               // Provenance badge — this tab is the only surface fed
               // exclusively by Hubble L7; naming the source up top is
               // also the natural home for the placeholder state when
@@ -111,6 +114,7 @@ export function ReliabilityPage() {
         <HubbleL7UnavailablePlaceholder />
       ) : (
         <>
+          {l7Stale && l7LastSeen !== null && <HubbleL7StaleNotice lastSeen={l7LastSeen} />}
           {/* Scan layer — golden signals summarized from the same
               Hubble series the panels below detail. Deltas compare
               the previous window of the same length (see the strip
@@ -306,6 +310,32 @@ function formatRate(reqPerSec: number): string {
   return `${Math.round(reqPerSec)} req/s`
 }
 
+// HubbleL7StaleNotice — the range holds HTTP data, but nothing newer
+// than `lastSeen`. It says when, not why: the traffic may have
+// stopped, or the feed (the agent, its buffer, the backend) may have.
+// Both read the same from here, and the panels below still show the
+// range up to that point.
+function HubbleL7StaleNotice({ lastSeen }: { lastSeen: number }) {
+  const when = new Date(lastSeen * 1000).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+  return (
+    <div className="rounded-lg border border-status-warn/30 bg-status-warn-dim/25 px-4 py-3 flex items-center gap-3">
+      <Clock className="w-4 h-4 text-status-warn shrink-0" />
+      <div className="min-w-0">
+        <div className="text-[12px] font-medium text-status-warn">No HTTP data since {when}</div>
+        <div className="text-[11px] text-kb-text-secondary mt-0.5">
+          The panels show the selected range up to then, and pick up again when HTTP flows reach
+          KubeBolt.
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // HubbleMissingPlaceholder — direct-nav fallback. The tab itself
 // hides when Hubble isn't detected, so seeing this means either a
 // stale link, a URL-typed visit, or Hubble disappeared mid-session
@@ -326,8 +356,9 @@ function HubbleMissingPlaceholder() {
   )
 }
 
-// HubbleL7UnavailablePlaceholder — Hubble IS shipping flows
-// (L3/L4 detected), but HTTP / L7 metrics aren't. The cause is
+// HubbleL7UnavailablePlaceholder — the range holds Hubble L3/L4
+// flows but not one HTTP / L7 sample (HTTP data that only stopped
+// gets HubbleL7StaleNotice instead). The cause is
 // always the same: Cilium runs without the L7 proxy enabled. The
 // distribution of WHY differs by platform — managed Kubernetes
 // (GKE managed Dataplane V2 most prominently, but also AKS / EKS

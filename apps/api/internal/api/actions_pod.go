@@ -15,6 +15,8 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/fieldmanager"
 )
 
 // restartPod synthesizes a "restart" on a Pod by deleting it; the
@@ -288,7 +290,7 @@ func (h *handlers) handleDebugPod(w http.ResponseWriter, r *http.Request) {
 	// directly with a new ephemeralContainers entry fails — the
 	// subresource exists precisely for this mutation path.
 	dryRun := dryRunRequested(r)
-	_, err = clientset.CoreV1().Pods(namespace).UpdateEphemeralContainers(ctx, name, pod, metav1.UpdateOptions{DryRun: dryRunAll(dryRun)})
+	_, err = clientset.CoreV1().Pods(namespace).UpdateEphemeralContainers(ctx, name, pod, metav1.UpdateOptions{FieldManager: fieldmanager.Name, DryRun: dryRunAll(dryRun)})
 	if dryRun {
 		respondDryRun(w, err, fmt.Sprintf("Would attach · debug container %q (image %s)", ephemeralName, req.Image))
 		return

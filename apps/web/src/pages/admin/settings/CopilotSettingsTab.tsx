@@ -32,6 +32,7 @@ type ProviderName = ProviderID
 interface FormState {
   provider: ProviderName
   model: string
+  escalationModel: string // '' = off
   apiKey: string // empty = unchanged
   baseURL: string
   hasFallback: boolean
@@ -78,10 +79,11 @@ function stateFromResponse(data: CopilotSettingsResponse): FormState {
       eff.actionProgressTimeoutMs != null ? String(Math.round(eff.actionProgressTimeoutMs / 1000)) : '',
     maxRounds: eff.maxRounds != null ? String(eff.maxRounds) : '',
     autoCompact: eff.autoCompact,
-    maxTokens: String(eff.maxTokens || 4096),
+    maxTokens: eff.maxTokens ? String(eff.maxTokens) : '',
     sessionBudgetTokens: eff.sessionBudgetTokens != null ? String(eff.sessionBudgetTokens) : '',
     autoCompactThreshold: eff.autoCompactThreshold != null ? String(eff.autoCompactThreshold) : '',
     compactModel: eff.compactModel || '',
+    escalationModel: eff.escalationModel || '',
     compactPreserveTurns: eff.compactPreserveTurns != null ? String(eff.compactPreserveTurns) : '',
   }
 }
@@ -155,6 +157,9 @@ export function buildPatch(initial: FormState, current: FormState): CopilotSetti
   if (current.compactModel !== initial.compactModel) {
     patch.compactModel = current.compactModel
   }
+  if (current.escalationModel !== initial.escalationModel) {
+    patch.escalationModel = current.escalationModel
+  }
   if (current.compactPreserveTurns !== initial.compactPreserveTurns) {
     const n = parseInt(current.compactPreserveTurns, 10)
     if (current.compactPreserveTurns !== '' && !isNaN(n) && n >= 0) {
@@ -225,6 +230,7 @@ function CopilotSettingsForm({
   const dirtyMap = {
     provider: form.provider !== initial.provider,
     model: form.model !== initial.model,
+    escalationModel: form.escalationModel !== initial.escalationModel,
     apiKey: form.apiKey.trim() !== '',
     baseURL: form.baseURL !== initial.baseURL,
     hasFallback: form.hasFallback !== initial.hasFallback,
@@ -344,6 +350,19 @@ function CopilotSettingsForm({
             provider={form.provider}
             value={form.model}
             onChange={(model) => setForm({ ...form, model })}
+          />
+        </Field>
+
+        <Field
+          label="Escalation model"
+          dirty={dirtyMap.escalationModel}
+          helper="When a conversation leaves the cluster (a cloud connector, an external dependency, another cluster), Kobi moves to this model for the rest of it. Same provider and key as above. Off: it stays on the model above."
+        >
+          <ModelPicker
+            provider={form.provider}
+            value={form.escalationModel}
+            onChange={(escalationModel) => setForm({ ...form, escalationModel })}
+            emptyLabel="Off — stay on the model above"
           />
         </Field>
 
@@ -491,10 +510,11 @@ function CopilotSettingsForm({
         title="Behavior"
         subtitle="Output, session, and auto-compaction defaults."
       >
-        <Field label="Max tokens" dirty={dirtyMap.maxTokens} helper="Cap on output tokens per provider call. Bump this if Kobi truncates long answers.">
+        <Field label="Max tokens" dirty={dirtyMap.maxTokens} helper="Cap on output tokens per provider call, reasoning included. Blank = per model: 16384 where reasoning counts against it (Claude, OpenAI reasoning models), 4096 otherwise. Raise it if Kobi's answers end mid-sentence.">
           <input
             type="number"
             min={1}
+            placeholder="Auto"
             className="w-32 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
             value={form.maxTokens}
             onChange={(e) => setForm({ ...form, maxTokens: e.target.value })}
@@ -812,17 +832,22 @@ function ModelPicker({
   value,
   onChange,
   automatic = false,
+  emptyLabel,
 }: {
   provider: ProviderName
   value: string
   onChange: (model: string) => void
   automatic?: boolean
+  // Label of an empty choice that means something of its own (e.g. "Off").
+  emptyLabel?: string
 }) {
   const groups = groupModels(MODELS_BY_PROVIDER[provider] ?? [])
   const matched = findModelOption(provider, value)
-  // If the value is non-empty AND isn't in the catalog, treat it as
-  // a custom (user-typed) entry. Empty value falls through to "pick one".
-  const isCustom = value !== '' && !matched
+  // Picking Custom… empties the value, and an empty value alone reads as
+  // "pick one": without this the text input never appeared.
+  const [customPicked, setCustomPicked] = useState(false)
+  // A non-empty value outside the catalog is a custom (user-typed) entry.
+  const isCustom = !matched && (value !== '' || customPicked)
   const selectValue = isCustom ? CUSTOM_MODEL_VALUE : value
   const autoModel = automatic ? findModelOption(provider, CHEAP_MODEL_BY_PROVIDER[provider]) : null
 
@@ -837,13 +862,17 @@ function ModelPicker({
             // Switching INTO custom from a catalog selection: clear the
             // field so the operator types fresh. Switching back to
             // Custom while already custom keeps whatever they had.
+            setCustomPicked(true)
             if (!isCustom) onChange('')
             return
           }
+          setCustomPicked(false)
           onChange(next)
         }}
       >
-        {automatic ? (
+        {emptyLabel ? (
+          <option value="">{emptyLabel}</option>
+        ) : automatic ? (
           <option value="">Automatic{autoModel ? ` — ${autoModel.label}` : ''}</option>
         ) : (
           <option value="" disabled>

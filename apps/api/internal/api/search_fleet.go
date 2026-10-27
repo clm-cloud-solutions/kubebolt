@@ -97,9 +97,7 @@ func (h *handlers) handleFleetSearch(w http.ResponseWriter, r *http.Request, que
 	// Reusing the sanctioned helpers rather than writing a parallel check is the
 	// point — a second, slightly-different notion of "clusters I may see" is how
 	// this gap opened in the first place.
-	infos := h.filterClustersByOrg(r, h.manager.ListClusters(r.Context()))
-	infos = h.scopeClustersByTeam(r, infos)
-	infos = h.filterClustersByToken(r, infos)
+	infos := h.visibleClusters(r, h.manager.ListClusters(r.Context()))
 	tenant := cluster.RuntimeKeyFromContext(r.Context()).Tenant
 
 	var (

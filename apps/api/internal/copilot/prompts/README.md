@@ -16,14 +16,14 @@ These are concatenated (`identity + copilot + few-shots`) and merged with the op
 
 These files are **canonical**. If you change a prompt, change it here.
 
-The design history and reference docs (personality charter, voice & tone guide, brand guidelines, eval suite, the Autopilot prompt for future work) live in `internal/kobi/` at the repo root — that directory is gitignored and treated as private design reference, not as runtime artifact.
+The design history and reference docs (personality charter, voice & tone guide, brand guidelines, the original eval suite and voice rubric, the Autopilot prompt) live in the `kubebolt-docs` repository under `kobi/` — private design reference, not runtime artifact.
 
 ## Editing rules
 
-1. Read `internal/kobi/brand/personality-charter.md` and `internal/kobi/brand/voice-and-tone.md` before editing.
-2. Run a manual review of N≥20 representative outputs (read aloud) against `internal/kobi/evals/voice-rubric.md` before merging.
+1. Read `kobi/brand/personality-charter.md` and `kobi/brand/voice-and-tone.md` (kubebolt-docs) before editing.
+2. Measure the change with `cmd/kobi-eval` against the cases in `apps/api/evals/kobi` (voice criteria and `guard_*` must not get worse; doc 66), and review N≥20 representative outputs (read aloud) against `kobi/evals/voice-rubric.md` (kubebolt-docs) before merging.
 3. Identity-affecting changes (model-agnostic phrasing, language mirroring, the "Kobi vs KOBI" naming convention) require updating the eval suite in lockstep.
-4. Do not load `kobi-autopilot.md` from this directory — Autopilot is deferred for OSS v0. The Autopilot prompt remains in `internal/kobi/prompts/` as design reference for the future Enterprise build.
+4. Do not load the Autopilot material from this directory into the chat. Autopilot's agents carry their own prompts (`apps/autopilot`); `kobi-autopilot.md` stays in kubebolt-docs as design reference.
 
 ## Naming convention
 

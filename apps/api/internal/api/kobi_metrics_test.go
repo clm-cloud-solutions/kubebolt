@@ -113,7 +113,7 @@ func TestCopilotChat_RecordsKobiMetrics(t *testing.T) {
 		}
 		return &copilot.ChatResponse{Text: "no", StopReason: "refusal"}
 	})
-	w := newWiringWithAgents(t, prov.name, newManagerOn(t, map[string]string{}), nil)
+	w := newWiringWithAgents(t, false, prov.name, newManagerOn(t, map[string]string{}), nil)
 	body, _ := json.Marshal(map[string]any{"messages": []copilot.Message{{Role: copilot.RoleUser, Content: "hi"}}})
 	if rec := w.do(t, w.admin, http.MethodPost, "/api/v1/copilot/chat", string(body)); rec.Code != http.StatusOK {
 		t.Fatalf("chat: %d %s", rec.Code, rec.Body)

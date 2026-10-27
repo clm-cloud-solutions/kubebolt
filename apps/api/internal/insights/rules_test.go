@@ -269,6 +269,8 @@ func withReadinessProbe(ns, name string) *corev1.Pod {
 func TestReadinessProbeFailingRule_FiresAfterGrace(t *testing.T) {
 	p := withReadinessProbe("default", "not-ready")
 	p.Status.Phase = corev1.PodRunning
+	p.Spec.Containers = []corev1.Container{{Name: "app", ReadinessProbe: &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}}}}}
 	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
 		Name:  "app",
 		State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
@@ -641,7 +643,7 @@ func TestProgressDeadlineExceededRule_Fires(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("want 1 insight for stalled rollout, got %d", len(got))
 	}
-	if got[0].Title != "Rollout Progress Deadline Exceeded" {
+	if got[0].Title != "Deployment Progress Deadline Exceeded" {
 		t.Errorf("unexpected title: %q", got[0].Title)
 	}
 }
@@ -733,6 +735,46 @@ func TestEvictedPodsRule_RecencyGate(t *testing.T) {
 	stale.Status.Conditions = []corev1.PodCondition{{LastTransitionTime: metav1.NewTime(time.Now().Add(-4 * time.Hour))}}
 	if got := evictedPodsRule().Evaluate(&ClusterState{Pods: []*corev1.Pod{stale}}); len(got) != 0 {
 		t.Errorf("stale evicted pod should not fire (must resolve), got %d insights", len(got))
+	}
+}
+
+// An eviction for going over the pod's own storage limit says nothing about
+// the node, and the insight must not send the reader to look for pressure
+// there (lab case report-gen-evicted, 2026-10-11).
+func TestEvictedPodsRule_TellsOwnLimitFromNodePressure(t *testing.T) {
+	cases := []struct {
+		message, title, mustSay, mustNotSay string
+	}{
+		{"Pod ephemeral local storage usage exceeds the total limit of containers 32Mi. ",
+			evictedOwnLimitTitle, "own local storage limit", "node ran"},
+		{`Container app exceeded its local ephemeral storage limit "32Mi". `,
+			evictedOwnLimitTitle, "own local storage limit", "node ran"},
+		{`Usage of EmptyDir volume "cache" exceeds the limit "1Gi". `,
+			evictedOwnLimitTitle, "own local storage limit", "node ran"},
+		{"The node was low on resource: memory. Threshold quantity: 100Mi, available: 80Mi. ",
+			evictedTitle, "node ran low", "own local storage limit"},
+		{"", evictedTitle, "Read the eviction message", "node ran low"},
+	}
+	for _, c := range cases {
+		p := pod("default", "evicted")
+		p.Status.Phase = corev1.PodFailed
+		p.Status.Reason = "Evicted"
+		p.Status.Message = c.message
+		p.Status.Conditions = []corev1.PodCondition{{LastTransitionTime: metav1.NewTime(time.Now())}}
+		got := evictedPodsRule().Evaluate(&ClusterState{Pods: []*corev1.Pod{p}})
+		if len(got) != 1 {
+			t.Fatalf("%q: got %d insights", c.message, len(got))
+		}
+		in := got[0]
+		if in.Title != c.title {
+			t.Errorf("%q: title %q, want %q", c.message, in.Title, c.title)
+		}
+		if !strings.Contains(in.Suggestion, c.mustSay) || strings.Contains(in.Suggestion, c.mustNotSay) {
+			t.Errorf("%q: suggestion %q", c.message, in.Suggestion)
+		}
+		if len(in.Evidence) != 1 || in.Evidence[0].Detail != c.message || in.Evidence[0].At == nil {
+			t.Errorf("%q: evidence %+v", c.message, in.Evidence)
+		}
 	}
 }
 

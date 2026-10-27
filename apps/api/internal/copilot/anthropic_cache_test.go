@@ -15,7 +15,7 @@ import (
 // 5-minute entry expires between questions asked at a human pace — so every
 // question re-bought the same ~27k-token prefix at 12.5x the read price.
 
-func captureAnthropicBody(t *testing.T, msgs []Message) (map[string]any, http.Header) {
+func captureAnthropicBody(t *testing.T, msgs []Message, opts ...func(*ChatRequest)) (map[string]any, http.Header) {
 	t.Helper()
 	var body map[string]any
 	var hdr http.Header
@@ -33,13 +33,17 @@ func captureAnthropicBody(t *testing.T, msgs []Message) (map[string]any, http.He
 	if p == nil {
 		t.Fatal("anthropic provider is not registered")
 	}
-	if _, err := p.Chat(context.Background(), ChatRequest{
+	req := ChatRequest{
 		System:    "sys",
 		Messages:  msgs,
 		Tools:     ToolDefinitions(),
 		Provider:  config.ProviderConfig{Provider: "anthropic", Model: "claude-sonnet-5", APIKey: "k", BaseURL: srv.URL},
 		MaxTokens: 256,
-	}); err != nil {
+	}
+	for _, o := range opts {
+		o(&req)
+	}
+	if _, err := p.Chat(context.Background(), req); err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
 	return body, hdr
@@ -127,6 +131,28 @@ func TestAnthropicCache_OptOutRestoresTheDefaultAndDropsTheBeta(t *testing.T) {
 	// noise at best.
 	if hdr.Get("anthropic-beta") != "" {
 		t.Errorf("anthropic-beta = %q, want it absent", hdr.Get("anthropic-beta"))
+	}
+}
+
+// The escalation model answers a few questions a day: its hour-long write
+// costs 2x the input and expires unread. A turn on it asks for the default.
+func TestAnthropicCache_ShortCacheKeepsThePrefixOnTheDefault(t *testing.T) {
+	t.Setenv("KUBEBOLT_AI_CACHE_TTL", "")
+	body, hdr := captureAnthropicBody(t, []Message{{Role: RoleUser, Content: "hola"}},
+		func(r *ChatRequest) { r.ShortCache = true })
+
+	sys, _ := body["system"].([]any)
+	first, _ := sys[0].(map[string]any)
+	if got := ttlOf(t, first["cache_control"]); got != "" {
+		t.Errorf("system ttl = %q, want the 5m default on a short-cache call", got)
+	}
+	tools, _ := body["tools"].([]any)
+	last, _ := tools[len(tools)-1].(map[string]any)
+	if got := ttlOf(t, last["cache_control"]); got != "" {
+		t.Errorf("tools ttl = %q, want the 5m default on a short-cache call", got)
+	}
+	if hdr.Get("anthropic-beta") != "" {
+		t.Errorf("anthropic-beta = %q, want it absent with no ttl in the body", hdr.Get("anthropic-beta"))
 	}
 }
 

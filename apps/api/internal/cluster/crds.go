@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -550,4 +551,43 @@ func conditionStatus(status map[string]interface{}, condType string) string {
 		}
 	}
 	return ""
+}
+
+// ciliumCoverage is what CiliumPolicyCoverage caches.
+type ciliumCoverage struct {
+	byNamespace map[string]int
+	clusterwide int
+	known       bool
+	at          time.Time
+}
+
+// readCiliumCoverage lists both Cilium policy kinds. A kind whose CRD is not
+// installed counts as zero — a 404 is an answer; any other error (a timeout,
+// a 403 for a namespace-scoped ServiceAccount) leaves the coverage unknown
+// rather than reporting that there are no policies.
+func (c *Connector) readCiliumCoverage() (ciliumCoverage, bool) {
+	if c.dynamicClient == nil {
+		return ciliumCoverage{}, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out := ciliumCoverage{byNamespace: map[string]int{}, known: true, at: time.Now()}
+
+	cnps, err := c.dynamicClient.Resource(optionalCRDGVRs["ciliumnetworkpolicies"]).List(ctx, metav1.ListOptions{})
+	switch {
+	case err == nil:
+		for i := range cnps.Items {
+			out.byNamespace[cnps.Items[i].GetNamespace()]++
+		}
+	case !apierrors.IsNotFound(err):
+		return ciliumCoverage{}, false
+	}
+	ccnps, err := c.dynamicClient.Resource(optionalCRDGVRs["ciliumclusterwidenetworkpolicies"]).List(ctx, metav1.ListOptions{})
+	switch {
+	case err == nil:
+		out.clusterwide = len(ccnps.Items)
+	case !apierrors.IsNotFound(err):
+		return ciliumCoverage{}, false
+	}
+	return out, true
 }

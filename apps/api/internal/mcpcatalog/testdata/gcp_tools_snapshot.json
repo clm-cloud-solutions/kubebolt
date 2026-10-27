@@ -1,0 +1,2497 @@
+{
+ "_note": "Google Cloud MCP tools/list, reduced: allowlisted tools in full without outputSchema; refused tools as stubs. Regenerate with KUBEBOLT_MCP_LIVE_GCP=1 KUBEBOLT_MCP_LIVE_GCP_UPDATE=1 go test -run TestGCPLiveCatalog ./internal/mcpcatalog/",
+ "endpoints": {
+  "alloydb": [
+   {
+    "name": "create_backup",
+    "description": "Creates a backup for an AlloyDB cluster. ***Requirements*** * The cluster that the backup is being created for must…",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "create_cluster",
+    "description": "Creates an AlloyDB cluster. ***Requirements*** * The project the cluster is being created in must exist.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "create_instance",
+    "description": "Creates an AlloyDB instance, which is a child resource of a cluster.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "create_user",
+    "description": "Create a new user in a given project, location, and cluster. ***Requirements*** * The cluster that the user is being…",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "execute_sql",
+    "description": "Execute a SQL query on an instance. ***Requirements*** * The cluster must exist and be in a READY state.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "execute_sql_read_only",
+    "description": "Execute a SQL query on an instance in read-only mode. ***Requirements*** * The cluster must exist and be in a READY…",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "export_data",
+    "description": "Exports data from an AlloyDB cluster to a file in Google Cloud Storage.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "get_instance",
+    "description": "Get an instance",
+    "inputSchema": {
+     "description": "Message for getting a Instance",
+     "properties": {
+      "name": {
+       "description": "Required. The name of the resource. For the required format, see the comment on the Instance.name field.",
+       "type": "string"
+      },
+      "view": {
+       "description": "The view of the instance to return.",
+       "enum": [
+        "INSTANCE_VIEW_UNSPECIFIED",
+        "INSTANCE_VIEW_BASIC",
+        "INSTANCE_VIEW_FULL"
+       ],
+       "type": "string",
+       "x-google-enum-descriptions": [
+        "INSTANCE_VIEW_UNSPECIFIED Not specified, equivalent to BASIC.",
+        "BASIC server responses for a primary or read instance include all the relevant instance details, excluding the details of each node in the instance. The default value.",
+        "FULL response is equivalent to BASIC for primary instance (for now). For read pool instance, this includes details of each node in the pool."
+       ]
+      }
+     },
+     "required": [
+      "name"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "import_data",
+    "description": "Imports data into an AlloyDB cluster from a file stored in a Google Cloud Storage bucket.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "list_instances",
+    "description": "List all instances in a cluster",
+    "inputSchema": {
+     "description": "Message for requesting list of Instances",
+     "properties": {
+      "filter": {
+       "description": "Optional. Filtering results",
+       "type": "string"
+      },
+      "orderBy": {
+       "description": "Optional. Hint for how to order the results",
+       "type": "string"
+      },
+      "pageSize": {
+       "description": "Optional. Requested page size. Server may return fewer items than requested. If unspecified, server will pick an appropriate default.",
+       "format": "int32",
+       "type": "integer"
+      },
+      "pageToken": {
+       "description": "A token identifying a page of results the server should return.",
+       "type": "string"
+      },
+      "parent": {
+       "description": "Required. The name of the parent resource. For the required format, see the comment on the Instance.name field. Additionally, you can perform an aggregated list operation by specifying a value with one of the following formats: * projects/{project}/locations/-/clusters/- * projects/{project}/locations/{region}/clusters/-",
+       "type": "string"
+      }
+     },
+     "required": [
+      "parent"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "restore_cluster",
+    "description": "Restores an AlloyDB cluster from a given backup or a source cluster and a timestamp.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "update_instance",
+    "description": "Updates an AlloyDB instance. ***Requirements*** * The instance that is being updated must exist and be in a READY…",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   }
+  ],
+  "cloudasset": [
+   {
+    "name": "export_iam_analysis_results",
+    "description": "Analyzes Google Cloud IAM policies asynchronously and exports the results to a BigQuery dataset or Google Cloud…",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "title": "Analyze IAM Policy Longrunning",
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": true
+    }
+   },
+   {
+    "name": "list_assets",
+    "description": "List assets from Cloud Asset Inventory",
+    "inputSchema": {
+     "description": "ListAssets request.",
+     "properties": {
+      "assetTypes": {
+       "description": "A list of asset types to take a snapshot for. For example: \"compute.googleapis.com/Disk\". Regular expression is also supported. For example: * \"compute.googleapis.com.*\" snapshots resources whose asset type starts with \"compute.googleapis.com\". * \".*Instance\" snapshots resources whose asset type ends with \"Instance\". * \".*Instance.*\" snapshots resources whose asset type contains \"Instance\". See [RE2](https://github.com/google/re2/wiki/Syntax) for all supported regular expression syntax. If the regular expression does not match any supported asset type, an INVALID_ARGUMENT error will be returned. If specified, only matching assets will be returned, otherwise, it will snapshot all asset types. See [Introduction to Cloud Asset Inventory](https://cloud.google.com/asset-inventory/docs/overview) for all supported asset types.",
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "contentType": {
+       "description": "Asset content type. If not specified, no content but the asset name will be returned.",
+       "enum": [
+        "CONTENT_TYPE_UNSPECIFIED",
+        "RESOURCE",
+        "IAM_POLICY",
+        "ORG_POLICY",
+        "ACCESS_POLICY",
+        "OS_INVENTORY",
+        "RELATIONSHIP"
+       ],
+       "type": "string",
+       "x-google-enum-descriptions": [
+        "Unspecified content type.",
+        "Resource metadata.",
+        "The actual IAM policy set on a resource.",
+        "The organization policy set on an asset.",
+        "The Access Context Manager policy set on an asset.",
+        "The runtime OS Inventory information.",
+        "The related resources."
+       ]
+      },
+      "pageSize": {
+       "description": "The maximum number of assets to be returned in a single response. Default is 100, minimum is 1, and maximum is 1000.",
+       "format": "int32",
+       "type": "integer"
+      },
+      "pageToken": {
+       "description": "The `next_page_token` returned from the previous `ListAssetsResponse`, or unspecified for the first `ListAssetsRequest`. It is a continuation of a prior `ListAssets` call, and the API should return the next page of assets.",
+       "type": "string"
+      },
+      "parent": {
+       "description": "Required. Name of the organization, folder, or project the assets belong to. Format: \"organizations/[organization-number]\" (such as \"organizations/123\"), \"projects/[project-id]\" (such as \"projects/my-project-id\"), \"projects/[project-number]\" (such as \"projects/12345\"), or \"folders/[folder-number]\" (such as \"folders/12345\").",
+       "type": "string"
+      },
+      "readTime": {
+       "description": "Timestamp to take an asset snapshot. This can only be set to a timestamp between the current time and the current time minus 35 days (inclusive). If not specified, the current time will be used. Due to delays in resource data collection and indexing, there is a volatile window during which running the same query may get different results.",
+       "format": "date-time",
+       "type": "string"
+      },
+      "relationshipTypes": {
+       "description": "A list of relationship types to output, for example: `INSTANCE_TO_INSTANCEGROUP`. This field should only be specified if content_type=RELATIONSHIP. * If specified: it snapshots specified relationships. It returns an error if any of the [relationship_types] doesn't belong to the supported relationship types of the [asset_types] or if any of the [asset_types] doesn't belong to the source types of the [relationship_types]. * Otherwise: it snapshots the supported relationships for all [asset_types] or returns an error if any of the [asset_types] has no relationship support. An unspecified asset types field means all supported asset_types. See [Introduction to Cloud Asset Inventory](https://cloud.google.com/asset-inventory/docs/overview) for all supported asset types and relationship types.",
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      }
+     },
+     "required": [
+      "parent"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "title": "List Assets",
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   }
+  ],
+  "clouderrorreporting": [
+   {
+    "name": "list_group_stats",
+    "description": "Use this tool ONLY to find and analyze recurring stack traces in your application. It aggregates similar stack traces, providing statistics like the number of occurrences and the number of affected users. DO NOT use this tool for general error searches or to view individual error logs. For queries asking to 'find errors', or 'show me errors', you MUST use list_log_entries tool. CRITICAL: Default to other tooling for generic questions about errors.",
+    "inputSchema": {
+     "$defs": {
+      "QueryTimeRange": {
+       "description": "A time range for which error group data shall be displayed. Query time ranges end at 'now'. When longer time ranges are selected, the resolution of the data decreases. The description of each time range below indicates the suggested minimum timed count duration for that range. Requests might be rejected or the resulting timed count durations might be adjusted for lower durations.",
+       "properties": {
+        "period": {
+         "description": "Restricts the query to the specified time range.",
+         "enum": [
+          "PERIOD_UNSPECIFIED",
+          "PERIOD_1_HOUR",
+          "PERIOD_6_HOURS",
+          "PERIOD_1_DAY",
+          "PERIOD_1_WEEK",
+          "PERIOD_30_DAYS"
+         ],
+         "type": "string",
+         "x-google-enum-descriptions": [
+          "Do not use.",
+          "Retrieve data for the last hour. Recommended minimum timed count duration: 1 min.",
+          "Retrieve data for the last 6 hours. Recommended minimum timed count duration: 10 min.",
+          "Retrieve data for the last day. Recommended minimum timed count duration: 1 hour.",
+          "Retrieve data for the last week. Recommended minimum timed count duration: 6 hours.",
+          "Retrieve data for the last 30 days. Recommended minimum timed count duration: 1 day."
+         ]
+        }
+       },
+       "type": "object"
+      },
+      "ServiceContextFilter": {
+       "description": "Specifies criteria for filtering a subset of service contexts. The fields in the filter correspond to the fields in `ServiceContext`. Only exact, case-sensitive matches are supported. If a field is unset or empty, it matches arbitrary values.",
+       "properties": {
+        "resourceType": {
+         "description": "Optional. The exact value to match against [`ServiceContext.resource_type`](/error-reporting/reference/rest/v1beta1/ServiceContext#FIELDS.resource_type).",
+         "type": "string"
+        },
+        "service": {
+         "description": "Optional. The exact value to match against [`ServiceContext.service`](/error-reporting/reference/rest/v1beta1/ServiceContext#FIELDS.service).",
+         "type": "string"
+        },
+        "version": {
+         "description": "Optional. The exact value to match against [`ServiceContext.version`](/error-reporting/reference/rest/v1beta1/ServiceContext#FIELDS.version).",
+         "type": "string"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "description": "Specifies a set of `ErrorGroupStats` to return. Next ID: 19",
+     "properties": {
+      "alignment": {
+       "description": "Optional. The alignment of the timed counts to be returned. Default is `ALIGNMENT_EQUAL_AT_END`.",
+       "enum": [
+        "ERROR_COUNT_ALIGNMENT_UNSPECIFIED",
+        "ALIGNMENT_EQUAL_ROUNDED",
+        "ALIGNMENT_EQUAL_AT_END"
+       ],
+       "type": "string",
+       "x-google-enum-descriptions": [
+        "No alignment specified.",
+        "The time periods shall be consecutive, have width equal to the requested duration, and be aligned at the alignment_time provided in the request. The alignment_time does not have to be inside the query period but even if it is outside, only time periods are returned which overlap with the query period. A rounded alignment will typically result in a different size of the first or the last time period.",
+        "The time periods shall be consecutive, have width equal to the requested duration, and be aligned at the end of the requested time period. This can result in a different size of the first time period."
+       ]
+      },
+      "alignmentTime": {
+       "description": "Optional. Time where the timed counts shall be aligned if rounded alignment is chosen. Default is 00:00 UTC.",
+       "format": "date-time",
+       "type": "string"
+      },
+      "groupId": {
+       "description": "Optional. List all ErrorGroupStats with these IDs. The `group_id` is a unique identifier for a particular error group. The identifier is derived from key parts of the error-log content and is treated as Service Data. For information about how Service Data is handled, see [Google Cloud Privacy Notice] (https://cloud.google.com/terms/cloud-privacy-notice).",
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "order": {
+       "description": "Optional. The sort order in which the results are returned. Default is `COUNT_DESC`.",
+       "enum": [
+        "GROUP_ORDER_UNSPECIFIED",
+        "COUNT_DESC",
+        "LAST_SEEN_DESC",
+        "CREATED_DESC",
+        "AFFECTED_USERS_DESC"
+       ],
+       "type": "string",
+       "x-google-enum-descriptions": [
+        "No group order specified.",
+        "Total count of errors in the given time window in descending order.",
+        "Timestamp when the group was last seen in the given time window in descending order.",
+        "Timestamp when the group was created in descending order.",
+        "Number of affected users in the given time window in descending order."
+       ]
+      },
+      "pageSize": {
+       "description": "Optional. The maximum number of results to return per response. Default is 20.",
+       "format": "int32",
+       "type": "integer"
+      },
+      "pageToken": {
+       "description": "Optional. A next_page_token provided by a previous response. To view additional results, pass this token along with the identical query parameters as the first request.",
+       "type": "string"
+      },
+      "projectName": {
+       "description": "Required. The resource name of the Google Cloud Platform project. Written as `projects/{projectID}` or `projects/{projectNumber}`, where `{projectID}` and `{projectNumber}` can be found in the [Google Cloud console](https://support.google.com/cloud/answer/6158840). It may also include a location, such as `projects/{projectID}/locations/{location}` where `{location}` is a cloud region. Examples: `projects/my-project-123`, `projects/5551234`, `projects/my-project-123/locations/us-central1`, `projects/5551234/locations/us-central1`. For a list of supported locations, see [Supported Regions](https://cloud.google.com/logging/docs/region-support). `global` is the default when unspecified. Use `-` as a wildcard to request group stats from all regions.",
+       "type": "string"
+      },
+      "serviceFilter": {
+       "$ref": "#/$defs/ServiceContextFilter",
+       "description": "Optional. List only ErrorGroupStats which belong to a service context that matches the filter. Data for all service contexts is returned if this field is not specified."
+      },
+      "timeRange": {
+       "$ref": "#/$defs/QueryTimeRange",
+       "description": "Optional. List data for the given time range. If not set, a default time range is used. The field time_range_begin in the response will specify the beginning of this time range. Only ErrorGroupStats with a non-zero count in the given time range are returned, unless the request contains an explicit group_id list. If a group_id list is given, also ErrorGroupStats with zero occurrences are returned."
+      },
+      "timedCountDuration": {
+       "description": "Optional. The preferred duration for a single returned TimedCount. If not set, no timed counts are returned.",
+       "format": "google-duration",
+       "type": "string"
+      }
+     },
+     "required": [
+      "projectName"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "title": "List Group Stats",
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   }
+  ],
+  "cloudquotas": [
+   {
+    "name": "create_quota_increase_request",
+    "description": "Creates a new QuotaPreference that declares the desired value for a quota (initiating a Quota Increase Request).",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "title": "Create Quota Increase Request",
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "list_quota_infos",
+    "description": "Lists QuotaInfos of all quotas for a given project, folder, or organization. Expected request structure: 'parent' (string, format: projects/{project}/locations/global/services/{service}, folders/{folder}/locations/global/services/{service}, or organizations/{organization}/locations/global/services/{service}), 'page_size' is automatically fixed to 100. Filtering is supported only on quota_id. Does not return any information about current quota usage. Quota usage can be fetched by calling list_timeseries tool of google cloud monitoring.",
+    "inputSchema": {
+     "description": "Message for requesting list of QuotaInfos",
+     "properties": {
+      "pageSize": {
+       "description": "Optional. Requested page size. Server may return fewer items than requested. If unspecified, server will pick an appropriate default.",
+       "format": "int32",
+       "type": "integer"
+      },
+      "pageToken": {
+       "description": "Optional. A token identifying a page of results the server should return.",
+       "type": "string"
+      },
+      "parent": {
+       "description": "Required. Identifier. Parent value of QuotaInfo resources. Listing across different resource containers (such as 'projects/-') is not allowed. Example names: `projects/123/locations/global/services/compute.googleapis.com` `folders/234/locations/global/services/compute.googleapis.com` `organizations/345/locations/global/services/compute.googleapis.com`",
+       "type": "string",
+       "x-google-identifier": true
+      }
+     },
+     "required": [
+      "parent"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "title": "List Quota Infos",
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": true
+    }
+   },
+   {
+    "name": "update_quota_adjuster_settings",
+    "description": "Updates the QuotaAdjusterSettings for the specified resource container (project, folder, or organization).",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "title": "Update Quota Adjuster Settings",
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   }
+  ],
+  "compute": [
+   {
+    "name": "create_instance",
+    "description": "Create a new Google Compute Engine virtual machine (VM) instance.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "title": "Create Google Compute Engine virtual machine (VM) Instance",
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "delete_instance",
+    "description": "Delete a Google Compute Engine virtual machine (VM) instance. Requires project, zone, and instance name as input.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "title": "Delete Google Compute Engine virtual machine (VM) Instance",
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "get_instance_basic_info",
+    "description": "Get basic information about a Compute Engine VM instance, including its name, ID, status, machine type, creation timestamp, and attached guest accelerators. Requires project, zone, and instance name as input.\n",
+    "inputSchema": {
+     "description": "Request message for getting instance basic info.",
+     "properties": {
+      "name": {
+       "description": "Required. Identifier. The instance name.",
+       "type": "string",
+       "x-google-identifier": true
+      },
+      "project": {
+       "description": "Required. Project ID for this request.",
+       "type": "string"
+      },
+      "zone": {
+       "description": "Required. The zone of the instance.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "project",
+      "zone",
+      "name"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "title": "Get VM Instance Basic Info",
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "list_disks",
+    "description": "Lists Compute Engine disks. Details for each disk include name, ID, description, creation timestamp, size, type, status, last attach timestamp, and last detach timestamp. Requires project and zone as input.\n",
+    "inputSchema": {
+     "description": "Request message for listing disk basic info.",
+     "properties": {
+      "pageSize": {
+       "description": "Optional. The maximum number of results per page that should be returned.",
+       "format": "int32",
+       "type": "integer"
+      },
+      "pageToken": {
+       "description": "Optional. The page token received from the previous call.",
+       "type": "string"
+      },
+      "project": {
+       "description": "Required. Project ID for this request.",
+       "type": "string"
+      },
+      "zone": {
+       "description": "Required. The zone of the disks to list.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "project",
+      "zone"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "title": "List Disks Basic Info",
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "list_instance_group_managers",
+    "description": "Lists Compute Engine managed instance groups (MIGs). Details for each MIG include name, ID, instance template, base instance name, target size, target stopped size, target suspended size, status and creation timestamp. Requires project and zone as input.\n",
+    "inputSchema": {
+     "description": "Request message for listing instance group managers basic info.",
+     "properties": {
+      "pageSize": {
+       "description": "Optional. The maximum number of instance group managers to return.",
+       "format": "int32",
+       "type": "integer"
+      },
+      "pageToken": {
+       "description": "Optional. A page token received from a previous call to list instance group managers.",
+       "type": "string"
+      },
+      "project": {
+       "description": "Required. Project ID for this request.",
+       "type": "string"
+      },
+      "zone": {
+       "description": "Required. The zone of the instance group managers.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "project",
+      "zone"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "title": "List Instance Group Managers Basic Info",
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "list_instances",
+    "description": "Lists Compute Engine virtual machine (VM) instances. Details for each instance include name, ID, status, machine type, creation timestamp, and attached guest accelerators. Use other tools to get more details about each instance. Requires project and zone as input.\n",
+    "inputSchema": {
+     "description": "Request message for listing instances basic info.",
+     "properties": {
+      "pageSize": {
+       "description": "Optional. The maximum number of instances to return.",
+       "format": "int32",
+       "type": "integer"
+      },
+      "pageToken": {
+       "description": "Optional. A page token received from a previous call to list instances.",
+       "type": "string"
+      },
+      "project": {
+       "description": "Required. Project ID for this request.",
+       "type": "string"
+      },
+      "zone": {
+       "description": "Required. The zone of the instances.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "project",
+      "zone"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "title": "List VM Instances Basic Info",
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "list_managed_instances",
+    "description": "Lists managed instances for a given managed instance group (MIG). For each instance, details include id, instance URL, instance status, and current action. Requires project, zone, and MIG name as input.\n",
+    "inputSchema": {
+     "description": "Request message for listing managed instances.",
+     "properties": {
+      "name": {
+       "description": "Required. Identifier. The instance group manager name.",
+       "type": "string",
+       "x-google-identifier": true
+      },
+      "pageSize": {
+       "description": "Optional. The maximum number of managed instances to return.",
+       "format": "int32",
+       "type": "integer"
+      },
+      "pageToken": {
+       "description": "Optional. A page token received from a previous call to list managed instances.",
+       "type": "string"
+      },
+      "project": {
+       "description": "Required. Project ID for this request.",
+       "type": "string"
+      },
+      "zone": {
+       "description": "Required. The zone of the instance group manager.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "project",
+      "zone",
+      "name"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "title": "List Managed Instances",
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "reset_instance",
+    "description": "Resets a Google Compute Engine virtual machine (VM) instance. Requires project, zone, and instance name as input.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "title": "Reset Google Compute Engine virtual machine (VM) Instance",
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "set_instance_machine_type",
+    "description": "Sets the machine type for a stopped Google Compute Engine instance to the specified machine type.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "title": "Set Machine Type",
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "start_instance",
+    "description": "Starts a Google Compute Engine virtual machine (VM) instance. Requires project, zone, and instance name as input.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "title": "Start Google Compute Engine virtual machine (VM) Instance",
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "stop_instance",
+    "description": "Stops a Google Compute Engine virtual machine (VM) instance. Requires project, zone, and instance name as input.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "title": "Stop Google Compute Engine virtual machine (VM) instance",
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   }
+  ],
+  "container": [
+   {
+    "name": "apply_k8s_manifest",
+    "description": "Applies a Kubernetes manifest to a cluster using server-side apply.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "cancel_operation",
+    "description": "Cancels a specific GKE operation.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "check_k8s_auth",
+    "description": "Checks whether an action is allowed on a Kubernetes resource. This is similar to running `kubectl auth can-i`.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "create_cluster",
+    "description": "Creates a new GKE cluster in a given project and location. It's recommended to read the GKE documentation to…",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "create_node_pool",
+    "description": "Creates a node pool for a specific GKE cluster.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "delete_k8s_resource",
+    "description": "Deletes a Kubernetes resource from a cluster. This is similar to running `kubectl delete`.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "describe_k8s_resource",
+    "description": "Shows the details of a specific Kubernetes resource. This is similar to running `kubectl describe`.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "get_cluster",
+    "description": "Gets the details of a specific GKE cluster.",
+    "inputSchema": {
+     "description": "MCPGetClusterRequest gets the settings of a cluster.",
+     "properties": {
+      "name": {
+       "description": "Required. The name (project, location, cluster) of the cluster to retrieve. Specified in the format `projects/*/locations/*/clusters/*`.",
+       "type": "string"
+      },
+      "readMask": {
+       "description": "Optional. The field mask to specify the fields to be returned in the response. Use a single \"*\" to get all fields. Default: autopilot,createTime,currentMasterVersion,currentNodeCount,currentNodeVersion,description,endpoint,fleet,location,name,network,nodePools.locations,nodePools.name,nodePools.status,nodePools.version,releaseChannel,resourceLabels,selfLink,status,statusMessage,subnetwork.",
+       "format": "google-fieldmask",
+       "pattern": "^(\\s*[^,\\s.]+(\\s*[,.]\\s*[^,\\s.]+)*)?$",
+       "type": "string"
+      }
+     },
+     "required": [
+      "name"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "get_k8s_cluster_info",
+    "description": "Gets cluster endpoint information. This is similar to running `kubectl cluster-info`.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "get_k8s_logs",
+    "description": "Gets logs from a Kubernetes container in a pod. This is similar to running `kubectl logs`.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "get_k8s_resource",
+    "description": "Gets one or more Kubernetes resources from a cluster. Resources can be filtered by type, name, namespace, and label…",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "get_k8s_rollout_status",
+    "description": "Checks the current rollout status of a Kubernetes resource. This is similar to running `kubectl rollout status`.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "get_k8s_version",
+    "description": "Retrieves Kubernetes client and server versions for a given cluster. This is similar to running `kubectl version`.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "list_clusters",
+    "description": "Lists GKE clusters in a given project and location. Location can be a region, zone, or '-' for all locations.",
+    "inputSchema": {
+     "description": "MCPListClustersRequest lists clusters.",
+     "properties": {
+      "parent": {
+       "description": "Required. The parent (project and location) where the clusters will be listed. Specified in the format `projects/*/locations/*`. Location \"-\" matches all zones and all regions.",
+       "type": "string"
+      },
+      "readMask": {
+       "description": "Optional. The field mask to specify the fields to be returned in the response. Use a single \"*\" to get all fields. Default: clusters.autopilot,clusters.createTime,clusters.currentMasterVersion,clusters.currentNodeCount,clusters.currentNodeVersion,clusters.description,clusters.endpoint,clusters.fleet,clusters.location,clusters.name,clusters.network,clusters.nodePools.name,clusters.releaseChannel,clusters.resourceLabels,clusters.selfLink,clusters.status,clusters.statusMessage,clusters.subnetwork,missingZones.",
+       "format": "google-fieldmask",
+       "pattern": "^(\\s*[^,\\s.]+(\\s*[,.]\\s*[^,\\s.]+)*)?$",
+       "type": "string"
+      }
+     },
+     "required": [
+      "parent"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "list_k8s_api_resources",
+    "description": "Retrieves the available API groups and resources from a Kubernetes cluster.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "list_k8s_events",
+    "description": "Retrieves events from a Kubernetes cluster. This is similar to running `kubectl events`.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "list_node_pools",
+    "description": "Lists the node pools for a specific GKE cluster.",
+    "inputSchema": {
+     "description": "MCPListNodePoolsRequest lists the node pool(s) for a cluster.",
+     "properties": {
+      "parent": {
+       "description": "Required. The parent (project, location, cluster name) where the node pools will be listed. Specified in the format `projects/*/locations/*/clusters/*`.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "parent"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "list_operations",
+    "description": "Lists GKE operations in a given project and location. Location can be a region, zone, or '-' for all locations.",
+    "inputSchema": {
+     "description": "MCPListOperationsRequest lists operations.",
+     "properties": {
+      "parent": {
+       "description": "Required. The parent (project and location) where the operations will be listed. Specified in the format `projects/*/locations/*`. Location \"-\" matches all zones and all regions.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "parent"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "patch_k8s_resource",
+    "description": "Patches a Kubernetes resource. This is similar to running `kubectl patch`.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "update_cluster",
+    "description": "Updates a specific GKE cluster.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "update_node_pool",
+    "description": "Updates a specific node pool within a GKE cluster.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   }
+  ],
+  "databaseinsights": [
+   {
+    "name": "get_query_metrics",
+    "description": "Purpose and Key Capabilities:\n  Fetches query metrics telemetry data for a given database instance using a PromQL\nquery. Retrieves, aggregates, and calculates raw time-series data using PromQL. Supported Engines:\n  PostgreSQL, MySQL, AlloyDB.\nRequired RPC Arguments:\n  1. 'resource': (Required) The Google Cloud project ID.\n  2. 'promql_query': (Required) The generated PromQL string. Generated by the\nlogic inside the tool.\n  3. 'parent': (Required) The parent of the resource (projects/{project}/locations/us-central1).\n  4. 'start_time': (Optional) The start time of the metrics data in RFC3339 format.\nIf provided, MUST be strings in RFC 3339 UTC format (e.g., 'YYYY-MM-DDTHH:MM:SS.ffffffZ').\n  5. 'end_time': (Optional) The end time of the metrics data in RFC3339 format.\nIf provided, MUST be strings in RFC 3339 UTC format (e.g., 'YYYY-MM-DDTHH:MM:SS.ffffffZ').\n  DO NOT include any other fields in the tool call itself. These values should\nONLY be used to CONSTRUCT the 'promql_query' string internally by your logic. PromQL Construction Rules and Examples:\n  Get the labels like `project_id`, `instance_id`, `query_hash` from user intent\nfor which the metrics timeseries data needs to be fetched. If query_hash is provided then use the per_query metrics. Query hash and query id are same. For fleet-wide analysis, omit the instance-specific label.\n  Use = for label assignment(equality operator) and not :\n  Default Window: Use [5m] for _over_time functions unless otherwise specified.\n  Use the 1024-based binary conversion for byte units (e.g., KiB, MiB, GiB).\n  In the response mention the operation performed to get the telemetry data like\navg, sum, min, max, etc.\n  PromQL Query Examples:\n  1. Basic Time Series: `avg_over_time({\"__name__\"=\"cloudsql.googleapis.com/database/postgresql/insights/aggregate/execution_time\",\"monitored_resource\"=\"cloudsql_instance_database\",\"project_id\"=\"my-projectId\",\"resource_id\"=\"my-projectId:my-instanceId\"}[5m])`\n  2.",
+    "inputSchema": {
+     "description": "The request of the FetchQueryMetrics RPC.",
+     "properties": {
+      "endTime": {
+       "description": "Optional. The end_time of the metrics in RFC3339 format.",
+       "type": "string"
+      },
+      "parent": {
+       "description": "Required. The name of the location where we request metrics. Format: `projects/{project}/locations/{location}`",
+       "type": "string"
+      },
+      "promqlQuery": {
+       "description": "Required. The promql_query to fetch the query metrics.",
+       "type": "string"
+      },
+      "resource": {
+       "description": "Required. The resource name used for query metrics. It is the project ID in this case.",
+       "type": "string"
+      },
+      "startTime": {
+       "description": "Optional. The start_time of the metrics in RFC3339 format.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "parent",
+      "resource",
+      "promqlQuery"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "get_system_metrics",
+    "description": "Purpose and Key Capabilities:\n  Quantitative telemetry data access for cloud database instance system-level\ntelemetry (CPU, memory, disk, network etc). Retrieves, aggregates, and calculates raw time-series data using PromQL.\n  Supports both instance-specific and project-level (fleet-wide) telemetry data\naccess. Supported Engines:\n  PostgreSQL, MySQL, SQL Server, AlloyDB, Bigtable, Spanner.\nRequired RPC Arguments:\n  1. 'resource': (Required) The Google Cloud project ID.\n  2. 'promql_query': (Required) The generated PromQL string. Generated by the\nlogic inside the tool.\n  3. 'parent': (Required) The parent of the resource (projects/{project}/locations/us-central1).\n  4. 'start_time': (Optional) The start time of the metrics data in RFC3339 format.\nIf provided, MUST be strings in RFC 3339 UTC format (e.g., 'YYYY-MM-DDTHH:MM:SS.ffffffZ').\n  5. 'end_time': (Optional) The end time of the metrics data in RFC3339 format.\nIf provided, MUST be strings in RFC 3339 UTC format (e.g., 'YYYY-MM-DDTHH:MM:SS.ffffffZ').\n  DO NOT include any other fields in the tool call itself. These values should\nONLY be used to CONSTRUCT the 'promql_query' string internally by your logic. PromQL Construction Rules and Examples:\n  Get the labels like `project_id`, `instance_id`, `query_hash` from user intent\nfor which the metrics timeseries data needs to be fetched. If query_hash is provided then use the per_query metrics. Query hash and query id are same. For fleet-wide analysis, omit the instance-specific label.\n  Use = for label assignment(equality operator) and not :\n  Default Window: Use [5m] for _over_time functions unless otherwise specified.\n  Use the 1024-based binary conversion for byte units (e.g., KiB, MiB, GiB).\n  In the response mention the operation performed to get the telemetry data like\navg, sum, min, max, etc.\n  PromQL Query Examples:\n  1.",
+    "inputSchema": {
+     "description": "The request of the FetchSystemMetrics RPC.",
+     "properties": {
+      "endTime": {
+       "description": "Optional. The end_time of the metrics in RFC3339 format.",
+       "type": "string"
+      },
+      "parent": {
+       "description": "Required. The name of the location where we request metrics. Format: `projects/{project}/locations/{location}`",
+       "type": "string"
+      },
+      "promqlQuery": {
+       "description": "Required. The promql_query to fetch the system metrics.",
+       "type": "string"
+      },
+      "resource": {
+       "description": "Required. The resource name used for system metrics. It is the project ID in this case.",
+       "type": "string"
+      },
+      "startTime": {
+       "description": "Optional. The start_time of the metrics in RFC3339 format.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "parent",
+      "resource",
+      "promqlQuery"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   }
+  ],
+  "logging": [
+   {
+    "name": "list_log_entries",
+    "description": "Use this as the primary tool to search and retrieve log entries from Google Cloud Logging. It's essential for debugging application behavior, finding specific error messages, or auditing events. The 'filter' is powerful and can be used to select logs by severity, resource type, text content, and more. IMPORTANT: This tool will only work with a single resource project at a time. Calls with multiple resource projects will fail.",
+    "inputSchema": {
+     "description": "The parameters to `ListLogEntries`.",
+     "properties": {
+      "filter": {
+       "description": "Optional. A filter that chooses which log entries to return. For more information, see [Logging query language] (https://docs.cloud.google.com/logging/docs/view/logging-query-language). Only log entries that match the filter are returned. An empty filter matches all log entries in the resources listed in `resource_names`. Referencing a parent resource that is not listed in `resource_names` will cause the filter to return no results. The maximum length of a filter is 20,000 characters. To make queries faster, you can make the filter more selective by using restrictions on [indexed fields] (https://docs.cloud.google.com/logging/docs/view/logging-query-language#indexed-fields) as well as limit the time range of the query by adding range restrictions on the `timestamp` field.",
+       "type": "string"
+      },
+      "orderBy": {
+       "description": "Optional. How the results should be sorted. Presently, the only permitted values are `\"timestamp asc\"` (default) and `\"timestamp desc\"`. The first option returns entries in order of increasing values of `LogEntry.timestamp` (oldest first), and the second option returns entries in order of decreasing timestamps (newest first). Entries with equal timestamps are returned in order of their `insert_id` values. We recommend setting the `order_by` field to `\"timestamp desc\"` when listing recently ingested log entries. If not set, the default value of `\"timestamp asc\"` may take a long time to fetch matching logs that are only recently ingested.",
+       "type": "string"
+      },
+      "pageSize": {
+       "description": "Optional. The maximum number of results to return from this request. Default is 50. If the value is negative, the request is rejected. The presence of `next_page_token` in the response indicates that more results might be available.",
+       "format": "int32",
+       "type": "integer"
+      },
+      "pageToken": {
+       "description": "Optional. If present, then retrieve the next batch of results from the preceding call to this method. `page_token` must be the value of `next_page_token` from the previous response. The values of other method parameters should be identical to those in the previous call.",
+       "type": "string"
+      },
+      "projectIds": {
+       "deprecated": true,
+       "description": "Optional. Deprecated. Use `resource_names` instead. One or more project identifiers or project numbers from which to retrieve log entries. Example: `\"my-project-1A\"`.",
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "resourceNames": {
+       "description": "Required. Names of one or more parent resources from which to retrieve log entries. Resources may either be resource containers or specific `LogViews`. For the case of resource containers, all logs ingested into that container will be returned regardless of which `LogBuckets` they are actually stored in - i.e. these queries may fan out to multiple regions. In the event of region unavailability, specify a specific set of `LogViews` that do not include the unavailable region. * `projects/[PROJECT_ID]` * `organizations/[ORGANIZATION_ID]` * `billingAccounts/[BILLING_ACCOUNT_ID]` * `folders/[FOLDER_ID]` * `projects/[PROJECT_ID]/locations/[LOCATION_ID]/buckets/[BUCKET_ID]/views/[VIEW_ID]` * `organizations/[ORGANIZATION_ID]/locations/[LOCATION_ID]/buckets/[BUCKET_ID]/views/[VIEW_ID]` * `billingAccounts/[BILLING_ACCOUNT_ID]/locations/[LOCATION_ID]/buckets/[BUCKET_ID]/views/[VIEW_ID]` * `folders/[FOLDER_ID]/locations/[LOCATION_ID]/buckets/[BUCKET_ID]/views/[VIEW_ID]` Projects listed in the `project_ids` field are added to this list. A maximum of 100 resources may be specified in a single request.",
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      }
+     },
+     "required": [
+      "resourceNames"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   }
+  ],
+  "memorystore": [
+   {
+    "name": "backup_instance",
+    "description": "Back up a Memorystore for Valkey instance.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "create_instance",
+    "description": "Create a Memorystore for Valkey instance.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "delete_backup",
+    "description": "Delete a Memorystore for Valkey backup.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "delete_instance",
+    "description": "Delete a Memorystore for Valkey instance.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "export_backup",
+    "description": "Export a Memorystore for Valkey backup.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "get_instance",
+    "description": "Get detailed information about a Memorystore for Valkey instance.",
+    "inputSchema": {
+     "description": "Request message for `GetInstance`.",
+     "properties": {
+      "name": {
+       "description": "Required. The name of the instance to retrieve. Format: projects/{project}/locations/{location}/instances/{instance}",
+       "type": "string"
+      }
+     },
+     "required": [
+      "name"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "list_instances",
+    "description": "List all Memorystore for Valkey instances.",
+    "inputSchema": {
+     "description": "Request message for `ListInstances`.",
+     "properties": {
+      "filter": {
+       "description": "Optional. Expression for filtering results.",
+       "type": "string"
+      },
+      "orderBy": {
+       "description": "Optional. Sort results by a defined order. Supported values: \"name\", \"create_time\".",
+       "type": "string"
+      },
+      "pageSize": {
+       "description": "Optional. Requested page size. Server may return fewer items than requested. If unspecified, server will pick an appropriate default.",
+       "format": "int32",
+       "type": "integer"
+      },
+      "pageToken": {
+       "description": "Optional. A token identifying a page of results the server should return.",
+       "type": "string"
+      },
+      "parent": {
+       "description": "Required. The parent to list instances from. Format: projects/{project}/locations/{location}",
+       "type": "string"
+      }
+     },
+     "required": [
+      "parent"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "reschedule_maintenance",
+    "description": "Reschedule maintenance for a Memorystore for Valkey instance.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "update_instance",
+    "description": "Update a Memorystore for Valkey instance.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   }
+  ],
+  "monitoring": [
+   {
+    "name": "list_alert_policies",
+    "description": "Use this as the primary tool to list the alerting policies in a Google Cloud project. Alerting policies define the conditions under which you want to be notified about issues with your services. This is useful for understanding what alerts are currently configured.",
+    "inputSchema": {
+     "description": "The protocol for the `ListAlertPolicies` request.",
+     "properties": {
+      "filter": {
+       "description": "Optional. If provided, this field specifies the criteria that must be met by alert policies to be included in the response. For more details, see [sorting and filtering](https://cloud.google.com/monitoring/api/v3/sorting-and-filtering).",
+       "type": "string"
+      },
+      "name": {
+       "description": "Required. The [project](https://cloud.google.com/monitoring/api/v3#project_name) whose alert policies are to be listed. The format is: projects/[PROJECT_ID_OR_NUMBER] Note that this field names the parent container in which the alerting policies to be listed are stored. To retrieve a single alerting policy by name, use the GetAlertPolicy operation, instead.",
+       "type": "string"
+      },
+      "orderBy": {
+       "description": "Optional. A comma-separated list of fields by which to sort the result. Supports the same set of field references as the `filter` field. Entries can be prefixed with a minus sign to sort by the field in descending order. For more details, see [sorting and filtering](https://cloud.google.com/monitoring/api/v3/sorting-and-filtering).",
+       "type": "string"
+      },
+      "pageSize": {
+       "description": "Optional. The maximum number of results to return in a single response.",
+       "format": "int32",
+       "type": "integer"
+      },
+      "pageToken": {
+       "description": "Optional. If this field is not empty then it must contain the `nextPageToken` value returned by a previous call to this method. Using this field causes the method to return more results from the previous method call.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "name"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "list_alerts",
+    "description": "Use this as the primary tool to list the alerts in a Google Cloud project. An alert is the representation of a violation of an alert policy. This is useful for understanding current and past violations of an alert policy.",
+    "inputSchema": {
+     "description": "The `ListAlerts` request.",
+     "properties": {
+      "filter": {
+       "description": "Optional. An alert is returned if there is a match on any fields belonging to the alert or its subfields.",
+       "type": "string"
+      },
+      "orderBy": {
+       "description": "Optional. A comma-separated list of fields in `Alert` to use for sorting. The default sort direction is ascending. To specify descending order for a field, add a `desc` modifier. The following fields are supported: * `open_time` * `close_time` For example, `close_time desc, open_time` will return the alerts closed most recently, with ties broken in the order of older alerts listed first. If the field is not set, the results are sorted by `open_time desc`.",
+       "type": "string"
+      },
+      "pageSize": {
+       "description": "Optional. The maximum number of results to return in a single response. If not set to a positive number, at most 50 alerts will be returned. The maximum value is 1000; values above 1000 will be coerced to 1000.",
+       "format": "int32",
+       "type": "integer"
+      },
+      "pageToken": {
+       "description": "Optional. If non-empty, `page_token` must contain a value returned as the `next_page_token` in a previous response to request the next set of results.",
+       "type": "string"
+      },
+      "parent": {
+       "description": "Required. The name of the project to list alerts for.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "parent"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "list_timeseries",
+    "description": "Lists time series data from the Google Cloud Monitoring API",
+    "inputSchema": {
+     "$defs": {
+      "Aggregation": {
+       "description": "Describes how to combine multiple time series to provide a different view of the data. Aggregation of time series is done in two steps. First, each time series in the set is _aligned_ to the same time interval boundaries, then the set of time series is optionally _reduced_ in number. Alignment consists of applying the `per_series_aligner` operation to each time series after its data has been divided into regular `alignment_period` time intervals. This process takes _all_ of the data points in an alignment period, applies a mathematical transformation such as averaging, minimum, maximum, delta, etc., and converts them into a single data point per period. Reduction is when the aligned and transformed time series can optionally be combined, reducing the number of time series through similar mathematical transformations. Reduction involves applying a `cross_series_reducer` to all the time series, optionally sorting the time series into subsets with `group_by_fields`, and applying the reducer to each subset. The raw time series data can contain a huge amount of information from multiple sources. Alignment and reduction transforms this mass of data into a more manageable and representative collection of data, for example \"the 95% latency across the average of all tasks in a cluster\". This representative data can be more easily graphed and comprehended, and the individual time series data is still available for later drilldown. For more details, see [Filtering and aggregation](https://cloud.google.com/monitoring/api/v3/aggregation).",
+       "properties": {
+        "alignmentPeriod": {
+         "description": "The `alignment_period` specifies a time interval, in seconds, that is used to divide the data in all the time series into consistent blocks of time. This will be done before the per-series aligner can be applied to the data. The value must be at least 60 seconds. If a per-series aligner other than `ALIGN_NONE` is specified, this field is required or an error is returned. If no per-series aligner is specified, or the aligner `ALIGN_NONE` is specified, then this field is ignored. The maximum value of the `alignment_period` is 104 weeks (2 years) for charts, and 90,000 seconds (25 hours) for alerting policies.",
+         "format": "google-duration",
+         "type": "string"
+        },
+        "crossSeriesReducer": {
+         "description": "The reduction operation to be used to combine time series into a single time series, where the value of each data point in the resulting series is a function of all the already aligned values in the input time series. Not all reducer operations can be applied to all time series. The valid choices depend on the `metric_kind` and the `value_type` of the original time series. Reduction can yield a time series with a different `metric_kind` or `value_type` than the input time series. Time series data must first be aligned (see `per_series_aligner`) in order to perform cross-time series reduction. If `cross_series_reducer` is specified, then `per_series_aligner` must be specified, and must not be `ALIGN_NONE`. An `alignment_period` must also be specified; otherwise, an error is returned.",
+         "enum": [
+          "REDUCE_NONE",
+          "REDUCE_MEAN",
+          "REDUCE_MIN",
+          "REDUCE_MAX",
+          "REDUCE_SUM",
+          "REDUCE_STDDEV",
+          "REDUCE_COUNT",
+          "REDUCE_COUNT_TRUE",
+          "REDUCE_COUNT_FALSE",
+          "REDUCE_FRACTION_TRUE",
+          "REDUCE_PERCENTILE_99",
+          "REDUCE_PERCENTILE_95",
+          "REDUCE_PERCENTILE_50",
+          "REDUCE_PERCENTILE_05"
+         ],
+         "type": "string",
+         "x-google-enum-descriptions": [
+          "No cross-time series reduction. The output of the `Aligner` is returned.",
+          "Reduce by computing the mean value across time series for each alignment period. This reducer is valid for DELTA and GAUGE metrics with numeric or distribution values. The `value_type` of the output is DOUBLE.",
+          "Reduce by computing the minimum value across time series for each alignment period. This reducer is valid for `DELTA` and `GAUGE` metrics with numeric values. The `value_type` of the output is the same as the `value_type` of the input.",
+          "Reduce by computing the maximum value across time series for each alignment period. This reducer is valid for `DELTA` and `GAUGE` metrics with numeric values. The `value_type` of the output is the same as the `value_type` of the input.",
+          "Reduce by computing the sum across time series for each alignment period. This reducer is valid for `DELTA` and `GAUGE` metrics with numeric and distribution values. The `value_type` of the output is the same as the `value_type` of the input.",
+          "Reduce by computing the standard deviation across time series for each alignment period. This reducer is valid for `DELTA` and `GAUGE` metrics with numeric or distribution values. The `value_type` of the output is `DOUBLE`.",
+          "Reduce by computing the number of data points across time series for each alignment period. This reducer is valid for `DELTA` and `GAUGE` metrics of numeric, Boolean, distribution, and string `value_type`. The `value_type` of the output is `INT64`.",
+          "Reduce by computing the number of `True`-valued data points across time series for each alignment period. This reducer is valid for `DELTA` and `GAUGE` metrics of Boolean `value_type`. The `value_type` of the output is `INT64`.",
+          "Reduce by computing the number of `False`-valued data points across time series for each alignment period. This reducer is valid for `DELTA` and `GAUGE` metrics of Boolean `value_type`. The `value_type` of the output is `INT64`.",
+          "Reduce by computing the ratio of the number of `True`-valued data points to the total number of data points for each alignment period. This reducer is valid for `DELTA` and `GAUGE` metrics of Boolean `value_type`. The output value is in the range [0.0, 1.0] and has `value_type` `DOUBLE`.",
+          "Reduce by computing the [99th percentile](https://en.wikipedia.org/wiki/Percentile) of data points across time series for each alignment period. This reducer is valid for `GAUGE` and `DELTA` metrics of numeric and distribution type. The value of the output is `DOUBLE`.",
+          "Reduce by computing the [95th percentile](https://en.wikipedia.org/wiki/Percentile) of data points across time series for each alignment period. This reducer is valid for `GAUGE` and `DELTA` metrics of numeric and distribution type. The value of the output is `DOUBLE`.",
+          "Reduce by computing the [50th percentile](https://en.wikipedia.org/wiki/Percentile) of data points across time series for each alignment period. This reducer is valid for `GAUGE` and `DELTA` metrics of numeric and distribution type. The value of the output is `DOUBLE`.",
+          "Reduce by computing the [5th percentile](https://en.wikipedia.org/wiki/Percentile) of data points across time series for each alignment period. This reducer is valid for `GAUGE` and `DELTA` metrics of numeric and distribution type. The value of the output is `DOUBLE`."
+         ]
+        },
+        "groupByFields": {
+         "description": "The set of fields to preserve when `cross_series_reducer` is specified. The `group_by_fields` determine how the time series are partitioned into subsets prior to applying the aggregation operation. Each subset contains time series that have the same value for each of the grouping fields. Each individual time series is a member of exactly one subset. The `cross_series_reducer` is applied to each subset of time series. It is not possible to reduce across different resource types, so this field implicitly contains `resource.type`. Fields not specified in `group_by_fields` are aggregated away. If `group_by_fields` is not specified and all the time series have the same resource type, then the time series are aggregated into a single output time series. If `cross_series_reducer` is not defined, this field is ignored.",
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        },
+        "perSeriesAligner": {
+         "description": "An `Aligner` describes how to bring the data points in a single time series into temporal alignment. Except for `ALIGN_NONE`, all alignments cause all the data points in an `alignment_period` to be mathematically grouped together, resulting in a single data point for each `alignment_period` with end timestamp at the end of the period. Not all alignment operations may be applied to all time series. The valid choices depend on the `metric_kind` and `value_type` of the original time series. Alignment can change the `metric_kind` or the `value_type` of the time series. Time series data must be aligned in order to perform cross-time series reduction. If `cross_series_reducer` is specified, then `per_series_aligner` must be specified and not equal to `ALIGN_NONE` and `alignment_period` must be specified; otherwise, an error is returned.",
+         "enum": [
+          "ALIGN_NONE",
+          "ALIGN_DELTA",
+          "ALIGN_RATE",
+          "ALIGN_INTERPOLATE",
+          "ALIGN_NEXT_OLDER",
+          "ALIGN_MIN",
+          "ALIGN_MAX",
+          "ALIGN_MEAN",
+          "ALIGN_COUNT",
+          "ALIGN_SUM",
+          "ALIGN_STDDEV",
+          "ALIGN_COUNT_TRUE",
+          "ALIGN_COUNT_FALSE",
+          "ALIGN_FRACTION_TRUE",
+          "ALIGN_PERCENTILE_99",
+          "ALIGN_PERCENTILE_95",
+          "ALIGN_PERCENTILE_50",
+          "ALIGN_PERCENTILE_05",
+          "ALIGN_PERCENT_CHANGE"
+         ],
+         "type": "string",
+         "x-google-enum-descriptions": [
+          "No alignment. Raw data is returned. Not valid if cross-series reduction is requested. The `value_type` of the result is the same as the `value_type` of the input.",
+          "Align and convert to DELTA. The output is `delta = y1 - y0`. This alignment is valid for CUMULATIVE and `DELTA` metrics. If the selected alignment period results in periods with no data, then the aligned value for such a period is created by interpolation. The `value_type` of the aligned result is the same as the `value_type` of the input.",
+          "Align and convert to a rate. The result is computed as `rate = (y1 - y0)/(t1 - t0)`, or \"delta over time\". Think of this aligner as providing the slope of the line that passes through the value at the start and at the end of the `alignment_period`. This aligner is valid for `CUMULATIVE` and `DELTA` metrics with numeric values. If the selected alignment period results in periods with no data, then the aligned value for such a period is created by interpolation. The output is a `GAUGE` metric with `value_type` `DOUBLE`. If, by \"rate\", you mean \"percentage change\", see the `ALIGN_PERCENT_CHANGE` aligner instead.",
+          "Align by interpolating between adjacent points around the alignment period boundary. This aligner is valid for `GAUGE` metrics with numeric values. The `value_type` of the aligned result is the same as the `value_type` of the input.",
+          "Align by moving the most recent data point before the end of the alignment period to the boundary at the end of the alignment period. This aligner is valid for `GAUGE` metrics. The `value_type` of the aligned result is the same as the `value_type` of the input.",
+          "Align the time series by returning the minimum value in each alignment period. This aligner is valid for `GAUGE` and `DELTA` metrics with numeric values. The `value_type` of the aligned result is the same as the `value_type` of the input.",
+          "Align the time series by returning the maximum value in each alignment period. This aligner is valid for `GAUGE` and `DELTA` metrics with numeric values. The `value_type` of the aligned result is the same as the `value_type` of the input.",
+          "Align the time series by returning the mean value in each alignment period. This aligner is valid for `GAUGE` and `DELTA` metrics with numeric values. The `value_type` of the aligned result is `DOUBLE`.",
+          "Align the time series by returning the number of values in each alignment period. This aligner is valid for `GAUGE` and `DELTA` metrics with numeric or Boolean values. The `value_type` of the aligned result is `INT64`.",
+          "Align the time series by returning the sum of the values in each alignment period. This aligner is valid for `GAUGE` and `DELTA` metrics with numeric and distribution values. The `value_type` of the aligned result is the same as the `value_type` of the input.",
+          "Align the time series by returning the standard deviation of the values in each alignment period. This aligner is valid for `GAUGE` and `DELTA` metrics with numeric values. The `value_type` of the output is `DOUBLE`.",
+          "Align the time series by returning the number of `True` values in each alignment period. This aligner is valid for `GAUGE` metrics with Boolean values. The `value_type` of the output is `INT64`.",
+          "Align the time series by returning the number of `False` values in each alignment period. This aligner is valid for `GAUGE` metrics with Boolean values. The `value_type` of the output is `INT64`.",
+          "Align the time series by returning the ratio of the number of `True` values to the total number of values in each alignment period. This aligner is valid for `GAUGE` metrics with Boolean values. The output value is in the range [0.0, 1.0] and has `value_type` `DOUBLE`.",
+          "Align the time series by using [percentile aggregation](https://en.wikipedia.org/wiki/Percentile). The resulting data point in each alignment period is the 99th percentile of all data points in the period. This aligner is valid for `GAUGE` and `DELTA` metrics with distribution values. The output is a `GAUGE` metric with `value_type` `DOUBLE`.",
+          "Align the time series by using [percentile aggregation](https://en.wikipedia.org/wiki/Percentile). The resulting data point in each alignment period is the 95th percentile of all data points in the period. This aligner is valid for `GAUGE` and `DELTA` metrics with distribution values. The output is a `GAUGE` metric with `value_type` `DOUBLE`.",
+          "Align the time series by using [percentile aggregation](https://en.wikipedia.org/wiki/Percentile). The resulting data point in each alignment period is the 50th percentile of all data points in the period. This aligner is valid for `GAUGE` and `DELTA` metrics with distribution values. The output is a `GAUGE` metric with `value_type` `DOUBLE`.",
+          "Align the time series by using [percentile aggregation](https://en.wikipedia.org/wiki/Percentile). The resulting data point in each alignment period is the 5th percentile of all data points in the period. This aligner is valid for `GAUGE` and `DELTA` metrics with distribution values. The output is a `GAUGE` metric with `value_type` `DOUBLE`.",
+          "Align and convert to a percentage change. This aligner is valid for `GAUGE` and `DELTA` metrics with numeric values. This alignment returns `((current - previous)/previous) * 100`, where the value of `previous` is determined based on the `alignment_period`. If the values of `current` and `previous` are both 0, then the returned value is 0. If only `previous` is 0, the returned value is infinity. A 10-minute moving mean is computed at each point of the alignment period prior to the above calculation to smooth the metric and prevent false positives from very short-lived spikes. The moving mean is only applicable for data whose values are `\u003e= 0`. Any values `\u003c 0` are treated as a missing datapoint, and are ignored. While `DELTA` metrics are accepted by this alignment, special care should be taken that the values for the metric will always be positive. The output is a `GAUGE` metric with `value_type` `DOUBLE`."
+         ]
+        }
+       },
+       "type": "object"
+      },
+      "TimeInterval": {
+       "description": "Describes a time interval: * Reads: A half-open time interval. It includes the end time but excludes the start time: `(startTime, endTime]`. The start time must be specified, must be earlier than the end time, and should be no older than the data retention period for the metric. * Writes: A closed time interval. It extends from the start time to the end time, and includes both: `[startTime, endTime]`. Valid time intervals depend on the [`MetricKind`](https://cloud.google.com/monitoring/api/ref_v3/rest/v3/projects.metricDescriptors#MetricKind) of the metric value. The end time must not be earlier than the start time, and the end time must not be more than 25 hours in the past or more than five minutes in the future. * For `GAUGE` metrics, the `startTime` value is technically optional; if no value is specified, the start time defaults to the value of the end time, and the interval represents a single point in time. If both start and end times are specified, they must be identical. Such an interval is valid only for `GAUGE` metrics, which are point-in-time measurements. The end time of a new interval must be at least a millisecond after the end time of the previous interval. * For `DELTA` metrics, the start time and end time must specify a non-zero interval, with subsequent points specifying contiguous and non-overlapping intervals. For `DELTA` metrics, the start time of the next interval must be at least a millisecond after the end time of the previous interval. * For `CUMULATIVE` metrics, the start time and end time must specify a non-zero interval, with subsequent points specifying the same start time and increasing end times, until an event resets the cumulative value to zero and sets a new start time for the following points. The new start time must be at least a millisecond after the end time of the previous interval. * The start time of a new interval must be at least a millisecond after the end time of the previous interval because intervals are closed. If the start time of a new interval is the same as the end time of the previous interval, then data written at the new start time could overwrite data written at the previous end time.",
+       "properties": {
+        "endTime": {
+         "description": "Required. The end of the time interval.",
+         "format": "date-time",
+         "type": "string"
+        },
+        "startTime": {
+         "description": "Optional. The beginning of the time interval. The default value for the start time is the end time. The start time must not be later than the end time.",
+         "format": "date-time",
+         "type": "string"
+        }
+       },
+       "type": "object"
+      }
+     },
+     "description": "The `ListTimeSeries` request.",
+     "properties": {
+      "aggregation": {
+       "$ref": "#/$defs/Aggregation",
+       "description": "Specifies the alignment of data points in individual time series as well as how to combine the retrieved time series across specified labels. By default (if no `aggregation` is explicitly specified), the raw time series data is returned."
+      },
+      "filter": {
+       "description": "Required. A [monitoring filter](https://cloud.google.com/monitoring/api/v3/filters) that specifies which time series should be returned. The filter must specify a single metric type, and can additionally specify metric labels and other information. For example: metric.type = \"compute.googleapis.com/instance/cpu/usage_time\" AND metric.labels.instance_name = \"my-instance-name\"",
+       "type": "string"
+      },
+      "interval": {
+       "$ref": "#/$defs/TimeInterval",
+       "description": "Required. The time interval for which results should be returned. Only time series that contain data points in the specified interval are included in the response."
+      },
+      "name": {
+       "description": "Required. The [project](https://cloud.google.com/monitoring/api/v3#project_name), organization or folder on which to execute the request. The format is: projects/[PROJECT_ID_OR_NUMBER] organizations/[ORGANIZATION_ID] folders/[FOLDER_ID]",
+       "type": "string"
+      },
+      "orderBy": {
+       "description": "Unsupported: must be left blank. The points in each time series are currently returned in reverse time order (most recent to oldest).",
+       "type": "string"
+      },
+      "pageSize": {
+       "description": "A positive number that is the maximum number of results to return. If `page_size` is empty or more than 100,000 results, the effective `page_size` is 100,000 results. If `view` is set to `FULL`, this is the maximum number of `Points` returned. If `view` is set to `HEADERS`, this is the maximum number of `TimeSeries` returned.",
+       "format": "int32",
+       "type": "integer"
+      },
+      "pageToken": {
+       "description": "If this field is not empty then it must contain the `nextPageToken` value returned by a previous call to this method. Using this field causes the method to return additional results from the previous method call.",
+       "type": "string"
+      },
+      "secondaryAggregation": {
+       "$ref": "#/$defs/Aggregation",
+       "description": "Apply a second aggregation after `aggregation` is applied. May only be specified if `aggregation` is specified."
+      },
+      "view": {
+       "description": "Required. Specifies which information is returned about the time series.",
+       "enum": [
+        "FULL",
+        "HEADERS"
+       ],
+       "type": "string",
+       "x-google-enum-descriptions": [
+        "Returns the identity of the metric(s), the time series, and the time series data.",
+        "Returns the identity of the metric and the time series resource, but not the time series data."
+       ]
+      }
+     },
+     "required": [
+      "name",
+      "filter",
+      "interval",
+      "view"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "query_range",
+    "description": "Evaluate a PromQL query in a range of time",
+    "inputSchema": {
+     "description": "QueryRangeRequest holds all parameters of the Prometheus upstream range query API plus GCM specific parameters.",
+     "properties": {
+      "end": {
+       "description": "The end time to evaluate the query for. Either floating point UNIX seconds or RFC3339 formatted timestamp.",
+       "type": "string"
+      },
+      "location": {
+       "description": "Location of the resource information. Has to be \"global\" now.",
+       "type": "string"
+      },
+      "name": {
+       "description": "Required. The project on which to execute the request. Data associcated with the project's workspace stored under the The format is: projects/[PROJECT_ID_OR_NUMBER]. Open source API but used as a request path prefix to distinguish different virtual Prometheus instances of Google Prometheus Engine.",
+       "type": "string"
+      },
+      "query": {
+       "description": "A PromQL query string. Query language documentation: https://prometheus.io/docs/prometheus/latest/querying/basics/.",
+       "type": "string"
+      },
+      "start": {
+       "description": "The start time to evaluate the query for. Either floating point UNIX seconds or RFC3339 formatted timestamp.",
+       "type": "string"
+      },
+      "step": {
+       "description": "The resolution of query result. Either a Prometheus duration string (https://prometheus.io/docs/prometheus/latest/querying/basics/#time-durations) or floating point seconds. This non-standard encoding must be used for compatibility with the open source API. Clients may still implement timeouts at the connection level while ignoring this field.",
+       "type": "string"
+      },
+      "timeout": {
+       "description": "An upper bound timeout for the query. Either a Prometheus duration string (https://prometheus.io/docs/prometheus/latest/querying/basics/#time-durations) or floating point seconds. This non-standard encoding must be used for compatibility with the open source API. Clients may still implement timeouts at the connection level while ignoring this field.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "name"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   }
+  ],
+  "pubsub": [
+   {
+    "name": "create_snapshot",
+    "description": "Create a new Cloud Pub/Sub snapshot from a given subscription.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "title": "Create a Pub/Sub snapshot",
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": true
+    }
+   },
+   {
+    "name": "create_subscription",
+    "description": "Create a new Cloud Pub/Sub subscription to a given topic. **Important Notes** * A subscription is a named resource…",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "title": "Create a Pub/Sub subscription",
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": true
+    }
+   },
+   {
+    "name": "create_topic",
+    "description": "Create a new Cloud Pub/Sub topic. **Important Notes** * A topic is a named resource that represents a feed of messages.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "title": "Create a Pub/Sub topic",
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": true
+    }
+   },
+   {
+    "name": "delete_snapshot",
+    "description": "Delete an existing Cloud Pub/Sub snapshot. **Important Notes** * A snapshot is a named resource that captures the…",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "title": "Delete a Pub/Sub snapshot",
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": true,
+     "openWorldHint": true
+    }
+   },
+   {
+    "name": "delete_subscription",
+    "description": "Delete an existing Cloud Pub/Sub subscription. **Important Notes** * A subscription is a named resource that…",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "title": "Delete a Pub/Sub subscription",
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": true,
+     "openWorldHint": true
+    }
+   },
+   {
+    "name": "delete_topic",
+    "description": "Delete an existing Cloud Pub/Sub topic. **Important Notes** * A topic is a named resource that represents a feed of…",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "title": "Delete a Pub/Sub topic",
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": true,
+     "openWorldHint": true
+    }
+   },
+   {
+    "name": "get_subscription",
+    "description": "Get the configuration of a Cloud Pub/Sub subscription.\n\n**Important Notes**\n\n*   A subscription is a named resource that represents a stream of messages from a single,\n    specific topic, to be delivered to the subscribing application.\n",
+    "inputSchema": {
+     "description": "Request for the GetSubscription method.",
+     "properties": {
+      "projectId": {
+       "description": "Required. The project ID.",
+       "type": "string"
+      },
+      "subscriptionId": {
+       "description": "Required. The ID of the subscription.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "projectId",
+      "subscriptionId"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "title": "Get subscription configuration",
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": true
+    }
+   },
+   {
+    "name": "list_subscriptions",
+    "description": "List all Cloud Pub/Sub subscriptions in a given project.\n\n**Important Notes**\n\n*   A subscription is a named resource that represents a stream of messages from a single,\n    specific topic, to be delivered to the subscribing application.\n",
+    "inputSchema": {
+     "description": "Request for the `ListSubscriptions` method.",
+     "properties": {
+      "pageSize": {
+       "description": "Optional. Maximum number of subscriptions to return.",
+       "format": "int32",
+       "type": "integer"
+      },
+      "pageToken": {
+       "description": "Optional. The value returned by the last `ListSubscriptionsResponse`; indicates that this is a continuation of a prior `ListSubscriptions` call, and that the system should return the next page of data.",
+       "type": "string"
+      },
+      "projectId": {
+       "description": "Required. The project ID.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "projectId"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "title": "List Pub/Sub subscriptions",
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": true
+    }
+   },
+   {
+    "name": "publish",
+    "description": "Publish a series of one or more messages to an existing topic. **Usage** 1.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "title": "Publish messages to a Pub/Sub topic",
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": true
+    }
+   },
+   {
+    "name": "update_subscription",
+    "description": "Update an existing Cloud Pub/Sub subscription. **Important Notes** * A subscription is a named resource that…",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "title": "Update a Pub/Sub subscription",
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": true,
+     "openWorldHint": true
+    }
+   },
+   {
+    "name": "update_topic",
+    "description": "Update an existing Cloud Pub/Sub topic. **Important Notes** * A topic is a named resource that represents a feed of…",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "title": "Update a Pub/Sub topic",
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": true,
+     "openWorldHint": true
+    }
+   }
+  ],
+  "recommender": [
+   {
+    "name": "list_recommendations",
+    "description": "Lists recommendations for a given cloud resource.",
+    "inputSchema": {
+     "description": "Request for the `ListRecommendations` method.",
+     "properties": {
+      "filter": {
+       "description": "Filter expression to restrict the recommendations returned. Supported filter fields: * `state_info.state` * `recommenderSubtype` * `priority` * `targetResources` Examples: * `stateInfo.state = ACTIVE OR stateInfo.state = DISMISSED` * `recommenderSubtype = REMOVE_ROLE OR recommenderSubtype = REPLACE_ROLE` * `priority = P1 OR priority = P2` * `targetResources : //compute.googleapis.com/projects/1234/zones/us-central1-a/instances/instance-1` * `stateInfo.state = ACTIVE AND (priority = P1 OR priority = P2)` The max allowed filter length is 500 characters. (These expressions are based on the filter language described at https://google.aip.dev/160)",
+       "type": "string"
+      },
+      "pageSize": {
+       "description": "Optional. The maximum number of results to return from this request. Non-positive values are ignored. If not specified, the server will determine the number of results to return.",
+       "format": "int32",
+       "type": "integer"
+      },
+      "pageToken": {
+       "description": "Optional. If present, retrieves the next batch of results from the preceding call to this method. `page_token` must be the value of `next_page_token` from the previous response. The values of other method parameters must be identical to those in the previous call.",
+       "type": "string"
+      },
+      "parent": {
+       "description": "Required. The container resource on which to execute the request. Acceptable formats: * `projects/[PROJECT_NUMBER]/locations/[LOCATION]/recommenders/[RECOMMENDER_ID]` * `projects/[PROJECT_ID]/locations/[LOCATION]/recommenders/[RECOMMENDER_ID]` * `billingAccounts/[BILLING_ACCOUNT_ID]/locations/[LOCATION]/recommenders/[RECOMMENDER_ID]` * `folders/[FOLDER_ID]/locations/[LOCATION]/recommenders/[RECOMMENDER_ID]` * `organizations/[ORGANIZATION_ID]/locations/[LOCATION]/recommenders/[RECOMMENDER_ID]` LOCATION here refers to GCP Locations: https://cloud.google.com/about/locations/ RECOMMENDER_ID refers to supported recommenders: https://cloud.google.com/recommender/docs/recommenders.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "parent"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "title": "List Recommendations",
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "mark_insight_accepted",
+    "description": "Marks an ACTIVE insight as ACCEPTED indicating that an action was taken based on the insight.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "title": "Mark Insight Accepted",
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": true,
+     "openWorldHint": true
+    }
+   },
+   {
+    "name": "mark_recommendation_claimed",
+    "description": "Marks a recommendation as CLAIMED to signal that work to apply it has started.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "title": "Mark Recommendation Claimed",
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": true,
+     "openWorldHint": true
+    }
+   },
+   {
+    "name": "mark_recommendation_dismissed",
+    "description": "Marks an ACTIVE recommendation as DISMISSED so it is no longer recommended.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "title": "Mark Recommendation Dismissed",
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": true,
+     "openWorldHint": true
+    }
+   },
+   {
+    "name": "mark_recommendation_failed",
+    "description": "Marks a recommendation as FAILED if applying the recommended changes failed.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "title": "Mark Recommendation Failed",
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": true,
+     "openWorldHint": true
+    }
+   },
+   {
+    "name": "mark_recommendation_succeeded",
+    "description": "Marks a recommendation as SUCCEEDED after the recommendation has been successfully applied.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "title": "Mark Recommendation Succeeded",
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": true,
+     "openWorldHint": true
+    }
+   }
+  ],
+  "redis": [
+   {
+    "name": "backup_cluster",
+    "description": "Back up a cluster in Memorystore for Redis Cluster.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "create_cluster",
+    "description": "Create a cluster in Memorystore for Redis Cluster.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "create_instance",
+    "description": "Create a Memorystore for Redis instance.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "delete_backup",
+    "description": "Delete a Memorystore for Redis Cluster backup.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "delete_cluster",
+    "description": "Delete a cluster in Memorystore for Redis Cluster.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "delete_instance",
+    "description": "Delete a single Memorystore for Redis instance.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "export_backup",
+    "description": "Export a Memorystore for Redis Cluster backup.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "export_instance",
+    "description": "Export Redis instance data into a Redis Database (RDB) format file in Cloud Storage.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "failover_instance",
+    "description": "Initiate a failover of the primary node to the current replica node for a Memorystore for Redis instance that has…",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "get_instance",
+    "description": "Get detailed information about a Memorystore for Redis instance.",
+    "inputSchema": {
+     "description": "Request for GetInstance.",
+     "properties": {
+      "name": {
+       "description": "Required. Redis instance resource name using the form: `projects/{project_id}/locations/{location_id}/instances/{instance_id}` where `location_id` refers to a GCP region.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "name"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "get_instance_auth_string",
+    "description": "Get the AUTH string for a Memorystore for Redis instance.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "import_instance",
+    "description": "Import a Redis Database (RDB) snapshot file from Cloud Storage into a Memorystore for Redis instance.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "list_instances",
+    "description": "List all Memorystore for Redis instances.",
+    "inputSchema": {
+     "description": "Request for ListInstances.",
+     "properties": {
+      "pageSize": {
+       "description": "The maximum number of items to return. If not specified, a default value of 1000 will be used by the service. Regardless of the page_size value, the response may include a partial list and a caller should only rely on response's `next_page_token` to determine if there are more instances left to be queried.",
+       "format": "int32",
+       "type": "integer"
+      },
+      "pageToken": {
+       "description": "The `next_page_token` value returned from a previous ListInstances request, if any.",
+       "type": "string"
+      },
+      "parent": {
+       "description": "Required. The resource name of the instance location using the form: `projects/{project_id}/locations/{location_id}` where `location_id` refers to a GCP region.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "parent"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "reschedule_cluster_maintenance",
+    "description": "Reschedule maintenance for a cluster in Memorystore for Redis Cluster.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "reschedule_maintenance",
+    "description": "Reschedule maintenance for a Memorystore for Redis instance.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "update_cluster",
+    "description": "Update a cluster in Memorystore for Redis Cluster.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "update_instance",
+    "description": "Update a Memorystore for Redis instance.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "upgrade_instance",
+    "description": "Upgrade the version for a Memorystore for Redis instance.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   }
+  ],
+  "sqladmin": [
+   {
+    "name": "clone_instance",
+    "description": "Create a Cloud SQL instance as a clone of a source instance. * This tool returns a long-running operation.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "create_backup",
+    "description": "Takes a backup on a Cloud SQL instance. Always populate the project and instance fields on the request.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "create_instance",
+    "description": "Initiates the creation of a Cloud SQL instance. * The tool returns a long-running operation.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "create_user",
+    "description": "Create a database user for a Cloud SQL instance. * This tool returns a long-running operation.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "execute_sql",
+    "description": "Execute any valid SQL statement, including data definition language (DDL), data control language (DCL), data query…",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "execute_sql_readonly",
+    "description": "Execute any valid read only SQL statement on a Cloud SQL instance.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "idempotentHint": true,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "get_instance",
+    "description": "Get the details of a Cloud SQL instance.",
+    "inputSchema": {
+     "description": "Instance get request.",
+     "properties": {
+      "instance": {
+       "description": "Required. Database instance ID. This does not include the project ID.",
+       "type": "string"
+      },
+      "location": {
+       "description": "Optional. Region of the Cloud SQL instance.",
+       "type": "string"
+      },
+      "project": {
+       "description": "Required. Project ID of the project that contains the instance.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "instance",
+      "project"
+     ],
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "import_data",
+    "description": "Import data into a Cloud SQL instance. If the file doesn't start with `gs://`, then the assumption is that the file…",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "list_instances",
+    "description": "List all Cloud SQL instances in the project.",
+    "inputSchema": {
+     "description": "Instance list request.",
+     "properties": {
+      "filter": {
+       "description": "A filter expression that filters resources listed in the response. The expression is in the form of field:value. For example, 'instanceType:CLOUD_SQL_INSTANCE'. Fields can be nested as needed as per their JSON representation, such as 'settings.userLabels.auto_start:true'. Multiple filter queries are space-separated. For example. 'state:RUNNABLE instanceType:CLOUD_SQL_INSTANCE'. By default, each expression is an AND expression. However, you can include AND and OR expressions explicitly.",
+       "type": "string"
+      },
+      "location": {
+       "description": "Optional. Region of the Cloud SQL instance.",
+       "type": "string"
+      },
+      "maxResults": {
+       "description": "The maximum number of instances to return. The service may return fewer than this value. If unspecified, at most 500 instances are returned. The maximum value is 1000; values above 1000 are coerced to 1000.",
+       "format": "int64",
+       "maximum": 4294967295,
+       "minimum": 0,
+       "type": "integer"
+      },
+      "pageToken": {
+       "description": "A previously-returned page token representing part of the larger set of results to view.",
+       "type": "string"
+      },
+      "project": {
+       "description": "Project ID of the project for which to list Cloud SQL instances.",
+       "type": "string"
+      }
+     },
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": true,
+     "destructiveHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "postgres_upgrade_precheck",
+    "description": "Checks if a Cloud SQL for PostgreSQL instance is ready for a major version upgrade to the specified target version.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "restore_backup",
+    "description": "Restores a backup to a Cloud SQL instance. The target_instance and target_project must be provided and populated in…",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "update_instance",
+    "description": "Partially updates the configuration settings of a Cloud SQL instance. * This tool returns a long-running operation.",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": true,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   },
+   {
+    "name": "update_user",
+    "description": "Update a database user for a Cloud SQL instance. A common use case for the `update_user` is to grant a user the…",
+    "inputSchema": {
+     "type": "object"
+    },
+    "annotations": {
+     "readOnlyHint": false,
+     "destructiveHint": false,
+     "idempotentHint": false,
+     "openWorldHint": false
+    }
+   }
+  ]
+ }
+}

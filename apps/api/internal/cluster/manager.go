@@ -348,6 +348,24 @@ func (m *Manager) DisplayNameForCluster(ctx context.Context, clusterID string) s
 	return st.GetDisplayName(ctx, AgentProxyContextName(clusterID))
 }
 
+// ClusterDisplayName resolves a context's human-friendly display name (e.g.
+// "kind-kb-test3" instead of the raw "agent:<uid>" context). Falls back to
+// the contextName itself when none is set or persistence is unavailable.
+// orgID is accepted for parity with the multi-org edition, where display
+// names are per org; this edition has one.
+func (m *Manager) ClusterDisplayName(orgID, contextName string) string {
+	m.mu.RLock()
+	st := m.storage
+	m.mu.RUnlock()
+	if st == nil || contextName == "" {
+		return contextName
+	}
+	if name := st.GetDisplayName(m.storeCtx(), contextName); name != "" {
+		return name
+	}
+	return contextName
+}
+
 // AddAgentProxyCluster registers a cluster reachable only via the
 // kubebolt-agent's outbound channel. The cluster shows up in
 // ListClusters alongside kubeconfig-backed contexts under the
@@ -2181,12 +2199,18 @@ func evaluateInsights(connector *Connector, collector *metrics.Collector, engine
 		EndpointSlices:  connector.GetEndpointSlices(),
 		NetworkPolicies: connector.GetNetworkPolicies(),
 		PDBs:            connector.GetPodDisruptionBudgets(),
+		StatefulSets:    connector.GetStatefulSets(),
+		DaemonSets:      connector.GetDaemonSets(),
+		Jobs:            connector.GetJobs(),
+		CronJobs:        connector.GetCronJobs(),
+		StorageClasses:  connector.GetStorageClasses(),
 		HelmReleases:    helmReleases,
 		Certificates:    connector.listOptionalCRD("certificates", ""),
 		ArgoApps:        connector.listOptionalCRD("argocdapps", ""),
 		PodMetrics:      collector.GetAllPodMetrics(),
 		NodeMetrics:     collector.GetAllNodeMetrics(),
 	}
+	state.CiliumPolicies, state.CiliumClusterwidePolicies, state.CiliumPoliciesKnown = connector.CiliumPolicyCoverage()
 	engine.Evaluate(state)
 }
 

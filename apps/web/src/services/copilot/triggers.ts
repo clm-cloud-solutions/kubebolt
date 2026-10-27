@@ -183,6 +183,11 @@ export interface ActionStalledTriggerPayload {
     name: string
     detail: string // last-observed progress, e.g. "Scale to 4: 2/4 ready"
     timeoutSeconds: number
+    // What was still missing at the timeout, when the card knew: pods beyond
+    // the target still shutting down, and target pods not ready yet. Absent
+    // (a stall re-asked after a reload) → the prompt covers both.
+    draining?: number
+    notReady?: number
   }
 }
 
@@ -236,17 +241,44 @@ export function buildTriggerPrompt(payload: CopilotTriggerPayload): string {
     }
     case 'action_stalled': {
       const a = payload.action
-      return [
-        `I ran the action \`${a.verb}\` on ${a.namespace}/${a.name} (${a.kind}) but it did NOT converge after ${a.timeoutSeconds}s.`,
+      // A scale-down stalls on pods that will not stop, a scale-up or rollout
+      // on pods that will not start: the checks differ, so the prompt names
+      // the ones that apply. Kobi was once sent hunting for quotas and image
+      // pulls behind a scale to 0 whose pod was waiting out its grace period.
+      const known = a.draining !== undefined || a.notReady !== undefined
+      const lines = [
+        `I ran the action \`${a.verb}\` on ${a.namespace}/${a.name} (${a.kind}) and it had not converged after ${a.timeoutSeconds}s.`,
         ``,
         `Last observed progress: ${a.detail}`,
         ``,
-        `Investigate WHY it stalled. Check the workload's Events and describe the` +
-          ` Pending / not-Ready pod(s): look for a ResourceQuota or LimitRange` +
-          ` blocking the new replica, "0/N nodes available" scheduling failures,` +
-          ` image-pull errors, or FailedCreate from the controller. Name the root` +
-          ` cause and the exact next step to fix it.`,
-      ].join('\n')
+        `It may have finished since: read the workload's current state first and say whether it is still stuck.`,
+      ]
+      if (!known || (a.draining ?? 0) > 0) {
+        lines.push(
+          ``,
+          (known ? `${a.draining} pod(s) were still shutting down.` : `If pods were still shutting down:`) +
+            ` a pod goes away when its containers exit or its terminationGracePeriodSeconds` +
+            ` (30s unless set) runs out, so compare its Killing event with that period. A` +
+            ` process that ignores SIGTERM, often one running as PID 1 without a handler,` +
+            ` always waits out the whole period. Past it, look for finalizers, a long` +
+            ` preStop hook, or a node that is NotReady.`,
+        )
+      }
+      if (!known || (a.notReady ?? 0) > 0) {
+        lines.push(
+          ``,
+          (known ? `${a.notReady} pod(s) were not ready yet.` : `If new pods were not ready:`) +
+            ` check the workload's Events and describe the Pending / not-Ready pod(s):` +
+            ` a ResourceQuota or LimitRange blocking the new replica, "0/N nodes available"` +
+            ` scheduling failures, image-pull errors, FailedCreate from the controller,` +
+            ` a failing readiness probe or a crash loop.`,
+        )
+      }
+      lines.push(
+        ``,
+        `Name the root cause and the exact next step, if one is needed. Answer in the language this conversation has been in.`,
+      )
+      return lines.join('\n')
     }
     case 'warning_event': {
       const e = payload.event

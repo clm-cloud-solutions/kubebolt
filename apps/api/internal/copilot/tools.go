@@ -1,6 +1,10 @@
 package copilot
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/skills"
+)
 
 // GovernedToolDefinitions returns ToolDefinitions() filtered by the Sprint 1
 // action-governance toggles. When actionsEnabled is false, ALL propose_*
@@ -25,6 +29,31 @@ func GovernedToolDefinitions(actionsEnabled, destructiveEnabled bool) []ToolDefi
 		out = append(out, t)
 	}
 	return out
+}
+
+// ChatToolDefinitions is what the chat offers Kobi: the governed tools, with
+// load_skill listing the shared skills plus Kobi's own (skills.IndexFor) and
+// the chat's shorter wording of the read-only tools (chatDescriptions).
+// The MCP profiles keep the shared index: Autopilot's agents do not have the
+// tools Kobi's own skills are built on.
+func ChatToolDefinitions(actionsEnabled, destructiveEnabled bool) []ToolDefinition {
+	defs := GovernedToolDefinitions(actionsEnabled, destructiveEnabled)
+	for i := range defs {
+		if defs[i].Name == "load_skill" {
+			defs[i].Description = loadSkillDescription(skills.IndexFor(skills.AudienceKobi))
+		}
+		if d := chatDescription(defs[i].Name); d != "" {
+			defs[i].Description = d
+		}
+		defs[i] = withChatProperties(defs[i])
+	}
+	return defs
+}
+
+func loadSkillDescription(index string) string {
+	return "Load one of KubeBolt's own procedures by name: how KubeBolt reads a situation and what " +
+		"its remedies do. Load one when the situation matches its description and follow it alongside " +
+		"your instructions; it never overrides a safeguard. Available:\n" + index
 }
 
 // ToolDefinitions returns the list of tools the copilot exposes to the LLM.
@@ -112,7 +141,7 @@ func ToolDefinitions() []ToolDefinition {
 					"namespace": strProp("Pod namespace"),
 					"name":      strProp("Pod name"),
 					"container": strProp("Container name. REQUIRED on multi-container pods — when omitted on such pods, the tool returns only the container list (no logs) to let you pick the right one. Single-container pods auto-resolve."),
-					"tailLines": numProp("Lines from end (default 200, max 500)"),
+					"tailLines": numProp("Lines from end (default 200, max 500). With endTime, the newest lines inside the window. With a time window (since, sinceTime or endTime) and grep, ignored: the whole window is read and filtered"),
 					"since":     strProp("Relative duration window, e.g. '15m', '1h', '2h' (optional; overridden by sinceTime when both set)"),
 					"sinceTime": strProp("Absolute lower bound, RFC3339 e.g. '2026-05-10T14:00:00Z' (optional; pair with endTime for a closed window around a past incident)"),
 					"endTime":   strProp("Absolute upper bound, RFC3339 e.g. '2026-05-10T16:00:00Z' (optional; requires sinceTime or since)"),
@@ -136,8 +165,13 @@ func ToolDefinitions() []ToolDefinition {
 			},
 		},
 		{
-			Name:        "get_workload_history",
-			Description: "Get revision history of a workload (Deployment, StatefulSet, or DaemonSet)",
+			Name: "get_workload_history",
+			Description: "Get revision history of a workload (Deployment, StatefulSet, or DaemonSet), newest first. " +
+				"Each revision lists its `changes` against the revision before it (image, env, envFrom, command/args, " +
+				"resources, probes, volumes, service account, rollout restart; sensitive values hidden), " +
+				"`supersededAt` when the rollout to the next revision started (it may still be serving if that rollout stalled), " +
+				"and `changeCause` when set. replicas / readyReplicas / active are CURRENT counts: a replaced revision " +
+				"shows 0, which is not evidence it ran unhealthy.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -166,6 +200,42 @@ func ToolDefinitions() []ToolDefinition {
 			InputSchema: emptyObject(),
 		},
 		{
+			Name: "get_external_connections",
+			// Registered for every org, connectors or not: the tool list is
+			// the start of the cached prompt prefix, and what the answer is
+			// worth does not depend on a connector — naming the RDS instance
+			// behind a timeout is useful even when nobody can query it.
+			// The inFleet sentence names no follow-up tool: this description
+			// also reaches the Autopilot profiles, which have no
+			// offer_cluster_switch; the row's note is worded per consumer.
+			Description: "List the endpoints OUTSIDE the cluster that workloads actually talk to — managed databases, caches, queues, " +
+				"load balancers, cloud APIs — from observed network flows, each already classified: provider (aws, gcp, azure), " +
+				"managed service (rds, elasticache, azure-sql, cloudsql…), the resource name and region the hostname encodes, " +
+				"whether it is cluster plumbing (infrastructure: metadata service, cloud DNS, control plane — never the dependency " +
+				"to chase), the callers, and — when the org has a connector for that provider (connectorEnabled) — the connector " +
+				"tools to start with (firstTools, local names: prefix them as in your tool list). Call it when a failure may come " +
+				"from a dependency outside the cluster (timeouts or connection errors to a host that is not a Service, a managed " +
+				"database or cache, an external API), AFTER the in-cluster evidence and BEFORE any cloud connector tool: it tells " +
+				"you which resource to ask about. Pass the failing workload to narrow it; without flow data it then falls back to " +
+				"the hosts the workload's configuration names (env, ConfigMaps, args) and the ExternalName and selectorless Services " +
+				"it names in any namespace or has in its own, followed to their targets, never their credentials; an entry " +
+				"without a host says why it has none. entry is the way in: the Ingresses and LoadBalancer Services in front of the " +
+				"workload or namespace, the address users reach, classified, and on EKS the target groups its pods are in. " +
+				"sourcePresent=false means there is no flow data here — NOT that there are " +
+				"no external connections. A row with inFleet is an address a Service, Ingress or Gateway of a cluster of this " +
+				"organization exposes: the dependency is that workload, never an unattributable external address. When it names " +
+				"another cluster (sameCluster false), a failure through it is investigated there — follow the row's note; fleetSearch counts " +
+				"the clusters searched and skipped.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"namespace":     strProp("Only callers in this namespace. Needed for the configuration fallback."),
+					"workload":      strProp("Only this workload's pods, as Kind/name (Deployment/orders) or just the name"),
+					"windowMinutes": numProp("Rate window in minutes (default 15, max 60). Widen it for a dependency that is called rarely."),
+				},
+			},
+		},
+		{
 			Name:        "get_insights",
 			Description: "Get active insights (issues detected by KubeBolt) with severity and recommendations",
 			InputSchema: map[string]interface{}{
@@ -181,16 +251,21 @@ func ToolDefinitions() []ToolDefinition {
 			// Deliberately NOT propose_*: that prefix is withheld when actions
 			// are disabled, and this mutates nothing — it changes the
 			// operator's view.
-			Description: "Offer the operator a one-click switch to ANOTHER cluster, carrying the question with it so the new conversation opens already asking it. Use it when you have established something about a cluster that is not the selected one — typically from get_fleet_summary — and answering properly needs tools that only read the current cluster. Pass the question the operator actually asked, not a paraphrase. It REFUSES if the target is not connected, and tells you so: in that case say the cluster is unreachable and report what the fleet view already knows, rather than offering a switch that cannot answer.",
+			Description: "Offer the operator a one-click switch to ANOTHER cluster, carrying the question so the " +
+				"new conversation opens already asking it. Use it when what you established points at another " +
+				"cluster (get_fleet_summary, or an inFleet row of get_external_connections) and answering needs " +
+				"tools that only read the selected one; load_skill fleet-and-switch for what the question " +
+				"carries. It REFUSES when the target is not connected: then say it is unreachable and report " +
+				"what the fleet view knows.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"cluster":     strProp("Target cluster — its display name, context or id, as it appeared in the fleet summary"),
-					"question":    strProp("The question to open the new conversation with, in the operator's own words"),
-					"established": strProp("Optional: one line of what is already known from here, e.g. \"the fleet view reports 2 criticals on this cluster\". Carried so the new conversation does not start cold."),
+					"question":    strProp("The question to open the new conversation with, in the operator's own words. Following a dependency, add after them the symptom, the caller with its cluster, and the workloads there to investigate, as namespace/name"),
+					"established": strProp("What you found here: the fleet view's report or what you measured, the addresses called, the cause if known, and verbatim any config a fix may edit. So the other side neither starts cold nor redoes it."),
 					"rationale":   strProp("Optional: why the switch is needed"),
 				},
-				"required": []string{"cluster", "question"},
+				"required": []string{"cluster", "question", "established"},
 			},
 		},
 
@@ -376,7 +451,7 @@ func ToolDefinitions() []ToolDefinition {
 		},
 		{
 			Name:        "search_resources",
-			Description: "Global search across all resource types by name. Use when the user mentions a name without specifying the resource type.",
+			Description: "Global search across all resource types by name, in the selected cluster; with no match there, in your other clusters. Use when the user names a resource without its type or namespace.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -397,19 +472,16 @@ func ToolDefinitions() []ToolDefinition {
 		},
 		{
 			Name: "propose_restart_workload",
-			Description: "Propose a rollout restart for a Deployment, StatefulSet, or DaemonSet. " +
-				"This DOES NOT execute the restart — it returns a structured proposal that the UI " +
-				"renders as a confirmation card. The user must click an explicit button to actually " +
-				"trigger the restart, and execution runs under the user's RBAC role (not yours). " +
-				"Use this only when a restart is a sensible remediation (crash-loops, stale config, " +
-				"OOMKilled with transient cause). Always include a clear rationale.",
+			Description: "Propose a rollout restart of a Deployment, StatefulSet or DaemonSet (proposal only: the " +
+				"operator confirms the card). It fits a transient cause; for OOMKilled, throttling, a bad " +
+				"image or a bad env the same crash comes back.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"type":      strPropEnum("Workload type", []string{"deployments", "statefulsets", "daemonsets"}),
 					"namespace": strProp("Workload namespace"),
 					"name":      strProp("Workload name"),
-					"rationale": strProp("Why a restart is the right action here. Shown to the user in the confirmation card."),
+					"rationale": strProp("Why a restart is the right action here. Shown on the card."),
 					"risk":      riskProp(),
 				},
 				"required": []string{"type", "namespace", "name", "rationale"},
@@ -417,16 +489,10 @@ func ToolDefinitions() []ToolDefinition {
 		},
 		{
 			Name: "propose_debug_pod",
-			Description: "Propose attaching an ephemeral debug container to a running Pod (kubectl debug). " +
-				"This DOES NOT execute — it returns a structured proposal the UI renders as a confirmation " +
-				"card; the user clicks an explicit button and execution runs under their RBAC role. Use this " +
-				"during triage when the target container is distroless / lacks a shell, or you need tools " +
-				"(curl, ps, netstat) inside the pod's namespaces. The debug container shares the pod's " +
-				"network + (optionally) process namespace. It persists until the pod is recreated — note " +
-				"that in the rationale. PREFER passing a non-interactive 'command': the container runs it, " +
-				"exits, and its output lands in the container logs so you can read it back with get_pod_logs. " +
-				"Without a command the container opens an interactive shell that only a human at the Terminal " +
-				"tab can drive — you cannot, and it produces no output you can read.",
+			Description: "Propose an ephemeral debug container on a running Pod (kubectl debug; proposal only), for " +
+				"a distroless container or tools the image lacks. It stays until the pod is recreated. Pass " +
+				"a read-only `command`: its output lands in the container logs for get_pod_logs. Without " +
+				"one it opens a shell only a human at the Terminal tab can drive.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -434,8 +500,8 @@ func ToolDefinitions() []ToolDefinition {
 					"name":            strProp("Pod name"),
 					"image":           strProp("Debug container image (e.g. busybox, nicolaka/netshoot). Defaults to busybox if omitted."),
 					"targetContainer": strProp("Optional: the container whose process namespace to share (for inspecting that container's processes)."),
-					"command":         strProp("Recommended: a single non-interactive, READ-ONLY diagnostic to run (e.g. \"dig +short shop-db; nc -zv shop-db 5432; echo exit=$?\"). Runs via sh -c, exits, and leaves its output in the container logs for get_pod_logs to read back. Omit only when a human must drive the Terminal interactively. Must never be a mutation."),
-					"rationale":       strProp("Why a debug container is the right move here. Shown to the user in the confirmation card."),
+					"command":         strProp("Recommended: one read-only diagnostic, run via sh -c (e.g. \"dig +short shop-db; nc -zv shop-db 5432; echo exit=$?\"). Never a mutation."),
+					"rationale":       strProp("Why a debug container is the right move here. Shown on the card."),
 					"risk":            riskProp(),
 				},
 				"required": []string{"namespace", "name", "rationale"},
@@ -443,12 +509,8 @@ func ToolDefinitions() []ToolDefinition {
 		},
 		{
 			Name: "propose_scale_workload",
-			Description: "Propose scaling a Deployment or StatefulSet to a target replica count. " +
-				"This DOES NOT execute the scale — it returns a structured proposal that the UI " +
-				"renders as a confirmation card. The user must click an explicit button to actually " +
-				"trigger the scale, and execution runs under the user's RBAC role (not yours). " +
-				"Use this when the user asks to scale, when a workload is clearly under/over-provisioned, " +
-				"or when scaling to 0 is the right pause action. Always include a rationale.",
+			Description: "Propose scaling a Deployment or StatefulSet to a replica count, 0 to pause (proposal " +
+				"only: the operator confirms the card).",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -456,7 +518,7 @@ func ToolDefinitions() []ToolDefinition {
 					"namespace": strProp("Workload namespace"),
 					"name":      strProp("Workload name"),
 					"replicas":  numProp("Target replica count (>= 0). Use 0 to pause the workload."),
-					"rationale": strProp("Why this is the right replica count. Shown to the user in the confirmation card."),
+					"rationale": strProp("Why this is the right replica count. Shown on the card."),
 					"risk":      riskProp(),
 				},
 				"required": []string{"type", "namespace", "name", "replicas", "rationale"},
@@ -464,22 +526,16 @@ func ToolDefinitions() []ToolDefinition {
 		},
 		{
 			Name: "propose_rollback_deployment",
-			Description: "Propose rolling back a Deployment to a previous revision (equivalent to " +
-				"`kubectl rollout undo`). DOES NOT execute — returns a structured proposal that the UI " +
-				"renders as a confirmation card; the user must click Execute to actually trigger the " +
-				"rollback, and execution runs under the user's RBAC role (not yours). " +
-				"Use this when a recent deploy caused issues (crash-loops, errors after rollout, bad " +
-				"image tag) and reverting is the fastest remediation. Always call get_workload_history " +
-				"first to confirm the deployment has at least 2 revisions and to identify the right " +
-				"target. Pass toRevision when you know the specific target; omit (or pass 0) to roll " +
-				"back to the immediately previous revision (the default).",
+			Description: "Propose rolling a Deployment back to an earlier revision (kubectl rollout undo; proposal " +
+				"only). Call get_workload_history first: it needs at least 2 revisions. Omit toRevision for " +
+				"the previous one.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"namespace":  strProp("Deployment namespace"),
 					"name":       strProp("Deployment name"),
 					"toRevision": numProp("Target revision number; omit or 0 to roll back to the previous revision"),
-					"rationale":  strProp("Why a rollback is the right action here. Shown to the user in the confirmation card."),
+					"rationale":  strProp("Why a rollback is the right action here. Shown on the card."),
 					"risk":       riskProp(),
 				},
 				"required": []string{"namespace", "name", "rationale"},
@@ -487,20 +543,11 @@ func ToolDefinitions() []ToolDefinition {
 		},
 		{
 			Name: "propose_delete_resource",
-			Description: "Propose deleting a Kubernetes resource (irreversible — there is no rollback). " +
-				"DOES NOT execute — returns a structured proposal that the UI renders as a HIGH-RISK " +
-				"confirmation card requiring the user to type the resource's namespace/name to confirm. " +
-				"Execution runs under the user's Admin role (not yours). " +
-				"WHEN to use: ONLY when the user explicitly asks to delete something, OR when a resource " +
-				"is clearly orphaned/zombie (e.g. a Deployment whose ReplicaSets are all empty and the " +
-				"user has confirmed it's no longer needed). NEVER propose delete as a default remediation " +
-				"for crash-loops or errors — restart, scale, or rollback are almost always better. " +
-				"WHITELIST: only deployments, statefulsets, daemonsets, services, configmaps, secrets, " +
-				"jobs, cronjobs, pods, ingresses, hpas can be deleted via this tool. Namespaces, nodes, PVs, " +
-				"PVCs, and RBAC resources are explicitly blocked — recommend kubectl for those. " +
-				"The proposal payload includes a computed blast radius (owned pods, affected services, " +
-				"orphaned HPAs, etc.) — read it and summarize the consequences in your text response so " +
-				"the user understands what they are confirming.",
+			Description: "Propose deleting a resource, which is irreversible (proposal only: the operator types " +
+				"namespace/name to confirm). Only when the operator asks, or a resource is clearly orphaned " +
+				"and they confirmed it is not needed; never as the remedy for a crash or an error. " +
+				"Namespaces, nodes, PVs, PVCs and RBAC are refused: recommend kubectl for those. The result " +
+				"carries a blastRadius: say in your text what it will take down.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -514,7 +561,7 @@ func ToolDefinitions() []ToolDefinition {
 					"name":      strProp("Resource name"),
 					"force":     map[string]interface{}{"type": "boolean", "description": "Skip grace period (force=true). Use sparingly — sets gracePeriodSeconds=0."},
 					"orphan":    map[string]interface{}{"type": "boolean", "description": "Don't cascade-delete dependents (orphan=true)."},
-					"rationale": strProp("Why deletion is the right action AND what consequences the user is accepting. Shown to the user in the confirmation card."),
+					"rationale": strProp("Why deletion is the right action AND what consequences the user is accepting. Shown on the card."),
 					"risk":      riskProp(),
 				},
 				"required": []string{"type", "namespace", "name", "rationale"},
@@ -522,18 +569,10 @@ func ToolDefinitions() []ToolDefinition {
 		},
 		{
 			Name: "propose_set_resources",
-			Description: "Propose updating CPU/memory requests and/or limits on a Deployment, StatefulSet, or " +
-				"DaemonSet — the equivalent of `kubectl set resources`. DOES NOT execute; returns a proposal " +
-				"that the UI renders as a confirmation card. " +
-				"Use this for the resource-shape insights: OOMKilled (raise memory limit), CPU throttling " +
-				"(raise CPU limit), memory pressure (raise memory), under-request (align requests with " +
-				"steady-state usage), frequent restarts where the root cause is resource starvation. " +
-				"Restart alone is NOT a fix for OOMKilled or throttling — the same crash repeats after the " +
-				"restart. " +
-				"ALWAYS call get_resource_detail first to read the current values and the live usage " +
-				"snapshot, then propose a delta grounded in what you observed (do NOT guess values). " +
-				"Send only the dimensions you want to change; empty/absent fields are left untouched. " +
-				"This triggers a rolling update.",
+			Description: "Propose new CPU/memory requests and/or limits on a Deployment, StatefulSet or DaemonSet " +
+				"(kubectl set resources; proposal only; rolling update). Read the current values " +
+				"(get_resource_detail) and the usage (get_workload_metrics) first: the values come from " +
+				"what you observed, never a guess. Only the dimensions you send change.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -576,16 +615,10 @@ func ToolDefinitions() []ToolDefinition {
 		},
 		{
 			Name: "propose_set_image",
-			Description: "Propose updating one or more container images on a Deployment, StatefulSet, or " +
-				"DaemonSet — the equivalent of `kubectl set image`. DOES NOT execute; returns a proposal " +
-				"that the UI renders as a confirmation card. " +
-				"Use this for ImagePullBackOff / ErrImagePull when the new tag is known good (operator " +
-				"provides it OR you have strong evidence the target tag will pull). " +
-				"PREFER propose_rollback_deployment first when the PREVIOUS revision was healthy and the " +
-				"current bad tag arrived in a deploy — rollback is strictly safer (reverts the entire pod " +
-				"template, not just the image, so any other change in the same deploy reverts with it). " +
-				"Only use set_image when rollback is not applicable (no prior good revision, or operator " +
-				"asks specifically for a new tag). This triggers a rolling update.",
+			Description: "Propose new container images on a Deployment, StatefulSet or DaemonSet (kubectl set " +
+				"image; proposal only; rolling update), with a tag the operator gave or one you know pulls. " +
+				"When the previous revision ran healthy, propose_rollback_deployment instead: it reverts the " +
+				"whole template.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -612,18 +645,13 @@ func ToolDefinitions() []ToolDefinition {
 		},
 		{
 			Name: "propose_set_env",
-			Description: "Propose adding/updating/removing environment variables on a Deployment, StatefulSet, " +
-				"or DaemonSet — the equivalent of `kubectl set env`. DOES NOT execute; returns a proposal " +
-				"that the UI renders as a confirmation card. " +
-				"Use this for crash-loops whose root cause is clearly env-config (e.g. logs show `panic: " +
-				"DATABASE_URL not set`, `invalid LOG_LEVEL=foo`, `required env BLAH missing`). " +
-				"DO NOT use for credential-shaped variables — KubeBolt rejects literal `value` for env " +
-				"names matching password|secret|token|key|credential; those changes go through " +
-				"ConfigMap/Secret resources in the YAML editor. " +
-				"Each env entry has an `action`: \"set\" (add or update; provide `value`) or \"remove\" " +
-				"(drop the entry; just provide `name`). Only literal values are supported here — " +
-				"`valueFrom` (ConfigMap/Secret/fieldRef) is reserved for the YAML editor. " +
-				"This triggers a rolling update.",
+			Description: "Propose adding, changing or removing env vars on a Deployment, StatefulSet or DaemonSet " +
+				"(kubectl set env; proposal only; rolling update), for a crash whose cause is env config. " +
+				"A value must be one the operator gave or one you read from the cluster, never a placeholder " +
+				"or a guess: it would start the container against nothing and hide the failure. Without the " +
+				"real value, say which one is missing and where it would come from, and propose nothing. " +
+				"Literal values only, never credentials: names matching password|secret|token|key|credential " +
+				"are refused, and valueFrom goes through the YAML editor.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -663,15 +691,9 @@ func ToolDefinitions() []ToolDefinition {
 		},
 		{
 			Name: "propose_patch_hpa",
-			Description: "Propose updating an HPA's minReplicas and/or maxReplicas bounds. DOES NOT execute; " +
-				"returns a proposal that the UI renders as a confirmation card. " +
-				"Use this when an HPA is pinned at maxReplicas under sustained pressure (the " +
-				"hpaMaxedOutRule insight) AND the operator wants the workload to be able to scale " +
-				"higher. Almost always the fix is to RAISE maxReplicas — lowering minReplicas as a " +
-				"response to a max-pinned HPA is the wrong direction. " +
-				"Server-side cap: maxReplicas must be <= 1000. At least one of minReplicas / " +
-				"maxReplicas must be present; sending only one leaves the other untouched. " +
-				"This does NOT trigger a rolling update — it only changes scaling math.",
+			Description: "Propose new minReplicas and/or maxReplicas on an HPA (proposal only; no rolling " +
+				"update). For an HPA pinned at max under sustained pressure the fix is raising maxReplicas, " +
+				"never lowering minReplicas.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -737,6 +759,19 @@ func ToolDefinitions() []ToolDefinition {
 			},
 		},
 		{
+			Name:        "load_skill",
+			Description: loadSkillDescription(skills.Index()),
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					// No enum: every name in a schema is paid on every turn, and an
+					// unknown one is answered with the list.
+					"name": strProp("Skill name, from the list above"),
+				},
+				"required": []string{"name"},
+			},
+		},
+		{
 			Name: "get_kubebolt_docs",
 			Description: "Return product documentation about KubeBolt itself (features, navigation, admin " +
 				"pages, configuration). Use this ONLY when the user asks how to do something in the KubeBolt " +
@@ -793,11 +828,8 @@ func riskProp() map[string]interface{} {
 	return map[string]interface{}{
 		"type": "string",
 		"enum": []string{"low", "medium", "high"},
-		"description": "Risk level shown as a badge on the confirmation card. " +
-			"low = routine, fully reversible, narrow blast radius (e.g. restart of a single workload). " +
-			"medium = affects multiple pods or pauses traffic, brief impact window, judgment call. " +
-			"high = irreversible or affects critical production paths (e.g. delete, drain). " +
-			"Match this with how you describe the action in your text response — don't say 'low risk' in text and pass 'medium' here.",
+		"description": "Badge on the card: low = routine and reversible; medium = several pods or a " +
+			"traffic pause, a judgment call; high = irreversible or a critical path. Say the same level in your text.",
 	}
 }
 

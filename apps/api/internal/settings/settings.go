@@ -96,6 +96,18 @@ type Runtime struct {
 	ingestChannelValid        bool
 	ingestChannelBootSnapshot config.IngestChannelConfig
 	ingestChannelBootCaptured bool
+
+	// MCP connectors are PER-ORG: each org configures its own cloud
+	// connectors. The cache (mcp.go) holds decrypted secrets, in memory only,
+	// and expires on its own so another replica's write is seen.
+	mcp mcpCache
+	// mcpWriteMu serializes the read-modify-write of the single
+	// "mcp:connectors" blob: two admins saving AWS and GCP at the same time
+	// would otherwise each write back a blob missing the other's connector.
+	// Per process only — the org store offers no compare-and-swap, so two
+	// replicas writing the blob in the same instant can still lose one of
+	// the writes (see saveMCP).
+	mcpWriteMu sync.Mutex
 }
 
 // NewRuntime wires the Runtime against an auth.Store and the env-driven

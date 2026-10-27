@@ -1,0 +1,13 @@
+{
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Here are the available commands and their input schema for 'applens' tool.\nIf you do not find a suitable \"command\", run again with the \"learn=true\" to get a list of available commands and their parameters.\nNext, identify the command you want to execute and run again with the \"command\" and \"parameters\" arguments, respecting \"required\" parameters if present.\n\n[{\"command\":\"applens_resource_diagnose\",\"description\":\"Get diagnostic help from App Lens for Azure application and service issues to identify what\\u0027s wrong with a service. Ask questions about performance, slowness, failures, errors, application state, availability to receive expert analysis and solutions which can help when performing diagnostics and to address issues about performance and failures. Returns analysis, insights, and recommended solutions. Always use this tool before manually checking metrics or logs when users report performance or functionality issues. Only the resource name and question are required - subscription, resource group, and resource type are optional and used to narrow down results when multiple resources share the same name.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"tenant\":{\"type\":\"string\",\"description\":\"The Microsoft Entra ID tenant GUID identifier or display name.\"},\"resource-group\":{\"type\":\"string\",\"description\":\"Azure resource group name. Provide this when disambiguating between multiple resources of the same name.\"},\"question\":{\"type\":\"string\",\"description\":\"User question\"},\"resource\":{\"type\":\"string\",\"description\":\"The name of the resource to investigate or diagnose\"},\"resource-type\":{\"type\":\"string\",\"description\":\"Resource type. Provide this when disambiguating between multiple resources of the same name.\"},\"subscription\":{\"type\":\"string\",\"description\":\"Azure subscription ID or name. Provide this when disambiguating between multiple resources of the same name.\"}},\"required\":[\"question\",\"resource\"],\"additionalProperties\":false}}]"
+      }
+    ],
+    "isError": false
+  },
+  "id": 4,
+  "jsonrpc": "2.0"
+}

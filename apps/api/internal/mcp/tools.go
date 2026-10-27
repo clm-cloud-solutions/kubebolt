@@ -44,14 +44,31 @@ func NewExecutorToolProvider(exec *copilot.Executor) *ExecutorToolProvider {
 	return &ExecutorToolProvider{exec: exec, allowed: allowed, defs: defs}
 }
 
-// ListTools returns the read-only catalogue mapped to MCP Tool shape.
-func (p *ExecutorToolProvider) ListTools() []Tool {
+// ListTools returns the read-only catalogue mapped to MCP Tool shape. The
+// catalogue is the same for every org, so ctx is not consulted.
+func (p *ExecutorToolProvider) ListTools(_ context.Context) []Tool {
 	return toolsFromDefinitions(p.defs)
 }
 
+// serves reports whether name is in the provider's static allow-list.
+func (p *ExecutorToolProvider) serves(name string) bool {
+	_, ok := p.allowed[name]
+	return ok
+}
+
 // CallTool dispatches to the executor after enforcing the read-only allow-list.
+//
+// The host on this door is never served connector tools, so the call is
+// marked: get_external_connections would otherwise suggest cloud tools to
+// start with that the host cannot call.
 func (p *ExecutorToolProvider) CallTool(ctx context.Context, name string, args json.RawMessage) (CallToolResult, error) {
-	if _, ok := p.allowed[name]; !ok {
+	return p.call(copilot.WithoutConnectorTools(ctx), name, args)
+}
+
+// call is CallTool without the marking, for a ProfileToolProvider, which
+// decides by its own cloud access whether its caller has connector tools.
+func (p *ExecutorToolProvider) call(ctx context.Context, name string, args json.RawMessage) (CallToolResult, error) {
+	if !p.serves(name) {
 		// Withheld or non-existent tool. Surface as a protocol error so the
 		// host doesn't silently believe a mutation might have run.
 		return CallToolResult{}, ErrUnknownTool

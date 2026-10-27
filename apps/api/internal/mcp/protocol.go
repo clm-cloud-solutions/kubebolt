@@ -23,128 +23,75 @@
 // keeping with the rest of the codebase.
 package mcp
 
-import "encoding/json"
+import "github.com/kubebolt/kubebolt/apps/api/internal/mcp/wire"
+
+// The JSON-RPC and MCP wire types live in the leaf package wire, shared with
+// the MCP client (internal/mcpclient). The aliases below keep this package's
+// names — exported and unexported — so the server, its callers and its tests
+// read exactly as before the extraction.
 
 const (
 	// jsonRPCVersion is the only JSON-RPC version MCP uses.
-	jsonRPCVersion = "2.0"
+	jsonRPCVersion = wire.JSONRPCVersion
 
 	// ProtocolVersion is the MCP revision this server implements. When a
 	// client sends a different (but recognized) version in initialize, we
 	// echo theirs back for compatibility; otherwise we answer with this one.
-	ProtocolVersion = "2025-06-18"
+	ProtocolVersion = wire.ProtocolVersion
 )
 
 // JSON-RPC 2.0 standard error codes.
 const (
-	codeParseError     = -32700
-	codeInvalidRequest = -32600
-	codeMethodNotFound = -32601
-	codeInvalidParams  = -32602
-	codeInternalError  = -32603
+	codeParseError     = wire.CodeParseError
+	codeInvalidRequest = wire.CodeInvalidRequest
+	codeMethodNotFound = wire.CodeMethodNotFound
+	codeInvalidParams  = wire.CodeInvalidParams
+	codeInternalError  = wire.CodeInternalError
 )
 
-// request is a single inbound JSON-RPC message. A message with no id is a
-// notification (no response is sent).
-type request struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id,omitempty"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-}
+type (
+	// request is a single inbound JSON-RPC message. A message with no id is
+	// a notification (no response is sent).
+	request = wire.Request
+	// response is a single outbound JSON-RPC message. Exactly one of Result
+	// / Error is set.
+	response = wire.Response
+	rpcError = wire.Error
 
-// isNotification reports whether the message is a notification (id absent).
-func (r *request) isNotification() bool { return len(r.ID) == 0 }
+	// initializeParams is the initialize request; the server reads only its
+	// protocolVersion — behaviour doesn't depend on clientInfo or client
+	// capabilities for a read-only tool/prompt server.
+	initializeParams = wire.InitializeParams
+	// InitializeResult is returned from initialize.
+	InitializeResult   = wire.InitializeResult
+	serverCapabilities = wire.ServerCapabilities
+	// capability is the standard {listChanged} capability object. We never
+	// push list-changed notifications (the catalogue is static), so
+	// listChanged stays false, but the empty object signals the capability
+	// is supported.
+	capability = wire.Capability
+	// ServerInfo identifies this MCP server to the host.
+	ServerInfo = wire.ServerInfo
 
-// response is a single outbound JSON-RPC message. Exactly one of Result / Error
-// is set.
-type response struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id,omitempty"`
-	Result  interface{}     `json:"result,omitempty"`
-	Error   *rpcError       `json:"error,omitempty"`
-}
-
-type rpcError struct {
-	Code    int         `json:"code"`
-	Message string      `json:"message"`
-	Data    interface{} `json:"data,omitempty"`
-}
+	// Tool is the MCP representation of a callable tool.
+	Tool            = wire.Tool
+	listToolsResult = wire.ListToolsResult
+	// callToolParams is the params object of a tools/call request.
+	callToolParams = wire.CallToolParams
+	// CallToolResult is the result of a tools/call. Tool-level failures are
+	// reported via IsError=true with the error text in Content (so the host
+	// LLM can read and recover), NOT as a JSON-RPC error.
+	CallToolResult = wire.CallToolResult
+	// Content is a single content block. This server only emits text blocks.
+	Content = wire.Content
+)
 
 // nullID is the id used in error responses when the request id could not be
 // parsed (JSON-RPC requires id: null in that case).
-var nullID = json.RawMessage("null")
-
-// ----- MCP method payloads -----
-
-// initializeParams is the subset of the initialize request we read. We ignore
-// clientInfo and client capabilities — the server's behavior doesn't depend on
-// them for a read-only tool/prompt server.
-type initializeParams struct {
-	ProtocolVersion string `json:"protocolVersion"`
-}
-
-// InitializeResult is returned from initialize.
-type InitializeResult struct {
-	ProtocolVersion string             `json:"protocolVersion"`
-	Capabilities    serverCapabilities `json:"capabilities"`
-	ServerInfo      ServerInfo         `json:"serverInfo"`
-	Instructions    string             `json:"instructions,omitempty"`
-}
-
-type serverCapabilities struct {
-	Tools   *capability `json:"tools,omitempty"`
-	Prompts *capability `json:"prompts,omitempty"`
-}
-
-// capability is the standard {listChanged} capability object. We never push
-// list-changed notifications (the catalogue is static), so listChanged stays
-// false, but the empty object signals the capability is supported.
-type capability struct {
-	ListChanged bool `json:"listChanged,omitempty"`
-}
-
-// ServerInfo identifies this MCP server to the host.
-type ServerInfo struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
-}
-
-// Tool is the MCP representation of a callable tool.
-type Tool struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
-	InputSchema map[string]interface{} `json:"inputSchema"`
-}
-
-type listToolsResult struct {
-	Tools []Tool `json:"tools"`
-}
-
-// callToolParams is the params object of a tools/call request.
-type callToolParams struct {
-	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments,omitempty"`
-}
-
-// CallToolResult is the result of a tools/call. Tool-level failures are
-// reported via IsError=true with the error text in Content (so the host LLM
-// can read and recover), NOT as a JSON-RPC error.
-type CallToolResult struct {
-	Content []Content `json:"content"`
-	IsError bool      `json:"isError,omitempty"`
-}
-
-// Content is a single content block. This server only emits text blocks.
-type Content struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
-}
+var nullID = wire.NullID
 
 // textContent wraps a string in the single-text-block slice MCP expects.
-func textContent(s string) []Content {
-	return []Content{{Type: "text", Text: s}}
-}
+func textContent(s string) []Content { return wire.TextContent(s) }
 
 // ----- prompts -----
 

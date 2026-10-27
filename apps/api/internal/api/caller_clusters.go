@@ -23,9 +23,10 @@ const fleetScopeTimeout = 2 * time.Second
 // visibleClusters is the set of clusters a caller may see: the two filters
 // GET /clusters applies, in the same order (org is the hard boundary, team
 // narrows within it), with the org wall's synthetic-context rule
-// (orgClusters). Kobi's list_clusters / offer_cluster_switch read through
-// it, so neither can grow a second notion of "clusters I may see" (see
-// handleFleetSearch for what that cost once).
+// (orgClusters). The fleet search, the fleet address index and Kobi's
+// list_clusters / offer_cluster_switch all read through it, so none can grow
+// a second notion of "clusters I may see" (see handleFleetSearch for what
+// that cost once).
 func (h *handlers) visibleClusters(r *http.Request, all []cluster.ClusterInfo) []cluster.ClusterInfo {
 	return h.filterClustersByToken(r, h.scopeClustersByTeam(r, h.orgClusters(r, all)))
 }

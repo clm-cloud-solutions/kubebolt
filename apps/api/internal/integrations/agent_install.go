@@ -15,6 +15,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/fieldmanager"
 )
 
 // AgentInstallConfig is the shape the backend accepts from the
@@ -529,7 +531,7 @@ func ensureNamespace(ctx context.Context, cs kubernetes.Interface, name string) 
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Labels: managedLabels()},
 	}
-	_, err := cs.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{})
+	_, err := cs.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{FieldManager: fieldmanager.Name})
 	if err == nil || apierrors.IsAlreadyExists(err) {
 		return nil
 	}
@@ -546,7 +548,7 @@ func ensureServiceAccount(ctx context.Context, cs kubernetes.Interface, ns strin
 	}
 	existing, err := cs.CoreV1().ServiceAccounts(ns).Get(ctx, agentSAName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		_, err = cs.CoreV1().ServiceAccounts(ns).Create(ctx, sa, metav1.CreateOptions{})
+		_, err = cs.CoreV1().ServiceAccounts(ns).Create(ctx, sa, metav1.CreateOptions{FieldManager: fieldmanager.Name})
 		return err
 	}
 	if err != nil {
@@ -595,7 +597,7 @@ func ensureMetricsClusterRole(ctx context.Context, cs kubernetes.Interface) erro
 	}
 	existing, err := cs.RbacV1().ClusterRoles().Get(ctx, agentMetricsClusterRole, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		_, err = cs.RbacV1().ClusterRoles().Create(ctx, cr, metav1.CreateOptions{})
+		_, err = cs.RbacV1().ClusterRoles().Create(ctx, cr, metav1.CreateOptions{FieldManager: fieldmanager.Name})
 		return err
 	}
 	if err != nil {
@@ -605,7 +607,7 @@ func ensureMetricsClusterRole(ctx context.Context, cs kubernetes.Interface) erro
 		return &ConflictError{Kind: "ClusterRole", Name: agentMetricsClusterRole, Reason: "already exists and was not installed by KubeBolt"}
 	}
 	existing.Rules = cr.Rules
-	_, err = cs.RbacV1().ClusterRoles().Update(ctx, existing, metav1.UpdateOptions{})
+	_, err = cs.RbacV1().ClusterRoles().Update(ctx, existing, metav1.UpdateOptions{FieldManager: fieldmanager.Name})
 	return err
 }
 
@@ -617,7 +619,7 @@ func ensureMetricsClusterRoleBinding(ctx context.Context, cs kubernetes.Interfac
 	}
 	existing, err := cs.RbacV1().ClusterRoleBindings().Get(ctx, agentMetricsClusterBinding, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		_, err = cs.RbacV1().ClusterRoleBindings().Create(ctx, crb, metav1.CreateOptions{})
+		_, err = cs.RbacV1().ClusterRoleBindings().Create(ctx, crb, metav1.CreateOptions{FieldManager: fieldmanager.Name})
 		return err
 	}
 	if err != nil {
@@ -628,7 +630,7 @@ func ensureMetricsClusterRoleBinding(ctx context.Context, cs kubernetes.Interfac
 	}
 	existing.Subjects = crb.Subjects
 	existing.RoleRef = crb.RoleRef
-	_, err = cs.RbacV1().ClusterRoleBindings().Update(ctx, existing, metav1.UpdateOptions{})
+	_, err = cs.RbacV1().ClusterRoleBindings().Update(ctx, existing, metav1.UpdateOptions{FieldManager: fieldmanager.Name})
 	return err
 }
 
@@ -657,7 +659,7 @@ func ensureReaderClusterRole(ctx context.Context, cs kubernetes.Interface, grant
 	}
 	existing, err := cs.RbacV1().ClusterRoles().Get(ctx, agentReaderClusterRole, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		_, err = cs.RbacV1().ClusterRoles().Create(ctx, cr, metav1.CreateOptions{})
+		_, err = cs.RbacV1().ClusterRoles().Create(ctx, cr, metav1.CreateOptions{FieldManager: fieldmanager.Name})
 		return err
 	}
 	if err != nil {
@@ -678,7 +680,7 @@ func ensureReaderClusterRole(ctx context.Context, cs kubernetes.Interface, grant
 	}
 	existing.Rules = cr.Rules
 	existing.Labels = cr.Labels
-	_, err = cs.RbacV1().ClusterRoles().Update(ctx, existing, metav1.UpdateOptions{})
+	_, err = cs.RbacV1().ClusterRoles().Update(ctx, existing, metav1.UpdateOptions{FieldManager: fieldmanager.Name})
 	return err
 }
 
@@ -698,7 +700,7 @@ func ensureReaderClusterRoleBinding(ctx context.Context, cs kubernetes.Interface
 	}
 	existing, err := cs.RbacV1().ClusterRoleBindings().Get(ctx, agentReaderClusterBinding, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		_, err = cs.RbacV1().ClusterRoleBindings().Create(ctx, crb, metav1.CreateOptions{})
+		_, err = cs.RbacV1().ClusterRoleBindings().Create(ctx, crb, metav1.CreateOptions{FieldManager: fieldmanager.Name})
 		return err
 	}
 	if err != nil {
@@ -715,7 +717,7 @@ func ensureReaderClusterRoleBinding(ctx context.Context, cs kubernetes.Interface
 	existing.Subjects = crb.Subjects
 	existing.RoleRef = crb.RoleRef
 	existing.Labels = crb.Labels
-	_, err = cs.RbacV1().ClusterRoleBindings().Update(ctx, existing, metav1.UpdateOptions{})
+	_, err = cs.RbacV1().ClusterRoleBindings().Update(ctx, existing, metav1.UpdateOptions{FieldManager: fieldmanager.Name})
 	return err
 }
 
@@ -827,7 +829,7 @@ func ensureOperatorClusterRole(ctx context.Context, cs kubernetes.Interface, gra
 	}
 	existing, err := cs.RbacV1().ClusterRoles().Get(ctx, agentOperatorClusterRole, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		_, err = cs.RbacV1().ClusterRoles().Create(ctx, cr, metav1.CreateOptions{})
+		_, err = cs.RbacV1().ClusterRoles().Create(ctx, cr, metav1.CreateOptions{FieldManager: fieldmanager.Name})
 		return err
 	}
 	if err != nil {
@@ -851,7 +853,7 @@ func ensureOperatorClusterRole(ctx context.Context, cs kubernetes.Interface, gra
 	}
 	existing.Rules = cr.Rules
 	existing.Labels = cr.Labels
-	_, err = cs.RbacV1().ClusterRoles().Update(ctx, existing, metav1.UpdateOptions{})
+	_, err = cs.RbacV1().ClusterRoles().Update(ctx, existing, metav1.UpdateOptions{FieldManager: fieldmanager.Name})
 	return err
 }
 
@@ -873,7 +875,7 @@ func ensureOperatorClusterRoleBinding(ctx context.Context, cs kubernetes.Interfa
 	}
 	existing, err := cs.RbacV1().ClusterRoleBindings().Get(ctx, agentOperatorClusterBinding, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		_, err = cs.RbacV1().ClusterRoleBindings().Create(ctx, crb, metav1.CreateOptions{})
+		_, err = cs.RbacV1().ClusterRoleBindings().Create(ctx, crb, metav1.CreateOptions{FieldManager: fieldmanager.Name})
 		return err
 	}
 	if err != nil {
@@ -894,7 +896,7 @@ func ensureOperatorClusterRoleBinding(ctx context.Context, cs kubernetes.Interfa
 	existing.Subjects = crb.Subjects
 	existing.RoleRef = crb.RoleRef
 	existing.Labels = crb.Labels
-	_, err = cs.RbacV1().ClusterRoleBindings().Update(ctx, existing, metav1.UpdateOptions{})
+	_, err = cs.RbacV1().ClusterRoleBindings().Update(ctx, existing, metav1.UpdateOptions{FieldManager: fieldmanager.Name})
 	return err
 }
 
@@ -955,7 +957,7 @@ func ensureLeaderRole(ctx context.Context, cs kubernetes.Interface, ns string) e
 	}
 	existing, err := cs.RbacV1().Roles(ns).Get(ctx, agentLeaderRole, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		_, err = cs.RbacV1().Roles(ns).Create(ctx, role, metav1.CreateOptions{})
+		_, err = cs.RbacV1().Roles(ns).Create(ctx, role, metav1.CreateOptions{FieldManager: fieldmanager.Name})
 		return err
 	}
 	if err != nil {
@@ -965,7 +967,7 @@ func ensureLeaderRole(ctx context.Context, cs kubernetes.Interface, ns string) e
 		return &ConflictError{Kind: "Role", Namespace: ns, Name: agentLeaderRole, Reason: "already exists and was not installed by KubeBolt"}
 	}
 	existing.Rules = role.Rules
-	_, err = cs.RbacV1().Roles(ns).Update(ctx, existing, metav1.UpdateOptions{})
+	_, err = cs.RbacV1().Roles(ns).Update(ctx, existing, metav1.UpdateOptions{FieldManager: fieldmanager.Name})
 	return err
 }
 
@@ -977,7 +979,7 @@ func ensureLeaderRoleBinding(ctx context.Context, cs kubernetes.Interface, ns st
 	}
 	existing, err := cs.RbacV1().RoleBindings(ns).Get(ctx, agentLeaderBinding, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		_, err = cs.RbacV1().RoleBindings(ns).Create(ctx, rb, metav1.CreateOptions{})
+		_, err = cs.RbacV1().RoleBindings(ns).Create(ctx, rb, metav1.CreateOptions{FieldManager: fieldmanager.Name})
 		return err
 	}
 	if err != nil {
@@ -988,7 +990,7 @@ func ensureLeaderRoleBinding(ctx context.Context, cs kubernetes.Interface, ns st
 	}
 	existing.Subjects = rb.Subjects
 	existing.RoleRef = rb.RoleRef
-	_, err = cs.RbacV1().RoleBindings(ns).Update(ctx, existing, metav1.UpdateOptions{})
+	_, err = cs.RbacV1().RoleBindings(ns).Update(ctx, existing, metav1.UpdateOptions{FieldManager: fieldmanager.Name})
 	return err
 }
 
@@ -996,7 +998,7 @@ func ensureDaemonSet(ctx context.Context, cs kubernetes.Interface, ns string, cf
 	ds := buildAgentDaemonSet(ns, cfg, hubbleEnabled, proxyEnabled)
 	existing, err := cs.AppsV1().DaemonSets(ns).Get(ctx, agentDSName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		_, err = cs.AppsV1().DaemonSets(ns).Create(ctx, ds, metav1.CreateOptions{})
+		_, err = cs.AppsV1().DaemonSets(ns).Create(ctx, ds, metav1.CreateOptions{FieldManager: fieldmanager.Name})
 		logAgentDSEnv("Create", ds, err)
 		return err
 	}
@@ -1009,7 +1011,7 @@ func ensureDaemonSet(ctx context.Context, cs kubernetes.Interface, ns string, cf
 	// Preserve resourceVersion so Update conflicts surface rather
 	// than being silently overwritten.
 	ds.ResourceVersion = existing.ResourceVersion
-	_, err = cs.AppsV1().DaemonSets(ns).Update(ctx, ds, metav1.UpdateOptions{})
+	_, err = cs.AppsV1().DaemonSets(ns).Update(ctx, ds, metav1.UpdateOptions{FieldManager: fieldmanager.Name})
 	logAgentDSEnv("Update", ds, err)
 	return err
 }

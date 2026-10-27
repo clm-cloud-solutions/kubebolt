@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { presentTool } from './toolPresenters'
+import { presentTool, cliOperation, externalToolSummary } from './toolPresenters'
 
 describe('presentTool — get_operational_episodes', () => {
   it('names the window so the operator sees Kobi\'s intent collapsed', () => {
@@ -123,5 +123,191 @@ describe('presentTool — fleet', () => {
     expect(p.link).toEqual({ href: '/fleet', label: 'Open Fleet' })
     // It takes no arguments, so an Input table would be an empty box.
     expect(p.inputLines).toEqual([])
+  })
+})
+
+describe('presentTool — cloud connector tools', () => {
+  it('names the AWS API call and the region in the chip', () => {
+    const p = presentTool('mcp__aws__call', {
+      service: 'rds',
+      operation: 'DescribeDBInstances',
+      region: 'us-east-1',
+      params: { DBInstanceIdentifier: 'prod-db' },
+    })
+    expect(p.summary).toBe('rds.DescribeDBInstances · us-east-1')
+    expect(p.command).toBe(
+      `aws rds describe-db-instances --region us-east-1 --cli-input-json '{"DBInstanceIdentifier":"prod-db"}'`,
+    )
+  })
+
+  it('names the connector region a call without one ran in, or says it did (P9)', () => {
+    // The gateway fills in the connector's region; the operator's CLI would
+    // default to its own and check the wrong one in silence.
+    const p = presentTool('mcp__aws__call', { service: 'cloudwatch', operation: 'GetMetricData' })
+    expect(p.summary).toBe('cloudwatch.GetMetricData')
+    expect(p.command).toBe(
+      "# Ran in the connector's region: add --region <region> if your CLI default differs.\naws cloudwatch get-metric-data",
+    )
+    const known = presentTool(
+      'mcp__aws__call',
+      { service: 'cloudwatch', operation: 'GetMetricData' },
+      { connectorRegion: (id) => (id === 'aws' ? 'eu-west-1' : undefined) },
+    )
+    expect(known.command).toBe('aws cloudwatch get-metric-data --region eu-west-1')
+    // The model's own region wins over the connector's.
+    expect(
+      presentTool('mcp__aws__call', { service: 'rds', operation: 'DescribeDBInstances', region: 'us-west-2' }, {
+        connectorRegion: () => 'eu-west-1',
+      }).command,
+    ).toBe('aws rds describe-db-instances --region us-west-2')
+  })
+
+  it('spells S3 API calls the way the AWS CLI does (P9)', () => {
+    // `aws s3` is the file commands; `aws s3 get-bucket-location` is an error.
+    expect(
+      presentTool('mcp__aws__call', { service: 's3', operation: 'GetBucketLocation', region: 'us-east-1', params: { Bucket: 'media' } })
+        .command,
+    ).toBe(`aws s3api get-bucket-location --region us-east-1 --cli-input-json '{"Bucket":"media"}'`)
+    // The chip keeps the API's own name.
+    expect(presentTool('mcp__aws__call', { service: 's3', operation: 'ListBuckets' }).summary).toBe('s3.ListBuckets')
+  })
+
+  it('offers no shell command for a value that is not a plain service or operation', () => {
+    // Model-written strings land on the operator's clipboard; a quoted-but-odd
+    // command is still something they might paste into a shell.
+    expect(presentTool('mcp__aws__call', { service: 'rds; rm -rf ~', operation: 'DescribeDBInstances' }).command).toBe('')
+    expect(presentTool('mcp__aws__call', { service: 'rds', operation: 'Describe$(id)' }).command).toBe('')
+    expect(presentTool('mcp__aws__call', { service: 'rds', operation: 'DescribeDBInstances', region: 'us-east-1 && x' }).command).toBe('')
+  })
+
+  it('quotes the parameters so a single quote cannot break out', () => {
+    const p = presentTool('mcp__aws__call', { service: 'logs', operation: 'StartQuery', region: 'us-east-1', params: { queryString: "it's" } })
+    expect(p.command).toBe(`aws logs start-query --region us-east-1 --cli-input-json '{"queryString":"it'\\''s"}'`)
+  })
+
+  it('reads the Autopilot spelling of the same tool', () => {
+    expect(presentTool('mcp__kubebolt__cloud_aws_call', { service: 'elasticache', operation: 'DescribeCacheClusters' }).summary)
+      .toBe('elasticache.DescribeCacheClusters')
+  })
+
+  it('summarises Azure router calls by command and subject', () => {
+    expect(presentTool('mcp__azure__sql', {
+      intent: 'check the server',
+      command: 'sql_server_show',
+      parameters: { server: 'prod-sql', 'resource-group': 'rg' },
+    }).summary).toBe('sql_server_show · prod-sql')
+    expect(presentTool('mcp__azure__monitor', { learn: true }).summary).toBe('listing commands')
+  })
+
+  it('summarises Azure direct tools by their top-level parameters (P10)', () => {
+    // subscription_list, group_list and group_resource_list take their
+    // arguments at the top level, not under `parameters`.
+    expect(presentTool('mcp__azure__group_resource_list', { 'resource-group': 'rg-prod' }).summary).toBe('rg-prod')
+    expect(presentTool('mcp__kubebolt__cloud_azure_group_resource_list', { 'resource-group': 'rg-prod' }).summary)
+      .toBe('rg-prod')
+    expect(presentTool('mcp__azure__subscription_list', {}).summary).toBe('')
+  })
+
+  it('names the resource of a call addressed by resource ID by its last segment (P10)', () => {
+    expect(presentTool('mcp__azure__resourcehealth', {
+      command: 'resourcehealth_availability-status_get',
+      parameters: { resourceId: '/subscriptions/s/resourceGroups/rg/providers/Microsoft.Cache/redis/r-1' },
+    }).summary).toBe('resourcehealth_availability-status_get · r-1')
+    expect(presentTool('mcp__azure__role', {
+      command: 'role_assignment_list',
+      parameters: { scope: '/subscriptions/s/resourceGroups/rg-app' },
+    }).summary).toBe('role_assignment_list · rg-app')
+  })
+
+  it('summarises Google calls by the tail of the resource path', () => {
+    expect(presentTool('mcp__gcp__sqladmin_get_instance', { project: 'p', instance: 'prod-db' }).summary).toBe('prod-db')
+    expect(presentTool('mcp__gcp__monitoring_list_timeseries', { name: 'projects/acme/locations/global' }).summary)
+      .toBe('locations/global')
+  })
+
+  it('links admins to the connector, and nobody else', () => {
+    expect(presentTool('mcp__aws__call', { service: 'rds', operation: 'DescribeDBInstances' }).link).toBeUndefined()
+    expect(presentTool('mcp__gcp__sqladmin_get_instance', {}, { canManageConnectors: true }).link).toEqual({
+      href: '/admin/ai?tab=connectors&connector=gcp',
+      label: 'Open Google Cloud connector',
+    })
+  })
+
+  it('leaves KubeBolt\'s own reads to their presenters', () => {
+    expect(presentTool('get_topology').link?.href).toBe('/map')
+  })
+})
+
+describe('presentTool — get_external_connections', () => {
+  it('scopes the chip and falls back to the default window', () => {
+    expect(presentTool('get_external_connections', { namespace: 'shop', workload: 'checkout' }).summary)
+      .toBe('shop/checkout · last 15m')
+    expect(presentTool('get_external_connections', { windowMinutes: 60 }).summary)
+      .toBe('all namespaces · last 60m')
+    expect(presentTool('get_external_connections', {}).link).toEqual({ href: '/map', label: 'Open Cluster Map' })
+  })
+
+  // The 2026-09-24 case: shop-web called 57.165.100.6, the LoadBalancer of
+  // shop-backend/orders-api in the org's other cluster. The chip names where
+  // the answer leads.
+  const answer = (rows: { destinations?: unknown[]; dependencyHosts?: unknown[] }) =>
+    JSON.stringify({ sourcePresent: true, clusterUIDKnown: true, windowMinutes: 15, destinations: [], ...rows })
+  const ordersApi = {
+    cluster: 'kubeshop-back', kind: 'Service', namespace: 'shop-backend', name: 'orders-api',
+    ports: ['80/TCP'], sameCluster: false,
+  }
+  const input = { namespace: 'shop-frontend', workload: 'Deployment/shop-web' }
+
+  it('names the workload of another cluster behind an address', () => {
+    const result = answer({ destinations: [{ ip: '57.165.100.6', kind: 'ip', confidence: 'low', inFleet: ordersApi }] })
+    expect(presentTool('get_external_connections', input, { result }).summary)
+      .toBe('shop-frontend/Deployment/shop-web · last 15m · → kubeshop-back · shop-backend/orders-api')
+  })
+
+  it('reads configured hosts too, counts the rest once, and skips a hairpin', () => {
+    const result = answer({
+      destinations: [
+        { ip: '10.0.0.9', inFleet: { ...ordersApi, cluster: 'kubeshop-front', name: 'shop-web', sameCluster: true } },
+        { ip: '57.165.100.6', inFleet: ordersApi },
+      ],
+      dependencyHosts: [
+        { source: 'env ORDERS_URL', host: '57.165.100.6', inFleet: ordersApi },
+        { source: 'env PAY_URL', host: 'pay.example.com', inFleet: { ...ordersApi, cluster: 'payments', namespace: 'pay', name: 'gw', kind: 'Gateway' } },
+      ],
+    })
+    expect(presentTool('get_external_connections', input, { result }).summary)
+      .toBe('shop-frontend/Deployment/shop-web · last 15m · → kubeshop-back · shop-backend/orders-api +1')
+  })
+
+  it('adds nothing without a match in another cluster, or without a readable answer', () => {
+    const plain = 'shop-frontend/Deployment/shop-web · last 15m'
+    const hairpinOnly = answer({ destinations: [{ ip: '10.0.0.9', inFleet: { ...ordersApi, sameCluster: true } }] })
+    for (const result of [undefined, '', answer({}), hairpinOnly, '{"error":"no cluster"}', 'not json', '[]', 'null']) {
+      expect(presentTool('get_external_connections', input, { result }).summary, String(result)).toBe(plain)
+    }
+  })
+})
+
+// P4: Autopilot's timeline shows the same chip as Kobi's card for a cloud
+// read, and nothing for KubeBolt's own tools (it has its own summary).
+describe('externalToolSummary', () => {
+  it('summarises a cloud read in the Autopilot spelling', () => {
+    expect(externalToolSummary('mcp__kubebolt__cloud_aws_call', { service: 'rds', operation: 'DescribeDBInstances', region: 'us-east-1' }))
+      .toBe('rds.DescribeDBInstances · us-east-1')
+    expect(externalToolSummary('cloud_gcp_sqladmin_get_instance', { instance: 'prod-db' })).toBe('prod-db')
+  })
+
+  it('stays out of the way for KubeBolt\'s own tools and odd inputs', () => {
+    expect(externalToolSummary('mcp__kubebolt__get_pod_logs', { namespace: 'shop' })).toBeUndefined()
+    expect(externalToolSummary('mcp__kubebolt__cloud_azure_subscription_list', null)).toBeUndefined()
+  })
+})
+
+describe('cliOperation', () => {
+  it('derives AWS CLI command names, keeping acronyms whole', () => {
+    expect(cliOperation('DescribeDBInstances')).toBe('describe-db-instances')
+    expect(cliOperation('GetMetricData')).toBe('get-metric-data')
+    expect(cliOperation('ListTagsForResource')).toBe('list-tags-for-resource')
+    expect(cliOperation('DescribeDBClusterSnapshots')).toBe('describe-db-cluster-snapshots')
   })
 })

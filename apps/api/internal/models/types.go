@@ -269,6 +269,9 @@ type ResourceList struct {
 	Items     []map[string]interface{} `json:"items"`
 	Total     int                      `json:"total"`
 	Forbidden bool                     `json:"forbidden,omitempty"`
+	// NotInstalled goes with Forbidden for an optional CRD the cluster does
+	// not have: there is nothing to list, and no permission is missing.
+	NotInstalled bool `json:"notInstalled,omitempty"`
 }
 
 // WSMessage is a WebSocket message envelope. Tenant/Cluster scope the event to

@@ -127,7 +127,9 @@ func TestEpisodeTools_RowIsShapedForAModelNotForTheDatabase(t *testing.T) {
 	}
 	for field, want := range map[string]any{
 		"rule": "crash-loop", "status": insights.EpisodeResolved,
-		"severity": "critical", "resolutionKind": insights.ResolutionAutoRecovered,
+		// auto_recovered reaches the model as what the store knows
+		// (AnnotateEpisodes): the label read as "it recovered by itself".
+		"severity": "critical", "resolutionKind": clearedNoActionRecorded,
 		"flapCount": float64(3),
 	} {
 		if row[field] != want {

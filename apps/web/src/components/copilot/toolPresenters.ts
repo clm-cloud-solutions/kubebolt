@@ -15,9 +15,16 @@
 //     key/value pairs. Catches "Kobi queried the wrong thing" (wrong
 //     namespace, wrong window, wrong grep) before its conclusions propagate.
 //
+// One exception reads the result: get_external_connections' chip names the
+// workload of another cluster its answer found behind an address (inFleet),
+// because that is where the investigation goes next and the card is where
+// the operator looks for it. Only that field is read, never shown raw.
+//
 // Adding a new tool: write a present<ToolName> function below and wire it
 // into the switch. Tools without an entry fall back to presentGeneric which
 // extracts the input into key/value pairs and skips the kubectl section.
+
+import { externalTool, connectorDisplayName, type ExternalTool } from '@/utils/toolName'
 
 export interface ToolPresentation {
   // Short string shown inline with the tool name when the card is collapsed.
@@ -37,8 +44,29 @@ export interface ToolPresentation {
   link?: { href: string; label: string }
 }
 
-export function presentTool(name: string, input?: Record<string, unknown>): ToolPresentation {
+export interface PresentOptions {
+  // The connector settings live in the admin-only AI hub; a link there would
+  // land a viewer on "access denied", so it is offered to admins only.
+  canManageConnectors?: boolean
+  // The region a connector is configured for, when the page knows it (an
+  // admin who has the connector list loaded). A call that named no region
+  // ran there, so the equivalent command names it too.
+  connectorRegion?: (connectorId: string) => string | undefined
+  // The tool's result, when it succeeded. Only get_external_connections
+  // reads it (see the header).
+  result?: string
+}
+
+export function presentTool(
+  name: string,
+  input?: Record<string, unknown>,
+  opts: PresentOptions = {},
+): ToolPresentation {
   const i = input ?? {}
+  // Cloud connector tools are named per org at runtime (mcp__aws__call …), so
+  // they cannot sit in the switch; the connector id is in the name.
+  const ext = externalTool(name)
+  if (ext) return presentExternal(ext, i, opts)
   switch (name) {
     case 'get_pod_logs':         return presentGetPodLogs(i)
     case 'get_events':           return presentGetEvents(i)
@@ -68,6 +96,7 @@ export function presentTool(name: string, input?: Record<string, unknown>): Tool
     case 'get_permissions':      return presentPermissions()
     case 'list_clusters':        return presentListClusters()
     case 'get_kubebolt_docs':    return presentDocs(i)
+    case 'get_external_connections': return presentExternalConnections(i, opts.result)
     default:                     return presentGeneric(i)
   }
 }
@@ -498,7 +527,7 @@ function presentOperationalEpisodes(i: Record<string, unknown>): ToolPresentatio
 }
 
 function presentSearch(i: Record<string, unknown>): ToolPresentation {
-  const q = str(i.query)
+  const q = str(i.q)
   const summary = q ? `"${q}"` : ''
   // KubeBolt search spans 16 resource types with name-substring matching;
   // closest kubectl is a noisy grep across `get all`, useful as a reminder
@@ -527,6 +556,196 @@ function presentDocs(i: Record<string, unknown>): ToolPresentation {
   const topic = str(i.topic)
   // KubeBolt-internal docs lookup — no CLI equivalent.
   return { summary: topic ? `topic: ${topic}` : 'KubeBolt docs', command: '', inputLines: makeInputLines(i) }
+}
+
+function presentExternalConnections(i: Record<string, unknown>, result?: string): ToolPresentation {
+  // Who talks to what outside the cluster, from Hubble flows (or, without
+  // Hubble, the hosts in env vars and ConfigMaps). The map draws the same
+  // edges, so that is where the operator checks Kobi's reading.
+  const ns = str(i.namespace)
+  const workload = str(i.workload)
+  const minutes = Number(i.windowMinutes)
+  const bits: string[] = []
+  if (ns && workload) bits.push(`${ns}/${workload}`)
+  else if (workload) bits.push(workload)
+  else bits.push(ns || 'all namespaces')
+  bits.push(`last ${Number.isFinite(minutes) && minutes > 0 ? minutes : 15}m`)
+  const targets = fleetTargets(result)
+  if (targets.length > 0) {
+    bits.push(`→ ${targets[0]}${targets.length > 1 ? ` +${targets.length - 1}` : ''}`)
+  }
+  return {
+    summary: bits.join(' · '),
+    command: '',
+    inputLines: makeInputLines(i),
+    link: { href: '/map', label: 'Open Cluster Map' },
+  }
+}
+
+// fleetTargets lists the workloads of OTHER clusters of the org that a
+// get_external_connections answer found behind its addresses (inFleet with
+// sameCluster false) as "<cluster> · <ns>/<name>", each once, in the answer's
+// order. A hairpin through this cluster's own address is not a destination
+// elsewhere. A result that is not the tool's JSON (an error, a transcript
+// trimmed by compaction) names none.
+export function fleetTargets(result?: string): string[] {
+  if (!result) return []
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(result)
+  } catch {
+    return []
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return []
+  const r = parsed as { destinations?: unknown; dependencyHosts?: unknown }
+  const rows = [r.destinations, r.dependencyHosts].flatMap((v) => (Array.isArray(v) ? v : []))
+  const out: string[] = []
+  for (const row of rows) {
+    const m: unknown = row && typeof row === 'object' ? (row as { inFleet?: unknown }).inFleet : undefined
+    if (!m || typeof m !== 'object') continue
+    const f = m as Record<string, unknown>
+    if (f.sameCluster === true) continue
+    const cluster = str(f.cluster)
+    const name = str(f.name)
+    if (!cluster || !name) continue
+    const ns = str(f.namespace)
+    const label = `${cluster} · ${ns ? `${ns}/` : ''}${name}`
+    if (!out.includes(label)) out.push(label)
+  }
+  return out
+}
+
+// ─── External (cloud connector) tools ─────────────────────────
+
+/**
+ * externalToolSummary is the chip of a cloud connector read ("rds.DescribeDBInstances
+ * · us-east-1"), for surfaces other than the chat card — Autopilot's timeline —
+ * or undefined when the tool is not one.
+ */
+export function externalToolSummary(name: string, input: unknown): string | undefined {
+  const ext = externalTool(name)
+  if (!ext) return undefined
+  const i = input && typeof input === 'object' && !Array.isArray(input) ? (input as Record<string, unknown>) : {}
+  return presentExternal(ext, i, {}).summary || undefined
+}
+
+function presentExternal(
+  ext: ExternalTool,
+  i: Record<string, unknown>,
+  opts: PresentOptions,
+): ToolPresentation {
+  const link = opts.canManageConnectors
+    ? {
+        href: `/admin/ai?tab=connectors&connector=${encodeURIComponent(ext.connectorId)}`,
+        label: `Open ${connectorDisplayName(ext.connectorId)} connector`,
+      }
+    : undefined
+  const base = { inputLines: makeInputLines(i), link }
+
+  if (ext.connectorId === 'aws' && ext.tool === 'call') {
+    return { ...presentAwsCall(i, opts.connectorRegion?.('aws')), ...base }
+  }
+  if (ext.connectorId === 'azure') return { summary: azureSummary(i), command: '', ...base }
+  if (ext.connectorId === 'gcp') return { summary: gcpSummary(i), command: '', ...base }
+  return { summary: presentGeneric(i).summary, command: '', ...base }
+}
+
+// boto3 client names that the AWS CLI spells differently. `aws s3` is the
+// high-level file commands; the API calls (ListBuckets, GetBucketLocation…)
+// live under `aws s3api`.
+const AWS_CLI_NAMESPACE: Record<string, string> = { s3: 's3api' }
+
+const AWS_REGION_RE = /^[a-z0-9-]{1,32}$/
+
+// The typed AWS read: {service, operation, params?, region?}. The chip names
+// the API call the way AWS documents it; the equivalent is the AWS CLI call an
+// operator can run under their own credentials to check the answer.
+//
+// A call without a region ran in the connector's region, not in whatever the
+// operator's CLI defaults to: the command names that region when it is known,
+// and says so when it is not, rather than check the wrong one in silence.
+function presentAwsCall(
+  i: Record<string, unknown>,
+  connectorRegion?: string,
+): Pick<ToolPresentation, 'summary' | 'command'> {
+  const service = str(i.service)
+  const operation = str(i.operation)
+  const region = str(i.region)
+  const call = service && operation ? `${service}.${operation}` : service || operation
+  const summary = [call, region].filter(Boolean).join(' · ')
+
+  // These strings come from the model and end up on the operator's clipboard
+  // for a shell: anything that is not the plain shape of a service, operation
+  // or region gets no command at all rather than a quoted-but-odd one.
+  const safe =
+    /^[a-z0-9-]{1,64}$/.test(service) &&
+    /^[A-Za-z0-9]{1,128}$/.test(operation) &&
+    (region === '' || AWS_REGION_RE.test(region))
+  if (!safe) return { summary, command: '' }
+
+  const effectiveRegion = region || (connectorRegion && AWS_REGION_RE.test(connectorRegion) ? connectorRegion : '')
+  let command = `aws ${AWS_CLI_NAMESPACE[service] ?? service} ${cliOperation(operation)}`
+  if (effectiveRegion) command += ` --region ${effectiveRegion}`
+  else command = `# Ran in the connector's region: add --region <region> if your CLI default differs.\n${command}`
+  const params = i.params
+  if (params && typeof params === 'object' && Object.keys(params as object).length > 0) {
+    // --cli-input-json takes the API's own request shape, which is exactly
+    // what the tool received — no flag-by-flag translation to get wrong.
+    command += ` --cli-input-json ${shellQuote(JSON.stringify(params))}`
+  }
+  return { summary, command }
+}
+
+// DescribeDBInstances → describe-db-instances, the way the AWS CLI derives
+// its command names (an acronym stays one word).
+export function cliOperation(operation: string): string {
+  return operation
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1-$2')
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .toLowerCase()
+}
+
+// Azure parameters that name what a call reads, most specific first. The
+// path-valued ones (a resource ID, a role scope) are cut to their last
+// segment: the part that names the thing.
+const AZURE_SUBJECT_KEYS = [
+  'server', 'name', 'cluster', 'resource', 'resourceId', 'resource-id', 'vault', 'account', 'registry',
+  'queue', 'topic', 'namespace', 'scope', 'resource-group',
+]
+const AZURE_PATH_KEYS = new Set(['resourceId', 'resource-id', 'scope'])
+
+// Azure MCP router tools take {intent, command, parameters, learn}; the
+// direct tools (subscription_list, group_resource_list) take their parameters
+// at the top level and are already named by the label. The command says what
+// was read; one identifying parameter says of what.
+function azureSummary(i: Record<string, unknown>): string {
+  if (i.learn === true) return 'listing commands'
+  return [str(i.command), azureSubject(i)].filter(Boolean).join(' · ')
+}
+
+// azureSubject is the one parameter that names what an Azure call reads.
+export function azureSubject(i: Record<string, unknown>): string {
+  const params = str(i.command)
+    ? ((i.parameters && typeof i.parameters === 'object' ? i.parameters : {}) as Record<string, unknown>)
+    : i
+  return (
+    AZURE_SUBJECT_KEYS.map((k) => {
+      const v = str(params[k])
+      return AZURE_PATH_KEYS.has(k) ? (v.split('/').filter(Boolean).pop() ?? '') : v
+    }).find(Boolean) ?? ''
+  )
+}
+
+// Google tools address resources by path (projects/p/locations/l/instances/i);
+// the tail is the part that names the thing.
+export function gcpSummary(i: Record<string, unknown>): string {
+  const names = Array.isArray(i.resourceNames) ? i.resourceNames.map(str) : []
+  const target =
+    ['instance', 'name', 'cluster', 'operation', 'parent'].map((k) => str(i[k])).find(Boolean) ||
+    names.find(Boolean) ||
+    ''
+  const tail = target.split('/').filter(Boolean).slice(-2).join('/')
+  return [tail, str(i.location)].filter(Boolean).join(' · ')
 }
 
 function presentGeneric(i: Record<string, unknown>): ToolPresentation {

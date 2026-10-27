@@ -74,6 +74,28 @@ func (h *handlers) activeTenantID(r *http.Request) string {
 	return tid
 }
 
+// activeTenantIDFor is activeTenantID for callers that hold only a context —
+// Kobi's tools and the MCP server run with the request's ctx but no
+// *http.Request. Same rule: the org ResolveTenant stamped, with the
+// DefaultTenantName sentinel mapped to "" (OSS series carry no tenant_id).
+//
+// One difference, on purpose: activeTenantID falls back to the JWT claims and
+// then to "default" when ResolveTenant did not run, and with only a ctx there
+// is nothing to fall back to. An org that is simply absent must not become
+// "no tenant filter" in a multi-tenant build — that is every org's series —
+// so it scopes to a tenant that cannot exist (the fleet path's
+// noTenantSentinel) and returns nothing instead.
+func (h *handlers) activeTenantIDFor(ctx context.Context) string {
+	tid := auth.TenantIDFromContext(ctx)
+	switch {
+	case tid == "" && auth.MultiTenantEnabled:
+		return noTenantSentinel
+	case tid == "" || tid == auth.DefaultTenantName:
+		return ""
+	}
+	return tid
+}
+
 // metricsTenantPin is the tenant_id a VM read is pinned to where the tenant is
 // the ONLY pin (the kubebolt_* admin queries, the coverage probes).
 // activeTenantID's "" means "no tenant filter": right for OSS, where nothing

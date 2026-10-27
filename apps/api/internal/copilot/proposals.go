@@ -19,6 +19,9 @@ type ActionProposal struct {
 	Rationale  string                 `json:"rationale"`  // why the LLM is proposing this
 	Risk       string                 `json:"risk"`       // "low" | "medium" | "high"
 	Reversible bool                   `json:"reversible"` // true if trivially reversible (restart) vs not (delete)
+	// Next is for the model, not the card (the UI ignores it): what to do
+	// once this result is back. Only the switch card sets it.
+	Next string `json:"next,omitempty"`
 }
 
 // ProposalTarget identifies the Kubernetes resource the proposal acts on.
