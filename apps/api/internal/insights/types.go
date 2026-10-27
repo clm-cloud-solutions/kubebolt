@@ -3,10 +3,12 @@ package insights
 import (
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	storagev1 "k8s.io/api/storage/v1"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/helm"
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
@@ -32,7 +34,22 @@ type ClusterState struct {
 	EndpointSlices  []*discoveryv1.EndpointSlice
 	NetworkPolicies []*networkingv1.NetworkPolicy
 	PDBs            []*policyv1.PodDisruptionBudget
-	HelmReleases    []helm.Release
+	// Workload templates beyond Deployments: pdb-no-match and policy-no-match
+	// tell a selector that matches no workload (a typo, a renamed or deleted
+	// workload) from one whose workload is scaled to 0 or between CronJob runs.
+	StatefulSets []*appsv1.StatefulSet
+	DaemonSets   []*appsv1.DaemonSet
+	Jobs         []*batchv1.Job
+	CronJobs     []*batchv1.CronJob
+	// StorageClasses: pvc-pending reads the class's volumeBindingMode.
+	StorageClasses []*storagev1.StorageClass
+	// Cilium's own policies, for policy-orphan: CiliumNetworkPolicies per
+	// namespace and the CiliumClusterwideNetworkPolicy count. Known is false
+	// when they could not be read — never taken as "none".
+	CiliumPolicies            map[string]int
+	CiliumClusterwidePolicies int
+	CiliumPoliciesKnown       bool
+	HelmReleases              []helm.Release
 	// Optional dynamic CRDs (Sprint 3), as generic maps from the dynamic
 	// lister — present only when the CRD is installed.
 	Certificates []map[string]interface{}

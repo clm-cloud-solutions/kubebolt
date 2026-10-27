@@ -47,6 +47,11 @@ type StoredCopilotSettings struct {
 	// Max tool-call rounds override. Applied onto the env baseline and
 	// clamped to [config.MinMaxRounds, config.MaxMaxRounds].
 	MaxRounds *int `json:"maxRounds,omitempty"`
+	// EscalationModel is the model a conversation moves to once it leaves
+	// the cluster (KUBEBOLT_AI_ESCALATION_MODEL; copilot.EscalationTrigger),
+	// on the primary's provider and key. "" turns escalation off, env
+	// included; nil keeps the env baseline.
+	EscalationModel *string `json:"escalationModel,omitempty"`
 }
 
 // StoredProviderSettings mirrors config.ProviderConfig with optional
@@ -146,6 +151,7 @@ func applyStoredCopilot(cfg *config.CopilotConfig, stored *StoredCopilotSettings
 	if stored.Fallback != nil {
 		applyStoredFallback(cfg, stored.Fallback, crypto)
 	}
+	applyStoredEscalation(cfg, stored.EscalationModel)
 	if stored.MaxTokens != nil {
 		cfg.MaxTokens = *stored.MaxTokens
 	}
@@ -230,6 +236,28 @@ func applyStoredFallback(cfg *config.CopilotConfig, stored *StoredProviderSettin
 	if cfg.Fallback.APIKey == "" && !storedHadKey {
 		cfg.Fallback = nil
 	}
+}
+
+// applyStoredEscalation applies a stored escalation model. Shared by the
+// per-org (BYOK) and platform-managed resolvers. A model of its own over an
+// env escalation keeps that one's provider, key and base URL; without one it
+// rides on the primary's (copilot.EscalationProvider fills them in).
+func applyStoredEscalation(cfg *config.CopilotConfig, model *string) {
+	if model == nil {
+		return
+	}
+	m := strings.TrimSpace(*model)
+	if m == "" {
+		cfg.Escalation = nil
+		return
+	}
+	if cfg.Escalation == nil {
+		cfg.Escalation = &config.ProviderConfig{}
+	} else {
+		e := *cfg.Escalation // the env baseline's copy is shared: never write through it
+		cfg.Escalation = &e
+	}
+	cfg.Escalation.Model = m
 }
 
 // applyStoredProvider merges a stored provider override onto a baseline.
@@ -427,6 +455,8 @@ type MaskedEffectiveCopilot struct {
 	AutoCompactThreshold float64 `json:"autoCompactThreshold,omitempty"`
 	CompactModel         string  `json:"compactModel,omitempty"`
 	CompactPreserveTurns int     `json:"compactPreserveTurns,omitempty"`
+	// EscalationModel in effect; empty when escalation is off.
+	EscalationModel string `json:"escalationModel,omitempty"`
 }
 
 type MaskedStoredCopilot struct {
@@ -457,6 +487,7 @@ type MaskedStoredOtherCopilot struct {
 	DestructiveActionsEnabled *bool    `json:"destructiveActionsEnabled,omitempty"`
 	ActionProgressTimeoutMs   *int     `json:"actionProgressTimeoutMs,omitempty"`
 	MaxRounds                 *int     `json:"maxRounds,omitempty"`
+	EscalationModel           *string  `json:"escalationModel,omitempty"`
 }
 
 // RenderMaskedCopilot builds the GET response from a stored record + env
@@ -490,6 +521,9 @@ func (r *Runtime) RenderMaskedCopilot(ctx context.Context) (MaskedCopilot, error
 		},
 		Stored:          renderStoredMask(stored),
 		SecretsReadable: secretsReadable,
+	}
+	if effective.Escalation != nil {
+		out.Effective.EscalationModel = effective.Escalation.Model
 	}
 	if effective.Fallback != nil {
 		out.Effective.HasFallback = true
@@ -536,7 +570,7 @@ func renderStoredMask(s StoredCopilotSettings) MaskedStoredCopilot {
 		s.AutoCompactThreshold != nil || s.CompactModel != nil ||
 		s.CompactPreserveTurns != nil || s.ShowToolCalls != nil ||
 		s.ActionsEnabled != nil || s.DestructiveActionsEnabled != nil ||
-		s.ActionProgressTimeoutMs != nil || s.MaxRounds != nil {
+		s.ActionProgressTimeoutMs != nil || s.MaxRounds != nil || s.EscalationModel != nil {
 		out.OtherFields = &MaskedStoredOtherCopilot{
 			MaxTokens:                 s.MaxTokens,
 			AutoCompact:               s.AutoCompact,
@@ -549,6 +583,7 @@ func renderStoredMask(s StoredCopilotSettings) MaskedStoredCopilot {
 			DestructiveActionsEnabled: s.DestructiveActionsEnabled,
 			ActionProgressTimeoutMs:   s.ActionProgressTimeoutMs,
 			MaxRounds:                 s.MaxRounds,
+			EscalationModel:           s.EscalationModel,
 		}
 	}
 	return out
@@ -735,6 +770,9 @@ func mergeCopilot(base, patch StoredCopilotSettings) StoredCopilotSettings {
 	}
 	if patch.MaxRounds != nil {
 		out.MaxRounds = patch.MaxRounds
+	}
+	if patch.EscalationModel != nil {
+		out.EscalationModel = patch.EscalationModel
 	}
 	return out
 }

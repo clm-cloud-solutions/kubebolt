@@ -1,3 +1,7 @@
+{{- $azureMCP := and .Values.mcpConnectors.enabled .Values.mcpConnectors.azure.sidecar.enabled }}
+{{- if and $azureMCP (not .Values.mcpConnectors.azure.sidecar.existingSecret) }}
+{{- fail "mcpConnectors.azure.sidecar.enabled=true requires mcpConnectors.azure.sidecar.existingSecret (keys tenant-id, client-id, client-secret)" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -29,7 +33,7 @@ spec:
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if or .Values.auth.enabled (and .Values.agentIngest.enabled .Values.agentIngest.tls.enabled) }}
+      {{- if or .Values.auth.enabled (and .Values.agentIngest.enabled .Values.agentIngest.tls.enabled) $azureMCP }}
       volumes:
         {{- if .Values.auth.enabled }}
         - name: data
@@ -61,6 +65,12 @@ spec:
                     - key: ca.crt
                       path: ca.crt
               {{- end }}
+        {{- end }}
+        {{- if $azureMCP }}
+        - name: azure-mcp-tmp
+          emptyDir: {}
+        - name: azure-mcp-no-token
+          emptyDir: {}
         {{- end }}
       {{- end }}
       containers:
@@ -180,8 +190,10 @@ spec:
             - name: KUBEBOLT_AI_BASE_URL
               value: {{ .Values.copilot.baseUrl | quote }}
             {{- end }}
+            {{- if .Values.copilot.maxTokens }}
             - name: KUBEBOLT_AI_MAX_TOKENS
               value: {{ .Values.copilot.maxTokens | quote }}
+            {{- end }}
             {{- if .Values.copilot.cacheTtl }}
             - name: KUBEBOLT_AI_CACHE_TTL
               value: {{ .Values.copilot.cacheTtl | quote }}
@@ -198,6 +210,10 @@ spec:
                 secretKeyRef:
                   name: {{ include "kubebolt.fullname" . }}-copilot
                   key: api-key
+            {{- end }}
+            {{- if (.Values.copilot.escalation).model }}
+            - name: KUBEBOLT_AI_ESCALATION_MODEL
+              value: {{ .Values.copilot.escalation.model | quote }}
             {{- end }}
             {{- if .Values.copilot.fallback.enabled }}
             - name: KUBEBOLT_AI_FALLBACK_PROVIDER
@@ -224,6 +240,15 @@ spec:
                   key: api-key
             {{- end }}
             {{- end }}
+            {{- end }}
+            # --- Cloud connectors ---
+            {{- if not .Values.mcpConnectors.enabled }}
+            - name: KUBEBOLT_MCP_CONNECTORS
+              value: "false"
+            {{- end }}
+            {{- with .Values.mcpConnectors.aws.principalArn }}
+            - name: KUBEBOLT_MCP_AWS_PRINCIPAL_ARN
+              value: {{ . | quote }}
             {{- end }}
             {{- /* ── Agent ingest (Sprint A) ── */ -}}
             {{- if .Values.agentIngest.enabled }}
@@ -296,6 +321,111 @@ spec:
               port: {{ .Values.api.port }}
             initialDelaySeconds: 5
             periodSeconds: 10
+        {{- if $azureMCP }}
+        {{- with .Values.mcpConnectors.azure.sidecar }}
+        # The Azure MCP Server for Kobi's Azure connector. It shares the pod's
+        # network, listens on loopback only (the API's default
+        # KUBEBOLT_MCP_AZMCP_URL) and has no probe: the kubelet probes the pod
+        # IP, which it does not listen on. The options are the ones the API's
+        # allowlist was reviewed with; a test in internal/mcpcatalog compares
+        # them, and the image tag, with the API's.
+        - name: azure-mcp
+          image: "{{ .image.repository }}:{{ .image.tag }}{{ with .image.digest }}@{{ . }}{{ end }}"
+          imagePullPolicy: {{ .image.pullPolicy }}
+          args:
+            - --transport
+            - http
+            - --mode
+            - namespace
+            - --read-only
+            - --disable-proxy-tools
+            - --disable-caching
+            - --dangerously-disable-http-incoming-auth
+            - --namespace
+            - acr
+            - --namespace
+            - advisor
+            - --namespace
+            - aks
+            - --namespace
+            - applens
+            - --namespace
+            - cosmos
+            - --namespace
+            - eventhubs
+            - --namespace
+            - group
+            - --namespace
+            - keyvault
+            - --namespace
+            - monitor
+            - --namespace
+            - mysql
+            - --namespace
+            - optimization
+            - --namespace
+            - postgres
+            - --namespace
+            - quota
+            - --namespace
+            - redis
+            - --namespace
+            - resourcehealth
+            - --namespace
+            - role
+            - --namespace
+            - servicebus
+            - --namespace
+            - sql
+            - --namespace
+            - storage
+            - --namespace
+            - subscription
+          env:
+            - name: ASPNETCORE_URLS
+              value: http://127.0.0.1:5001
+            # The service principal from the Secret, never another credential
+            # the chain could find.
+            - name: AZURE_TOKEN_CREDENTIALS
+              value: EnvironmentCredential
+            - name: AZURE_MCP_COLLECT_TELEMETRY
+              value: "false"
+            - name: AZURE_MCP_DANGEROUSLY_DISABLE_HTTPS_REDIRECTION
+              value: "true"
+            - name: AZURE_TENANT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .existingSecret }}
+                  key: tenant-id
+            - name: AZURE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .existingSecret }}
+                  key: client-id
+            - name: AZURE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .existingSecret }}
+                  key: client-secret
+            - name: HOME
+              value: /tmp
+          resources:
+            {{- toYaml .resources | nindent 12 }}
+          {{- with .securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: azure-mcp-tmp
+              mountPath: /tmp
+            # A mount at this path keeps the pod's ServiceAccount token out of
+            # this container: the API needs it, the Azure MCP Server never
+            # calls Kubernetes.
+            - name: azure-mcp-no-token
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+        {{- end }}
+        {{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment

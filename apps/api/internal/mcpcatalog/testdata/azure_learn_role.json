@@ -1,0 +1,13 @@
+{
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Here are the available commands and their input schema for 'role' tool.\nIf you do not find a suitable \"command\", run again with the \"learn=true\" to get a list of available commands and their parameters.\nNext, identify the command you want to execute and run again with the \"command\" and \"parameters\" arguments, respecting \"required\" parameters if present.\n\n[{\"command\":\"role_assignment_list\",\"description\":\"List role assignments. This command retrieves and displays the Azure RBAC role assignments\\nat the specified scope and at any scope nested beneath it. Assignments inherited from a parent\\nscope are not included. The scope may be a subscription, resource group, resource, or management\\ngroup; a subscription is not required when the scope is a management group. Results include role\\ndefinition IDs and principal IDs.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"scope\":{\"type\":\"string\",\"description\":\"Scope at which the role assignment applies, e.g., /subscriptions/0b1f6471-1bf0-4dda-aec3-111122223333, /subscriptions/0b1f6471-1bf0-4dda-aec3-111122223333/resourceGroups/myGroup, /subscriptions/0b1f6471-1bf0-4dda-aec3-111122223333/resourceGroups/myGroup/providers/Microsoft.Compute/virtualMachines/myVM, or /providers/Microsoft.Management/managementGroups/myManagementGroup.\"},\"tenant\":{\"type\":\"string\",\"description\":\"The Microsoft Entra ID tenant GUID identifier or display name.\"},\"subscription\":{\"type\":\"string\",\"description\":\"The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used. Must not be specified when the scope is a management group.\"}},\"required\":[\"scope\"],\"additionalProperties\":false}}]"
+      }
+    ],
+    "isError": false
+  },
+  "id": 5,
+  "jsonrpc": "2.0"
+}

@@ -15,9 +15,13 @@ import (
 
 const (
 	anthropicDefaultURL = "https://api.anthropic.com/v1/messages"
-	// Default to the latest Claude Sonnet. Users can override via
-	// KUBEBOLT_AI_MODEL with any Claude model their account has access to.
-	anthropicDefaultModel = "claude-sonnet-5"
+	// Default to Claude Haiku 5.5: on the Kobi eval cases it diagnoses
+	// inside a cluster as well as Sonnet 5.5 at about a fifteenth of the
+	// cost. Investigations that leave the cluster go deeper
+	// with an escalation model (KUBEBOLT_AI_ESCALATION_MODEL). Users can
+	// override via KUBEBOLT_AI_MODEL with any Claude model their account has
+	// access to.
+	anthropicDefaultModel = "claude-haiku-5-5"
 	anthropicAPIVersion   = "2023-06-01"
 	// extended-cache-ttl: pairs with cache_control.ttl="1h".
 	anthropicExtendedCacheBeta = "extended-cache-ttl-2025-04-11"
@@ -85,8 +89,18 @@ type anthropicCacheControl struct {
 // Six spaced questions: $0.41 today, $0.14 with the hour. The trade is real
 // and stated: ONE isolated question costs ~60% more. KUBEBOLT_AI_CACHE_TTL=5m
 // restores the old behaviour for installs whose usage is genuinely one-shot.
-func staticPrefixCache() *anthropicCacheControl {
-	return &anthropicCacheControl{Type: "ephemeral", TTL: anthropicStaticCacheTTL()}
+func staticPrefixCache(ttl string) *anthropicCacheControl {
+	return &anthropicCacheControl{Type: "ephemeral", TTL: ttl}
+}
+
+// staticPrefixTTL is the hour, unless the call asked for the short cache: the
+// escalation model answers a few questions a day, so its hour-long write is
+// paid at 2x and expires unread (ChatRequest.ShortCache).
+func staticPrefixTTL(req ChatRequest) string {
+	if req.ShortCache {
+		return ""
+	}
+	return anthropicStaticCacheTTL()
 }
 
 // conversationCache is deliberately NOT extended. The breakpoint sits on the
@@ -213,16 +227,17 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRes
 			body.Thinking = &anthropicThinking{Type: t}
 		}
 	}
+	staticTTL := staticPrefixTTL(req)
 	if req.System != "" {
 		body.System = []anthropicSystemBlock{{
 			Type:         "text",
 			Text:         req.System,
-			CacheControl: staticPrefixCache(),
+			CacheControl: staticPrefixCache(staticTTL),
 		}}
 	}
 	if n := len(body.Tools); n > 0 {
 		// Marking the last tool caches all tool definitions as a single prefix.
-		body.Tools[n-1].CacheControl = staticPrefixCache()
+		body.Tools[n-1].CacheControl = staticPrefixCache(staticTTL)
 	}
 	// Also cache the conversation prefix (E.8): a breakpoint on the last block of
 	// the last message means the next round reads the whole history from cache.
@@ -253,7 +268,7 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRes
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-api-key", req.Provider.APIKey)
 	httpReq.Header.Set("anthropic-version", anthropicAPIVersion)
-	if anthropicStaticCacheTTL() == "1h" {
+	if staticTTL == "1h" {
 		// Paired with the ttl field. The extended TTL shipped behind this beta
 		// and has since graduated on the stable param, but a recognised beta
 		// value is ignored where it is no longer needed, while a MISSING
@@ -378,6 +393,22 @@ func toAnthropicMessages(msgs []Message) []anthropicMessage {
 				Content: []anthropicContent{{Type: "text", Text: m.Content}},
 			})
 		}
+	}
+	return mergeSameRole(out)
+}
+
+// mergeSameRole joins consecutive messages of one role into one, in order. A
+// turn can end on its tool results (a switch card that ends the turn, see
+// SwitchEndsTurn), and the next question then follows them as a second user
+// message; joined, the tool_result blocks come first, as the API requires.
+func mergeSameRole(msgs []anthropicMessage) []anthropicMessage {
+	out := msgs[:0]
+	for _, m := range msgs {
+		if n := len(out); n > 0 && out[n-1].Role == m.Role {
+			out[n-1].Content = append(out[n-1].Content, m.Content...)
+			continue
+		}
+		out = append(out, m)
 	}
 	return out
 }

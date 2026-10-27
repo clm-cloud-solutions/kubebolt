@@ -11,6 +11,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 
@@ -73,6 +74,7 @@ func certExpiringRule() Rule {
 						"Certificate expired",
 						fmt.Sprintf("cert-manager Certificate %s/%s expired %d day(s) ago — TLS against it now fails.", ns, name, -days),
 						"Renewal likely failed; check the issuer and cert-manager logs. kubectl describe certificate "+name+" -n "+ns,
+						certEvidence(c, days)...,
 					))
 				case float64(days) < stateThreshold(state, "cert-expiring", 14):
 					insights = append(insights, newInsight(
@@ -81,6 +83,7 @@ func certExpiringRule() Rule {
 						"Certificate expiring soon",
 						fmt.Sprintf("cert-manager Certificate %s/%s expires in %d day(s). If auto-renewal is healthy this clears itself; if it persists, renewal is stuck.", ns, name, days),
 						"Verify cert-manager is renewing it: kubectl describe certificate "+name+" -n "+ns,
+						certEvidence(c, days)...,
 					))
 				}
 			}
@@ -121,6 +124,7 @@ func argoOutOfSyncRule() Rule {
 					fmt.Sprintf("ArgoCD Application %s/%s is %s — live state has drifted from Git or the app is unhealthy.",
 						ns, name, strings.Join(reasons, " + ")),
 					"Inspect in ArgoCD or `kubectl describe application "+name+" -n "+ns+"`; sync or roll back as appropriate.",
+					argoEvidence(a)...,
 				))
 			}
 			return insights
@@ -154,6 +158,7 @@ func helmReleaseFailedRule() Rule {
 						r.Namespace, r.Name, r.Chart, r.ChartVersion, desc),
 					"Inspect with `helm status "+r.Name+" -n "+r.Namespace+"` and `helm history`. "+
 						"Roll back to the last good revision or fix the values and upgrade.",
+					helmEvidence(r, "Last change")...,
 				))
 			}
 			return insights
@@ -185,6 +190,7 @@ func helmReleaseHookPendingRule() Rule {
 					fmt.Sprintf("Helm release %s/%s has been in %q for over 5 minutes — a lifecycle hook likely never completed, holding the release lock.",
 						r.Namespace, r.Name, r.Status),
 					"Check hook pods (`kubectl get pods -n "+r.Namespace+"`). If wedged, `helm rollback` or delete the stuck hook job.",
+					helmEvidence(r, "Pending since")...,
 				))
 			}
 			return insights
@@ -229,18 +235,27 @@ func pdbNoMatchRule() Rule {
 				if matched > 0 {
 					continue
 				}
+				// A selector that matches a workload's pod template is right:
+				// the workload is scaled to 0, between CronJob runs, or failing
+				// to create pods (zero-replicas reports that). Only a selector
+				// that matches no workload at all points at a typo.
+				if len(workloadsMatching(state, pdb.Namespace, sel)) > 0 {
+					continue
+				}
 				insights = append(insights, newInsight(
 					"warning",
 					fmt.Sprintf("PodDisruptionBudget/%s/%s", pdb.Namespace, pdb.Name),
 					"PodDisruptionBudget selector matches no pods",
 					fmt.Sprintf(
-						"PodDisruptionBudget %s/%s declares a selector but no pod in its namespace matches. "+
-							"The budget protects nothing — a drain or Evict won't be gated as intended, "+
-							"either because the selector has a typo or the target workload was renamed / deleted.",
+						"PodDisruptionBudget %s/%s matches no pod in its namespace, and no Deployment, StatefulSet, "+
+							"DaemonSet, Job or CronJob there has pods with these labels. The budget protects nothing: "+
+							"the selector has a typo, or the workload it protected was renamed or deleted "+
+							"(or is run by a controller KubeBolt does not read).",
 						pdb.Namespace, pdb.Name,
 					),
 					"Verify the PDB's spec.selector.matchLabels against the pods you expect it to protect. "+
 						"kubectl get pods -n "+pdb.Namespace+" --show-labels",
+					pdbEvidence(pdb)...,
 				))
 			}
 			return insights
@@ -306,13 +321,26 @@ func crashLoopRule() Rule {
 			var insights []models.Insight
 			for _, pod := range state.Pods {
 				for _, cs := range pod.Status.ContainerStatuses {
-					if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" && float64(cs.RestartCount) > stateThreshold(state, "crash-loop", 3) {
+					threshold := stateThreshold(state, "crash-loop", 3)
+					if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" && float64(cs.RestartCount) > threshold {
+						message := fmt.Sprintf("Container %s in pod %s/%s is crash-looping with %d restarts", cs.Name, pod.Namespace, pod.Name, cs.RestartCount)
+						suggestion := "Check container logs with 'kubectl logs' and review the container's command/args and liveness probes."
+						ev := restartEvidence(pod, &cs, threshold)
+						if kill := livenessKill(state.Events, pod, cs.Name); kill != nil {
+							message += ": the kubelet restarts it because its liveness probe fails"
+							suggestion = "The process is not crashing on its own — the kubelet kills it when the liveness probe fails. Check the probe (path, port, timings) against what the app does at startup and under load; if the app is genuinely hung, its logs before each kill say why."
+							ev = append(ev, livenessEvidence(pod, cs.Name, kill)...)
+						} else if t := cs.LastTerminationState.Terminated; t != nil && t.Reason == "OOMKilled" {
+							// Killed for memory, not crashing in its code: the
+							// command/args advice pointed the wrong way.
+							message += ": each run is OOMKilled"
+							suggestion = "It is killed for memory, not failing in its code: the oom-killed insight on this pod says whether it hit its own limit or the node ran out. Fix the memory, not the command."
+						}
 						insights = append(insights, newInsight(
 							"critical",
 							fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
 							"Pod in CrashLoopBackOff",
-							fmt.Sprintf("Container %s in pod %s/%s is crash-looping with %d restarts", cs.Name, pod.Namespace, pod.Name, cs.RestartCount),
-							"Check container logs with 'kubectl logs' and review the container's command/args and liveness probes.",
+							message, suggestion, ev...,
 						))
 					}
 				}
@@ -486,17 +514,53 @@ func livenessProbeFor(pod *corev1.Pod, name string) *corev1.Probe {
 // why the rule's title says "recently" rather than hiding the clock.
 const recentEvictionWindow = 30 * time.Minute
 
-// podFailedRecently approximates when a Failed/Evicted pod entered that state
-// (most recent status-condition transition, else creation time) and reports
-// whether that was within recentEvictionWindow.
+// podFailedRecently reports whether a Failed/Evicted pod entered that state
+// within recentEvictionWindow.
 func podFailedRecently(pod *corev1.Pod) bool {
+	at := podFailedAt(pod)
+	return !at.IsZero() && time.Since(at) < recentEvictionWindow
+}
+
+// podFailedAt approximates when a Failed/Evicted pod entered that state: its
+// most recent status-condition transition, else its creation time.
+func podFailedAt(pod *corev1.Pod) time.Time {
 	latest := pod.CreationTimestamp.Time
 	for _, c := range pod.Status.Conditions {
 		if c.LastTransitionTime.Time.After(latest) {
 			latest = c.LastTransitionTime.Time
 		}
 	}
-	return !latest.IsZero() && time.Since(latest) < recentEvictionWindow
+	return latest
+}
+
+// Titles of the evicted-pods insight. The burst clusterer reads them
+// (opcluster.go): only an eviction the node forced seeds node_pressure.
+const (
+	evictedTitle         = "Pod recently evicted"
+	evictedOwnLimitTitle = "Pod recently evicted: over its own storage limit"
+)
+
+// evictionOverOwnLimit reads the kubelet's eviction message. Its eviction
+// manager evicts for one of two reasons: the node ran low on a resource ("The
+// node was low on resource: memory. …"), or the pod went over a limit of its
+// own — "Pod ephemeral local storage usage exceeds the total limit of
+// containers 32Mi.", "Container app exceeded its local ephemeral storage limit
+// \"32Mi\".", "Usage of EmptyDir volume \"cache\" exceeds the limit \"1Gi\".".
+// The second says nothing about the node: in the 2026-10-11 lab case the
+// insight's "the node ran out of resources" sent Kobi to look for pressure on
+// a node that had none.
+func evictionOverOwnLimit(message string) bool {
+	m := strings.ToLower(message)
+	return strings.Contains(m, "exceeds the total limit of containers") ||
+		strings.Contains(m, "exceeded its local ephemeral storage limit") ||
+		(strings.Contains(m, "usage of emptydir volume") && strings.Contains(m, "exceeds the limit"))
+}
+
+// evictionByNodePressure: the kubelet evicted the pod to reclaim a resource
+// the node was short of.
+func evictionByNodePressure(message string) bool {
+	m := strings.ToLower(message)
+	return strings.Contains(m, "the node was low on resource") || strings.Contains(m, "the node had condition")
 }
 
 // 2. OOMKilled
@@ -518,12 +582,12 @@ func oomKilledRule() Rule {
 					term := cs.LastTerminationState.Terminated
 					if term != nil && term.Reason == "OOMKilled" &&
 						!containerRecovered(cs, term.FinishedAt.Time) {
+						message, suggestion, ev := oomText(pod, cs, term)
 						insights = append(insights, newInsight(
 							"critical",
 							fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
 							"Container OOMKilled",
-							fmt.Sprintf("Container %s in pod %s/%s was terminated due to OOM (exit code 137)", cs.Name, pod.Namespace, pod.Name),
-							"Increase memory limits for this container or investigate memory leaks in the application.",
+							message, suggestion, ev...,
 						))
 					}
 				}
@@ -531,6 +595,31 @@ func oomKilledRule() Rule {
 			return insights
 		},
 	}
+}
+
+// oomText reads the container's memory limit before naming a cause. The
+// kernel reports OOMKilled both when a container reaches its own limit and
+// when the node runs out of memory and picks it: without a limit only the
+// second is possible, and raising "the limit" is no answer.
+func oomText(pod *corev1.Pod, cs *corev1.ContainerStatus, term *corev1.ContainerStateTerminated) (message, suggestion string, ev []models.Evidence) {
+	at := term.FinishedAt.Time
+	ev = append(ev, models.Evidence{
+		Kind: models.EvidenceEvent, Label: "Last termination", Detail: fmt.Sprintf("OOMKilled (exit %d)", term.ExitCode),
+		Source: "pod.status.containerStatuses[].lastState.terminated", At: &at,
+	})
+	message = fmt.Sprintf("Container %s in pod %s/%s was OOMKilled (exit code %d)", cs.Name, pod.Namespace, pod.Name, term.ExitCode)
+	c := containerSpec(pod, cs.Name)
+	limit, ok := resourceLimit(c, corev1.ResourceMemory)
+	if !ok {
+		ev = append(ev, models.Evidence{Kind: models.EvidenceConfig, Label: "Memory limit", Detail: "none", Source: "pod.spec.containers[].resources.limits.memory"})
+		return message + " with no memory limit of its own: the node ran out of memory and the kernel killed it.",
+			"Check the node's memory: what else runs there, and pods whose requests are below what they use. Give this container a memory request and limit that match its usage, so the scheduler places it where it fits.",
+			ev
+	}
+	ev = append(ev, models.Evidence{Kind: models.EvidenceConfig, Label: "Memory limit", Detail: limit, Source: "pod.spec.containers[].resources.limits.memory"})
+	return message + fmt.Sprintf(" with a memory limit of %s.", limit),
+		"Most often it reached that limit: raise it to what the process needs, or find what keeps growing (a leak, a cache, a burst). If its usage was well below the limit, the node itself ran out of memory.",
+		ev
 }
 
 // sustainedMetricWindow is how long a pod's metric must stay over a rule's
@@ -589,11 +678,9 @@ func cpuThrottleRiskRule() Rule {
 				if metrics == nil {
 					continue
 				}
-				var cpuLimit int64
-				for _, c := range pod.Spec.Containers {
-					cpuLimit += c.Resources.Limits.Cpu().MilliValue()
-				}
-				if cpuLimit > 0 && float64(metrics.CPUUsage)/float64(cpuLimit) > stateThreshold(state, "cpu-throttle-risk", 0.8) {
+				cpuLimit, limited := podLimitSum(pod, corev1.ResourceCPU)
+				cpuBar := stateThreshold(state, "cpu-throttle-risk", 0.8)
+				if limited && cpuLimit > 0 && float64(metrics.CPUUsage)/float64(cpuLimit) > cpuBar {
 					over[key] = true
 					pending[key] = newInsight(
 						"warning",
@@ -601,6 +688,8 @@ func cpuThrottleRiskRule() Rule {
 						"CPU Throttle Risk",
 						fmt.Sprintf("Pod %s/%s is using %.0f%% of CPU limit (%dm/%dm)", pod.Namespace, pod.Name, float64(metrics.CPUUsage)/float64(cpuLimit)*100, metrics.CPUUsage, cpuLimit),
 						"Consider increasing CPU limits or optimizing CPU-intensive operations.",
+						usageEvidence("CPU", fmt.Sprintf("%dm", metrics.CPUUsage), fmt.Sprintf("%dm", cpuLimit),
+							float64(metrics.CPUUsage)/float64(cpuLimit)*100, cpuBar),
 					)
 				}
 			}
@@ -618,12 +707,14 @@ func cpuThrottleRiskRule() Rule {
 	}
 }
 
-// 4. Memory pressure (usage > 85% of limit, sustained)
+// 4. Memory near the pod's own limit (usage > 85% of limit, sustained). The
+// id keeps its old name; the title does not say "Memory Pressure", which is
+// the name of a NODE condition this rule never reads.
 func memoryPressureRule() Rule {
 	tracker := newSustainedOver()
 	return Rule{
 		ID:       "memory-pressure",
-		Name:     "Memory Pressure",
+		Name:     "Memory Near Limit",
 		Severity: "warning",
 		Evaluate: func(state *ClusterState) []models.Insight {
 			over := map[string]bool{}
@@ -634,19 +725,22 @@ func memoryPressureRule() Rule {
 				if metrics == nil {
 					continue
 				}
-				var memLimit int64
-				for _, c := range pod.Spec.Containers {
-					memLimit += c.Resources.Limits.Memory().Value()
-				}
-				if memLimit > 0 && float64(metrics.MemUsage)/float64(memLimit) > stateThreshold(state, "memory-pressure", 0.85) {
+				// The usage is the pod's, every container included: against
+				// the sum of limits it only means something when every
+				// container has one.
+				memLimit, limited := podLimitSum(pod, corev1.ResourceMemory)
+				memBar := stateThreshold(state, "memory-pressure", 0.85)
+				if limited && memLimit > 0 && float64(metrics.MemUsage)/float64(memLimit) > memBar {
 					pct := float64(metrics.MemUsage) / float64(memLimit) * 100
 					over[key] = true
 					pending[key] = newInsight(
 						"warning",
 						fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
-						"Memory Pressure",
-						fmt.Sprintf("Pod %s/%s is using %.0f%% of memory limit", pod.Namespace, pod.Name, pct),
-						"Increase memory limits or investigate memory usage patterns to avoid OOMKill.",
+						"Memory Near Limit",
+						fmt.Sprintf("Pod %s/%s is using %.0f%% of its own memory limit (%s of %s)", pod.Namespace, pod.Name, pct,
+							formatBytes(metrics.MemUsage), formatBytes(memLimit)),
+						"This is the pod's own limit, not memory pressure on the node. Raise the limit to what the process needs, or find what keeps growing, before the container is OOMKilled at 100%.",
+						usageEvidence("Memory", formatBytes(metrics.MemUsage), formatBytes(memLimit), pct, memBar),
 					)
 				}
 			}
@@ -686,24 +780,32 @@ func resourceUnderrequestRule() Rule {
 					cpuReq += c.Resources.Requests.Cpu().MilliValue()
 					memReq += c.Resources.Requests.Memory().Value()
 				}
-				if cpuReq > 0 && metrics.CPUUsage > 0 && float64(cpuReq)/float64(metrics.CPUUsage) < stateThreshold(state, "resource-underrequest", 0.4) {
+				// The bar is tunable per org: the message says the one it used
+				// (it said "40%" whatever the policy was).
+				bar := stateThreshold(state, "resource-underrequest", 0.4)
+				if cpuReq > 0 && metrics.CPUUsage > 0 && float64(cpuReq)/float64(metrics.CPUUsage) < bar {
+					share := float64(cpuReq) / float64(metrics.CPUUsage)
 					over[key+"/cpu"] = true
 					pending[key+"/cpu"] = newInsight(
 						"info",
 						fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
 						"CPU Request Too Low",
-						fmt.Sprintf("Pod %s/%s CPU request (%dm) is less than 40%% of actual usage (%dm)", pod.Namespace, pod.Name, cpuReq, metrics.CPUUsage),
+						fmt.Sprintf("Pod %s/%s CPU request (%dm) is less than %.0f%% of actual usage (%dm)", pod.Namespace, pod.Name, cpuReq, bar*100, metrics.CPUUsage),
 						"Increase CPU requests to better reflect actual usage for improved scheduling.",
+						requestEvidence("CPU", fmt.Sprintf("%dm", cpuReq), fmt.Sprintf("%dm", metrics.CPUUsage), share, bar),
 					)
 				}
-				if memReq > 0 && metrics.MemUsage > 0 && float64(memReq)/float64(metrics.MemUsage) < stateThreshold(state, "resource-underrequest", 0.4) {
+				if memReq > 0 && metrics.MemUsage > 0 && float64(memReq)/float64(metrics.MemUsage) < bar {
+					share := float64(memReq) / float64(metrics.MemUsage)
 					over[key+"/mem"] = true
 					pending[key+"/mem"] = newInsight(
 						"info",
 						fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
 						"Memory Request Too Low",
-						fmt.Sprintf("Pod %s/%s memory request is less than 40%% of actual usage", pod.Namespace, pod.Name),
+						fmt.Sprintf("Pod %s/%s memory request (%s) is less than %.0f%% of actual usage (%s)", pod.Namespace, pod.Name,
+							formatBytes(memReq), bar*100, formatBytes(metrics.MemUsage)),
 						"Increase memory requests to better reflect actual usage for improved scheduling.",
+						requestEvidence("Memory", formatBytes(memReq), formatBytes(metrics.MemUsage), share, bar),
 					)
 				}
 			}
@@ -741,6 +843,7 @@ func zeroReplicasRule() Rule {
 						"Zero Available Replicas",
 						fmt.Sprintf("Deployment %s/%s has 0 available replicas (desired: %d)", d.Namespace, d.Name, *d.Spec.Replicas),
 						"Check pod events and logs. The deployment may have failing containers or scheduling issues.",
+						zeroReplicasEvidence(d)...,
 					))
 				}
 			}
@@ -749,17 +852,19 @@ func zeroReplicasRule() Rule {
 	}
 }
 
-// progressDeadlineExceededRule — a Deployment's rollout stalled. The
+// progressDeadlineExceededRule — a Deployment stopped making progress. The
 // Deployment controller sets the Progressing condition to False with
-// reason=ProgressDeadlineExceeded when new pods don't become available
-// within spec.progressDeadlineSeconds (default 600s). This is one of the
-// most common "my deploy is stuck" incidents, and the default remedy is
-// almost always a rollback to the last working revision — which is why
-// Autopilot auto-triggers on it (registry: progress-deadline-exceeded).
+// reason=ProgressDeadlineExceeded when pods don't become available within
+// spec.progressDeadlineSeconds (default 600s). Most often a rollout whose new
+// pods fail, where a rollback is the remedy (Autopilot auto-triggers on it,
+// registry: progress-deadline-exceeded). But the same condition stalls a
+// scale-up that cannot create or place its pods (a ResourceQuota, no
+// capacity), with no new revision, and a first revision has nothing to roll
+// back to — so the suggestion says which of these the Deployment shows.
 func progressDeadlineExceededRule() Rule {
 	return Rule{
 		ID:       "progress-deadline-exceeded",
-		Name:     "Rollout Progress Deadline Exceeded",
+		Name:     "Deployment Progress Deadline Exceeded",
 		Severity: "critical",
 		Evaluate: func(state *ClusterState) []models.Insight {
 			var insights []models.Insight
@@ -768,12 +873,25 @@ func progressDeadlineExceededRule() Rule {
 					if cond.Type == appsv1.DeploymentProgressing &&
 						cond.Status == corev1.ConditionFalse &&
 						cond.Reason == "ProgressDeadlineExceeded" {
+						rev := d.Annotations["deployment.kubernetes.io/revision"]
+						at := cond.LastUpdateTime.Time
 						insights = append(insights, newInsight(
 							"critical",
 							fmt.Sprintf("Deployment/%s/%s", d.Namespace, d.Name),
-							"Rollout Progress Deadline Exceeded",
-							fmt.Sprintf("Deployment %s/%s rollout has not progressed: %s", d.Namespace, d.Name, cond.Message),
-							"The new ReplicaSet failed to become available in time. Roll back to the last working revision, or check the new pods' events and logs for the failure cause.",
+							"Deployment Progress Deadline Exceeded",
+							fmt.Sprintf("Deployment %s/%s stopped making progress: %s", d.Namespace, d.Name, cond.Message),
+							progressDeadlineSuggestion(d, rev),
+							models.Evidence{
+								Kind: models.EvidenceEvent, Label: "Progressing", Detail: "False, ProgressDeadlineExceeded: " + cond.Message,
+								Source: "deployment.status.conditions[Progressing]", At: &at,
+							},
+							progressDeadlineEvidence(d, rev),
+							models.Evidence{
+								Kind: models.EvidenceConfig, Label: "Replicas",
+								Detail: fmt.Sprintf("%d desired, %d on the current revision %s, %d in total, %d available",
+									replicasOrOne(d.Spec.Replicas), d.Status.UpdatedReplicas, rev, d.Status.Replicas, d.Status.AvailableReplicas),
+								Source: "deployment.status",
+							},
 						))
 						break // one insight per Deployment, not per condition
 					}
@@ -782,6 +900,22 @@ func progressDeadlineExceededRule() Rule {
 			return insights
 		},
 	}
+}
+
+// progressDeadlineSuggestion says what the Deployment shows: pods of an
+// older revision still running mean a rollout stalled (roll back); a first
+// revision has nothing to roll back to; every pod on the current revision may
+// be a scale-up that cannot create or place its pods, which a rollback does
+// not fix.
+func progressDeadlineSuggestion(d *appsv1.Deployment, rev string) string {
+	const read = "Read the events of its newest ReplicaSet and pods: FailedCreate (a ResourceQuota or LimitRange), FailedScheduling (capacity, affinity, taints), container config errors (a missing ConfigMap, runAsNonRoot), image pulls, crashes, readiness."
+	switch {
+	case rev == "" || rev == "1":
+		return "This is the Deployment's first revision, so there is nothing to roll back to. " + read
+	case d.Status.UpdatedReplicas < d.Status.Replicas:
+		return fmt.Sprintf("Pods of an older revision are still running, so the rollout of revision %s is what stalled: its new pods are not becoming available. Read their events and logs; rolling back to the previous revision restores the old pods.", rev)
+	}
+	return fmt.Sprintf("Every pod is on the current revision (%s), so this may be a scale-up that cannot finish rather than a bad rollout — and a rollback does not help with a quota or missing capacity. %s If the revision changed recently and its pods fail, roll back.", rev, read)
 }
 
 // 7. PVC in Pending state
@@ -793,19 +927,84 @@ func pvcPendingRule() Rule {
 		Evaluate: func(state *ClusterState) []models.Insight {
 			var insights []models.Insight
 			for _, pvc := range state.PVCs {
-				if pvc.Status.Phase == corev1.ClaimPending {
-					insights = append(insights, newInsight(
-						"warning",
-						fmt.Sprintf("PVC/%s/%s", pvc.Namespace, pvc.Name),
-						"PVC Pending",
-						fmt.Sprintf("PersistentVolumeClaim %s/%s is in Pending state", pvc.Namespace, pvc.Name),
-						"Check if a suitable PersistentVolume exists or if the StorageClass can dynamically provision one.",
-					))
+				if pvc.Status.Phase != corev1.ClaimPending {
+					continue
 				}
+				message, suggestion, ev, fire := pendingClaimText(state, pvc)
+				if !fire {
+					continue
+				}
+				insights = append(insights, newInsight(
+					"warning",
+					fmt.Sprintf("PVC/%s/%s", pvc.Namespace, pvc.Name),
+					"PVC Pending",
+					message, suggestion, ev...,
+				))
 			}
 			return insights
 		},
 	}
+}
+
+// pendingClaimText says why a claim is Pending, from its StorageClass and the
+// pods that mount it. A claim whose class binds on first consumer
+// (WaitForFirstConsumer) and that no pod uses yet is Pending by design and
+// does not fire: kind's local-path and most cloud classes work that way. One
+// whose pod is not scheduled is waiting for the pod, not for storage.
+func pendingClaimText(state *ClusterState, pvc *corev1.PersistentVolumeClaim) (message, suggestion string, ev []models.Evidence, fire bool) {
+	id := fmt.Sprintf("PersistentVolumeClaim %s/%s", pvc.Namespace, pvc.Name)
+	sc, className, noClass := storageClassFor(pvc, state.StorageClasses)
+	users := podsUsingClaim(state.Pods, pvc)
+	var scheduled bool
+	for _, p := range users {
+		if p.Spec.NodeName != "" {
+			scheduled = true
+		}
+	}
+	ev = claimEvidence(pvc, sc, className, noClass, users)
+	if sc != nil && sc.VolumeBindingMode != nil && *sc.VolumeBindingMode == storagev1.VolumeBindingWaitForFirstConsumer && !scheduled {
+		if len(users) == 0 {
+			return "", "", nil, false
+		}
+		return fmt.Sprintf("%s waits for its pod to be scheduled: StorageClass %s binds on first consumer, and pod %s is %s, not on a node yet.",
+				id, sc.Name, users[0].Name, users[0].Status.Phase),
+			fmt.Sprintf("The claim binds once its pod lands on a node. Read why pod %s is not scheduled (FailedScheduling: capacity, affinity, taints, or the class's allowed topologies).", users[0].Name),
+			ev, true
+	}
+	switch {
+	case noClass:
+		return fmt.Sprintf("%s has no StorageClass (storageClassName \"\"), so it binds only to a pre-created PersistentVolume, and none matches it.", id),
+			"Create a PersistentVolume that matches its size, access mode and selector, or give the claim a StorageClass that provisions one.", ev, true
+	case sc == nil && className != "":
+		return fmt.Sprintf("%s asks for StorageClass %q, which does not exist.", id, className),
+			"Create that StorageClass, or point the claim at one that exists (kubectl get storageclass).", ev, true
+	case sc == nil:
+		return fmt.Sprintf("%s names no StorageClass and the cluster has no default class, so it binds only to a pre-created PersistentVolume, and none matches it.", id),
+			"Create a matching PersistentVolume, or set a StorageClass on the claim (or mark one as the cluster default).", ev, true
+	}
+	message = fmt.Sprintf("%s is Pending: StorageClass %s (provisioner %s) has not provisioned a volume for it.", id, sc.Name, sc.Provisioner)
+	suggestion = "Read the claim's events (ProvisioningFailed names the reason) and the provisioner's logs."
+	if e := latestWarningFor(state.Events, "PersistentVolumeClaim", pvc.Namespace, pvc.Name); e != nil {
+		at := eventLastOccurrence(e)
+		message += fmt.Sprintf(" Latest event: %s: %s", e.Reason, e.Message)
+		ev = append(ev, models.Evidence{Kind: models.EvidenceEvent, Label: e.Reason, Detail: e.Message, Source: "events", At: &at})
+	}
+	return message, suggestion, ev, true
+}
+
+// latestWarningFor returns the most recent Warning event about one object.
+func latestWarningFor(events []*corev1.Event, kind, ns, name string) *corev1.Event {
+	var latest *corev1.Event
+	for _, e := range events {
+		if e == nil || e.Type != corev1.EventTypeWarning || e.InvolvedObject.Kind != kind ||
+			e.InvolvedObject.Namespace != ns || e.InvolvedObject.Name != name {
+			continue
+		}
+		if latest == nil || eventLastOccurrence(e).After(eventLastOccurrence(latest)) {
+			latest = e
+		}
+	}
+	return latest
 }
 
 // 8. Node not ready
@@ -833,6 +1032,7 @@ func nodeNotReadyRule() Rule {
 						"Node Not Ready",
 						fmt.Sprintf("Node %s is not in Ready state", node.Name),
 						"Check node conditions, kubelet logs, and ensure the node has sufficient resources.",
+						nodeNotReadyEvidence(node)...,
 					))
 				}
 			}
@@ -881,19 +1081,45 @@ func hpaMaxedOutRule() Rule {
 		Evaluate: func(state *ClusterState) []models.Insight {
 			var insights []models.Insight
 			for _, hpa := range state.HPAs {
-				if hpa.Status.CurrentReplicas >= hpa.Spec.MaxReplicas && hpa.Status.CurrentReplicas > 0 && hpaWantsMoreThanMax(hpa) {
-					insights = append(insights, newInsight(
-						"warning",
-						fmt.Sprintf("HPA/%s/%s", hpa.Namespace, hpa.Name),
-						"HPA at Maximum Replicas",
-						fmt.Sprintf("HPA %s/%s is at maximum replicas (%d/%d)", hpa.Namespace, hpa.Name, hpa.Status.CurrentReplicas, hpa.Spec.MaxReplicas),
-						"Consider increasing maxReplicas or optimizing the target workload to reduce resource demand.",
-					))
+				// At the maximum is not enough: a fixed size (minReplicas ==
+				// maxReplicas) is always there by design, and so is an HPA that
+				// cannot read its metrics. hpaWantsMoreThanMax lets through only
+				// one whose controller asks for more than it may have — pinned
+				// or not, that is worth a reader's attention.
+				if hpa.Status.CurrentReplicas < hpa.Spec.MaxReplicas || hpa.Status.CurrentReplicas == 0 || !hpaWantsMoreThanMax(hpa) {
+					continue
 				}
+				message, suggestion := hpaAtMaxText(hpa)
+				insights = append(insights, newInsight(
+					"warning",
+					fmt.Sprintf("HPA/%s/%s", hpa.Namespace, hpa.Name),
+					"HPA at Maximum Replicas",
+					message, suggestion, hpaEvidence(hpa)...,
+				))
 			}
 			return insights
 		},
 	}
+}
+
+// hpaAtMaxText says what the HPA shows. The autoscaling/v1 view carries only
+// the CPU metric: above its target, demand exceeds what maxReplicas allows;
+// at or below it, another metric (memory, custom) holds the HPA at the
+// maximum or it is cooling down, and raising maxReplicas is not the answer
+// it looks like.
+func hpaAtMaxText(hpa *autoscalingv1.HorizontalPodAutoscaler) (message, suggestion string) {
+	id := fmt.Sprintf("HPA %s/%s is at its maximum (%d/%d replicas)", hpa.Namespace, hpa.Name, hpa.Status.CurrentReplicas, hpa.Spec.MaxReplicas)
+	cur, tgt := hpa.Status.CurrentCPUUtilizationPercentage, hpa.Spec.TargetCPUUtilizationPercentage
+	switch {
+	case cur != nil && tgt != nil && *cur > *tgt:
+		return fmt.Sprintf("%s with CPU at %d%% of requests against a %d%% target: demand is above what maxReplicas allows.", id, *cur, *tgt),
+			"Raise maxReplicas if the cluster has room for more pods, or reduce the load per pod."
+	case cur != nil && tgt != nil:
+		return fmt.Sprintf("%s while CPU is at %d%% against a %d%% target: another metric (memory, custom) is holding it at the maximum, or it is waiting out its scale-down window.", id, *cur, *tgt),
+			"Read all of its metrics against their targets (kubectl describe hpa) before raising maxReplicas: CPU is not the one asking for more."
+	}
+	return id + ".",
+		"Read its metrics against their targets (kubectl describe hpa): if they are above target, raise maxReplicas or reduce the load per pod; if not, it is cooling down."
 }
 
 // 10. Frequent restarts (> 5)
@@ -914,7 +1140,8 @@ func frequentRestartsRule() Rule {
 					// readyGrace. A container with no recorded termination cannot be
 					// churning right now, so it does not fire.
 					term := cs.LastTerminationState.Terminated
-					if float64(cs.RestartCount) > stateThreshold(state, "frequent-restarts", 5) && term != nil && !term.FinishedAt.IsZero() &&
+					threshold := stateThreshold(state, "frequent-restarts", 5)
+					if float64(cs.RestartCount) > threshold && term != nil && !term.FinishedAt.IsZero() &&
 						!containerRecovered(cs, term.FinishedAt.Time) {
 						insights = append(insights, newInsight(
 							"warning",
@@ -922,6 +1149,7 @@ func frequentRestartsRule() Rule {
 							"Frequent Container Restarts",
 							fmt.Sprintf("Container %s in pod %s/%s has restarted %d times", cs.Name, pod.Namespace, pod.Name, cs.RestartCount),
 							"Check container logs and health probes. Frequent restarts indicate instability.",
+							restartsWithCause(state, pod, cs, threshold)...,
 						))
 					}
 				}
@@ -948,6 +1176,7 @@ func imagePullBackoffRule() Rule {
 							"Image Pull Failed",
 							fmt.Sprintf("Container %s in pod %s/%s cannot pull image: %s", cs.Name, pod.Namespace, pod.Name, cs.State.Waiting.Reason),
 							"Verify the image name/tag exists, check registry credentials, and ensure network access to the registry.",
+							imagePullEvidence(pod, &cs)...,
 						))
 					}
 				}
@@ -979,23 +1208,20 @@ func missingConfigDependencyRule() Rule {
 						continue
 					}
 					msg := cs.State.Waiting.Message
-					// Identify which kind of dependency is missing, for a
-					// sharper title + suggestion. kubelet phrases it as
-					// `configmap "X" not found` / `secret "X" not found`.
-					kind := "ConfigMap or Secret"
-					if strings.Contains(msg, "configmap") {
-						kind = "ConfigMap"
-					} else if strings.Contains(msg, "secret") {
-						kind = "Secret"
+					ce := readConfigError(msg)
+					title, message, suggestion := configErrorText(ce, cs.Name, pod, msg)
+					ev := []models.Evidence{{
+						Kind: models.EvidenceEvent, Label: "Container waiting",
+						Detail: "CreateContainerConfigError: " + msg,
+						Source: "pod.status.containerStatuses[].state.waiting",
+					}}
+					if ref, ok := configReferenceEvidence(ce); ok {
+						ev = append(ev, ref)
 					}
 					insights = append(insights, newInsight(
 						"critical",
 						fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
-						"Pod missing ConfigMap or Secret",
-						fmt.Sprintf("Container %s in pod %s/%s cannot start — a referenced %s is missing: %s",
-							cs.Name, pod.Namespace, pod.Name, kind, msg),
-						fmt.Sprintf("Create the missing %s in namespace %s (the exact name is in the message above), or remove the reference from the pod spec. kubectl describe pod %s -n %s shows the full error.",
-							kind, pod.Namespace, pod.Name, pod.Namespace),
+						title, message, suggestion, ev...,
 					))
 					break // one insight per pod, not per container
 				}
@@ -1005,14 +1231,37 @@ func missingConfigDependencyRule() Rule {
 	}
 }
 
-// hasReadinessProbe reports whether any container of the pod declares one.
-func hasReadinessProbe(pod *corev1.Pod) bool {
-	for _, c := range pod.Spec.Containers {
-		if c.ReadinessProbe != nil {
-			return true
+// configErrorText words a CreateContainerConfigError by what it is. Only a
+// missing object is fixed by creating one: a missing key is fixed in the
+// object that exists, a sync timeout clears on its own, and a runAsNonRoot
+// conflict involves no ConfigMap or Secret at all.
+func configErrorText(ce configError, container string, pod *corev1.Pod, msg string) (title, message, suggestion string) {
+	where := fmt.Sprintf("Container %s in pod %s/%s", container, pod.Namespace, pod.Name)
+	switch ce.what {
+	case "object":
+		return "Pod references a missing " + ce.kind,
+			fmt.Sprintf("%s cannot start: the %s %q it references does not exist in namespace %s.", where, ce.kind, ce.name, pod.Namespace),
+			fmt.Sprintf("Create %s %q in namespace %s with the keys the application expects, or correct the name in the pod spec. Its values belong to the application: nothing in the cluster records them.", ce.kind, ce.name, pod.Namespace)
+	case "key":
+		return "Pod references a missing " + ce.kind + " key",
+			fmt.Sprintf("%s cannot start: %s %s exists but has no key %q.", where, ce.kind, ce.name, ce.key),
+			fmt.Sprintf("Add key %q to %s %s, or correct the key name in the pod spec (or mark the reference optional if the application runs without it).", ce.key, ce.kind, ce.name)
+	case "sync":
+		what := "configuration"
+		if ce.kind != "" {
+			what = ce.kind
 		}
+		return "Container configuration could not be read in time",
+			fmt.Sprintf("%s cannot start yet: the kubelet could not read its %s from the API server in time (%s).", where, what, msg),
+			"Nothing is missing: the kubelet on this node timed out fetching it. It usually clears on its own; if it persists, check the node's connection to the API server."
+	case "nonroot":
+		return "Container blocked by runAsNonRoot",
+			fmt.Sprintf("%s cannot start: %s", where, msg),
+			"Nothing is missing from the cluster: the pod requires a non-root user (runAsNonRoot) and the image runs as root, or names its user by name. Set runAsUser to a numeric non-root UID, or use an image that runs as one."
 	}
-	return false
+	return "Container cannot be created: configuration error",
+		fmt.Sprintf("%s cannot be created: %s", where, msg),
+		"Read the message: it names what the kubelet could not resolve in the pod spec."
 }
 
 // runsSettled reports whether every container is running and its current run
@@ -1041,7 +1290,8 @@ func runsSettled(pod *corev1.Pod, grace time.Duration) bool {
 // other rules' concern. Tier-1 (2026-06).
 //
 // Two more conditions keep it about the PROBE (#64 pattern tests, 2026-10-06):
-//   - some container must declare a readiness probe. A pod without one is
+//   - a not-ready container must declare a readiness probe, or the pod carry
+//     readiness gates (notReadyFromProbe, below). A pod without either is
 //     not-Ready only because a container isn't running — there is no probe to
 //     check, and the old text told the reader to check it anyway;
 //   - every container's current run must have been up past the grace too. A
@@ -1062,10 +1312,22 @@ func readinessProbeFailingRule() Rule {
 				if pod.Status.Phase != corev1.PodRunning {
 					continue
 				}
-				// Skip pods with any container still Waiting — that's a
-				// startup/crash problem owned by another rule, not a probe
-				// failing on a running container.
-				if !hasReadinessProbe(pod) || !runsSettled(pod, grace) {
+				// Skip pods with a container that is not running, or whose
+				// current run is younger than the grace — a start or a crash
+				// owned by another rule, not a probe failing on a running
+				// container.
+				if !runsSettled(pod, grace) {
+					continue
+				}
+				// Nor a pod whose not-Ready is a start, not a probe: between
+				// the deaths of a crash-looping container (OOMKilled, exit 1)
+				// it is briefly Running and not Ready, with a Ready condition
+				// that has been False for minutes — and this rule said "check
+				// the readiness probe" of a container that had none (lab,
+				// 2026-10-11). Fire only when a not-ready container has a
+				// readiness probe (or the pod has readiness gates) and its
+				// current run is older than the grace.
+				if !notReadyFromProbe(pod, grace) {
 					continue
 				}
 				for _, cond := range pod.Status.Conditions {
@@ -1085,9 +1347,10 @@ func readinessProbeFailingRule() Rule {
 						"warning",
 						fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
 						"Pod not passing readiness",
-						fmt.Sprintf("Pod %s/%s is Running but has not been Ready for over 2 minutes (%s) — it's up but the Service is keeping it out of rotation.",
+						fmt.Sprintf("Pod %s/%s is Running but has not been Ready for over 2 minutes (%s) — it's up, but any Service in front of it keeps it out of rotation.",
 							pod.Namespace, pod.Name, detail),
 						"Check the container's readiness probe (path/port/timeout) and its logs. If the probe regressed in a recent deploy, roll back; if the app genuinely isn't ready, fix the dependency it's waiting on.",
+						readinessEvidence(pod, &cond)...,
 					))
 					break // one insight per pod
 				}
@@ -1168,6 +1431,7 @@ func livenessProbeFailingRule() Rule {
 					fmt.Sprintf("Pod %s/%s liveness probe has failed %d times: %s — kubelet will restart the container, risking a restart loop.",
 						io.Namespace, io.Name, ev.Count, ev.Message),
 					"Check the liveness probe config (path/port/initialDelaySeconds/timeout) against what the app actually does at startup. If the probe regressed in a recent deploy, roll back; if it's too aggressive, relax initialDelaySeconds/failureThreshold.",
+					livenessEvidence(pod, container, ev)...,
 				))
 			}
 			return insights
@@ -1486,13 +1750,27 @@ func evictedPodsRule() Rule {
 				// not. It is named in the title so the operator can see the clock
 				// rather than wonder where the insight went.
 				if pod.Status.Phase == corev1.PodFailed && pod.Status.Reason == "Evicted" && podFailedRecently(pod) {
+					title, suggestion := evictedTitle,
+						"Read the eviction message: the kubelet evicts pods when the node runs low on a resource, or when a pod goes over its own local storage limit."
+					switch {
+					case evictionOverOwnLimit(pod.Status.Message):
+						title = evictedOwnLimitTitle
+						suggestion = "The pod went over its own local storage limit (ephemeral-storage, or an emptyDir sizeLimit); the node was not short of anything. Raise that limit, or write large files to a volume sized for them. Restarting changes nothing."
+					case evictionByNodePressure(pod.Status.Message):
+						suggestion = "The node ran low on a resource and the kubelet evicted pods to reclaim it. Check the node's pressure conditions and what is using that resource."
+					}
+					at := podFailedAt(pod)
 					insights = append(insights, newInsight(
 						"warning",
 						fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
-						"Pod recently evicted",
+						title,
 						fmt.Sprintf("Pod %s/%s was evicted in the last %s: %s",
 							pod.Namespace, pod.Name, recentEvictionWindow, pod.Status.Message),
-						"Check node resource pressure. Evicted pods indicate the node ran out of resources.",
+						suggestion,
+						models.Evidence{
+							Kind: models.EvidenceEvent, Label: "Eviction", Detail: pod.Status.Message,
+							Source: "pod.status.message", At: &at,
+						},
 					))
 				}
 			}
@@ -1547,18 +1825,25 @@ func networkPolicyNoMatchRule() Rule {
 				if matched > 0 {
 					continue
 				}
+				// Same as pdb-no-match: a workload scaled to 0 or a CronJob
+				// between runs leaves the selector right and the pods absent.
+				if len(workloadsMatching(state, np.Namespace, sel)) > 0 {
+					continue
+				}
 				insights = append(insights, newInsight(
 					"warning",
 					fmt.Sprintf("NetworkPolicy/%s/%s", np.Namespace, np.Name),
 					"NetworkPolicy podSelector matches no pods",
 					fmt.Sprintf(
-						"NetworkPolicy %s/%s declares a podSelector but no pod in its namespace matches. "+
-							"Traffic policy intent is unverifiable — either the selector has a typo or "+
-							"the target workload was renamed / deleted.",
+						"NetworkPolicy %s/%s matches no pod in its namespace, and no Deployment, StatefulSet, "+
+							"DaemonSet, Job or CronJob there has pods with these labels. The selector has a typo, "+
+							"or the workload it governed was renamed or deleted (or is run by a controller "+
+							"KubeBolt does not read).",
 						np.Namespace, np.Name,
 					),
 					"Verify the podSelector matchLabels against the pods you expect this policy to gate. "+
 						"kubectl get pods -n "+np.Namespace+" --show-labels",
+					networkPolicyEvidence(np)...,
 				))
 			}
 			return insights
@@ -1602,27 +1887,46 @@ func namespaceWithoutNetworkPolicyRule() Rule {
 				}
 			}
 			for ns, podCount := range runningPodsByNS {
-				if policiesByNS[ns] > 0 {
+				// A CiliumNetworkPolicy governs the namespace as much as a
+				// NetworkPolicy does: on a Cilium cluster with only Cilium
+				// policies, "all traffic is allowed" was false.
+				if policiesByNS[ns] > 0 || state.CiliumPolicies[ns] > 0 {
 					continue
 				}
 				insights = append(insights, newInsight(
 					"info",
 					fmt.Sprintf("Namespace/%s/%s", ns, ns),
 					"Namespace has running pods but no NetworkPolicy",
-					fmt.Sprintf(
-						"Namespace %q has %d running pod(s) and zero NetworkPolicies. "+
-							"All pod-to-pod and pod-to-external traffic in this namespace "+
-							"is allowed by default — review whether that matches your "+
-							"intended security posture.",
-						ns, podCount,
-					),
+					orphanNamespaceMessage(state, ns, podCount),
 					"If this namespace should be isolated, start with a default-deny ingress "+
 						"policy: https://kubernetes.io/docs/concepts/services-networking/network-policies/#default-deny-all-ingress-traffic",
+					orphanNamespaceEvidence(state, ns, podCount)...,
 				))
 			}
 			return insights
 		},
 	}
+}
+
+// orphanNamespaceMessage claims only what was read: no NetworkPolicy, and no
+// CiliumNetworkPolicy when Cilium's policies could be listed. Cluster-wide
+// Cilium policies may still select these pods, and a CNI's own policies
+// that KubeBolt does not read (Calico's, for one) may apply — so "all
+// traffic is allowed" is said with its condition.
+func orphanNamespaceMessage(state *ClusterState, ns string, pods int) string {
+	none := "no NetworkPolicy"
+	if state.CiliumPoliciesKnown {
+		none = "no NetworkPolicy or CiliumNetworkPolicy"
+	}
+	msg := fmt.Sprintf("Namespace %q has %d running pod(s) and %s. ", ns, pods, none)
+	if state.CiliumPoliciesKnown && state.CiliumClusterwidePolicies > 0 {
+		msg += fmt.Sprintf("%d CiliumClusterwideNetworkPolicy(ies) exist and may select these pods; if none does, ",
+			state.CiliumClusterwidePolicies)
+	} else {
+		msg += "Unless the CNI enforces policies of its own here, "
+	}
+	return msg + "all pod-to-pod and pod-to-external traffic in it is allowed by default — " +
+		"review whether that matches your intended security posture."
 }
 
 // isSystemNamespace returns true for namespaces operators don't

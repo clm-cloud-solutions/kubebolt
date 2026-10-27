@@ -251,15 +251,13 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
         header: 'Ready',
         cell: (info) => {
           const item = info.row.original
-          const ready = item.readyReplicas ?? item.ready ?? 0
-          const total = item.replicas ?? item.desired ?? 0
-          const ok = Number(ready) >= Number(total)
-          return (
-            <StatusBadge
-              status={ok ? 'Running' : 'Warning'}
-              label={`${ready}/${total}`}
-            />
-          )
+          const ready = Number(item.readyReplicas ?? item.ready ?? 0)
+          // Against the replicas the workload asks for, like `kubectl get`:
+          // the pods that exist read a green 0/0 when it is scaled to 0 and
+          // 1/1 when a quota refused the other two.
+          const desired = Number(item.specReplicas ?? item.replicas ?? item.desired ?? 0)
+          const status = desired === 0 ? 'Scaled to 0' : ready >= desired ? 'Running' : 'Warning'
+          return <StatusBadge status={status} label={`${ready}/${desired}`} />
         },
       },
       {

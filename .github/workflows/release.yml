@@ -76,6 +76,23 @@ jobs:
             exit 1
           fi
 
+      # The Azure MCP Server sidecar (mcpConnectors.azure.sidecar). Scanned by the
+      # digest the chart pins, the bits an install pulls. Its tag is held to the
+      # release the API's Azure allowlist was reviewed against by a Go test
+      # (TestAzureDeploymentsStartTheReviewedSidecar), not here.
+      - name: Extract pinned Azure MCP Server image from values.yaml
+        id: azmcp
+        run: |
+          BLOCK=$(grep -A8 "repository: mcr.microsoft.com/azure-sdk/azure-mcp" deploy/helm/kubebolt/values.yaml)
+          TAG=$(echo "$BLOCK" | grep -m1 '^\s*tag:' | awk '{print $2}')
+          DIGEST=$(echo "$BLOCK" | grep -m1 '^\s*digest:' | awk '{print $2}')
+          if [ -z "$TAG" ] || [ -z "$DIGEST" ]; then
+            echo "::error::Could not parse the Azure MCP Server tag and digest from values.yaml"
+            exit 1
+          fi
+          echo "ref=mcr.microsoft.com/azure-sdk/azure-mcp:$TAG@$DIGEST" >> $GITHUB_OUTPUT
+          echo "Pinned Azure MCP Server: $TAG@$DIGEST"
+
       # Table format so findings are visible in the log (Free plan → no GHAS → the
       # SARIF Security-tab upload 403s).
       #
@@ -99,6 +116,18 @@ jobs:
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: docker.io/victoriametrics/vmagent:${{ steps.vmagent.outputs.tag }}
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+          trivyignores: .trivyignore-thirdparty
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: 'true'
+
+      - name: Trivy scan Azure MCP Server image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.azmcp.outputs.ref }}
           format: table
           severity: CRITICAL,HIGH
           ignore-unfixed: true

@@ -37,8 +37,8 @@ func TestLoadCopilotConfig_Defaults(t *testing.T) {
 	if cfg.Primary.Provider != "anthropic" {
 		t.Errorf("default provider = %q, want anthropic", cfg.Primary.Provider)
 	}
-	if cfg.MaxTokens != 4096 {
-		t.Errorf("default MaxTokens = %d, want 4096", cfg.MaxTokens)
+	if cfg.MaxTokens != 0 {
+		t.Errorf("default MaxTokens = %d, want 0 (per model, copilot.MaxTokensFor)", cfg.MaxTokens)
 	}
 	if !cfg.AutoCompact {
 		t.Error("AutoCompact should default to true")
@@ -167,8 +167,8 @@ func TestLoadCopilotConfig_IgnoresInvalidValues(t *testing.T) {
 	t.Setenv("KUBEBOLT_AI_COMPACT_PRESERVE_TURNS", "nonsense")
 
 	cfg := LoadCopilotConfig()
-	if cfg.MaxTokens != 4096 {
-		t.Errorf("bad int should fall back to default; got %d", cfg.MaxTokens)
+	if cfg.MaxTokens != 0 {
+		t.Errorf("bad int should fall back to the per-model default (0); got %d", cfg.MaxTokens)
 	}
 	if cfg.AutoCompactThreshold != 0.80 {
 		t.Errorf("threshold > 1 should fall back to default; got %v", cfg.AutoCompactThreshold)

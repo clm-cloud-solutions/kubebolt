@@ -47,7 +47,7 @@ az identity federated-credential create \
   --subject system:serviceaccount:default:kubebolt
 ```
 
-> KubeBolt itself doesn't need Azure permissions — it only talks to the Kubernetes API. Workload Identity is only relevant for Azure-integrated scenarios.
+> KubeBolt doesn't need Azure permissions to show and operate the cluster — that goes through the Kubernetes API. Kobi's Azure cloud connector does not use Workload Identity either: it reads Azure through the Azure MCP Server, a second container in the API pod (`mcpConnectors.azure.sidecar.enabled`) that signs in as a read-only service principal kept in a Secret — see [Cloud connectors for Kobi](kobi-mcp-connectors.md#azure).
 
 ## Ingress with AGIC
 
@@ -98,7 +98,7 @@ If your AKS cluster uses a private ACR and restricts external registries, you ma
 ```bash
 az acr import --name myacr --source ghcr.io/clm-cloud-solutions/kubebolt/api:2.1.0
 az acr import --name myacr --source ghcr.io/clm-cloud-solutions/kubebolt/web:2.1.0
-az acr import --name myacr --source docker.io/victoriametrics/victoria-metrics:v1.154.0-scratch
+az acr import --name myacr --source docker.io/victoriametrics/victoria-metrics:v1.155.0-scratch
 ```
 
 Then override `api.image.repository`, `web.image.repository` and `metrics.storage.embedded.image.repository` in the Helm values. Match the tags to the chart version you install.
@@ -109,4 +109,5 @@ KubeBolt degrades gracefully. Restricted resources appear dimmed in the sidebar 
 ## Next steps
 
 - **Historical metrics and remote clusters** — install the [kubebolt-agent](../../deploy/helm/kubebolt-agent/README.md) chart. It ships kubelet/cAdvisor (and Hubble, if present) metrics for the Capacity and Monitor views, and connects clusters whose API server the backend can't reach directly.
+- **Let Kobi read Azure** — the databases, queues, metrics and activity log behind your workloads, read-only: [Cloud connectors for Kobi](kobi-mcp-connectors.md#azure).
 - **Already on Azure Monitor managed service for Prometheus?** The agent can read it instead of scraping: see [azure-managed-prometheus.md](../integrations/azure-managed-prometheus.md). Other options: [`deployment-scenarios.md`](../deployment-scenarios.md).

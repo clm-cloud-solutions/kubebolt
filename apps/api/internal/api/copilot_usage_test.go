@@ -34,6 +34,14 @@ func setupUsageTest(t *testing.T) (*handlers, func()) {
 	return h, cleanup
 }
 
+// fixtureNow is "now" for fixtures meant to sit at the end of a window: a
+// minute back. The store's window stops before `to` at millisecond
+// granularity, and parseRange takes `to` when the request arrives; on a fast
+// CI runner the fixture writes fit in under a millisecond (or the runner's
+// clock steps back), so a session stamped time.Now() could fall outside it
+// (seen in CI: "total sessions across buckets = 2, want 3").
+func fixtureNow() time.Time { return time.Now().Add(-time.Minute) }
+
 func recordFixture(t *testing.T, h *handlers, ts time.Time, rec *copilot.SessionRecord) {
 	t.Helper()
 	rec.Timestamp = ts
@@ -160,7 +168,7 @@ func TestUsageTimeseries_BucketsByDay(t *testing.T) {
 	h, cleanup := setupUsageTest(t)
 	defer cleanup()
 
-	now := time.Now()
+	now := fixtureNow()
 	for i := 0; i < 3; i++ {
 		recordFixture(t, h, now.Add(-time.Duration(i)*24*time.Hour), &copilot.SessionRecord{
 			UserID: fmt.Sprintf("u%d", i), Reason: "done", Rounds: 1,
@@ -197,7 +205,7 @@ func TestUsageSessions_RespectsLimit(t *testing.T) {
 	h, cleanup := setupUsageTest(t)
 	defer cleanup()
 
-	now := time.Now()
+	now := fixtureNow()
 	for i := 0; i < 15; i++ {
 		recordFixture(t, h, now.Add(-time.Duration(i)*time.Minute), &copilot.SessionRecord{
 			UserID: "u", Reason: "done", Rounds: 1,

@@ -10,6 +10,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/fieldmanager"
 )
 
 // Rollout pause / resume — kubectl rollout pause / kubectl rollout resume.
@@ -111,7 +113,7 @@ func (h *handlers) handleSetRolloutPaused(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if _, err := clientset.AppsV1().Deployments(namespace).Patch(ctx, name,
-		types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
+		types.MergePatchType, patch, metav1.PatchOptions{FieldManager: fieldmanager.Name}); err != nil {
 		auditMutation(r, action, resourceType, namespace, name, params, err)
 		respondMutationError(w, err)
 		return

@@ -161,10 +161,19 @@ going away. KubeBolt doesn't scan; it doesn't replace your tools.
 
 - Chat with your cluster (⌘J) or click **Ask Kobi** on an insight, a
   resource, an event or a dashboard panel.
-- 26 tools: 17 to read (resources, YAML, describe, logs, events, topology,
-  metrics history, insights, permissions, KubeBolt's own docs) and 9 that
-  *propose* an action — restart, scale, roll back, debug, set image /
-  resources / env, patch an HPA, delete. Nothing runs until you approve it.
+- 31 tools to read (resources, YAML, describe, logs, events, topology,
+  metrics history, insights and their history, security findings,
+  right-sizing, the fleet, KubeBolt's own docs) and 9 that *propose* an
+  action — restart, scale, roll back, debug, set image / resources / env,
+  patch an HPA, delete. Nothing runs until you approve it.
+- **Cloud connectors** — when the cause sits outside the cluster, Kobi reads
+  the AWS or Azure resources a workload depends on: databases, queues,
+  caches, metrics, health events, and what changed when. Read-only by
+  construction and audited; the chat marks where the investigation leaves
+  the cluster. See [Cloud connectors](docs/guides/kobi-mcp-connectors.md).
+- **Escalation model** — run Kobi on a small model and let it move to a
+  stronger one, for the rest of the conversation, once an investigation
+  leaves the cluster.
 - Bring your own key: Anthropic, or any OpenAI-compatible chat-completions
   endpoint (OpenAI, xAI Grok, DeepSeek, Mistral, Groq, OpenRouter, or
   self-hosted models via Ollama, vLLM, LM Studio), with an automatic fallback
@@ -172,7 +181,7 @@ going away. KubeBolt doesn't scan; it doesn't replace your tools.
 - Conversations are saved per user and can be resumed; long ones are
   compacted automatically; Administration → AI (Kobi) → Usage shows tokens
   and estimated cost per model.
-- **MCP server** — the same 17 read tools for Claude Code, Cursor or any MCP
+- **MCP server** — the same 31 read tools for Claude Code, Cursor or any MCP
   client, over HTTP (`/api/v1/mcp`, authenticated with an API token) or stdio
   (`kubebolt-mcp`).
 

@@ -43,6 +43,11 @@ type ChatRequest struct {
 	// anthropicThinkingOff); ignored everywhere else, so it can never turn
 	// into a 400.
 	NoThinking bool
+	// ShortCache keeps the static prefix (system prompt and tools) on the
+	// provider's default 5-minute cache instead of the hour. Set for the
+	// escalation model: it answers a few questions a day, so an hour-long
+	// write (2x the input price) is almost never read again.
+	ShortCache bool
 }
 
 // ChatResponse is the result of a single Chat call. Either Text is set

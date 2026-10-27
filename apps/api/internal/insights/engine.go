@@ -357,10 +357,19 @@ func (e *Engine) Evaluate(state *ClusterState) {
 			// Re-confirmed by a rule — it no longer needs (or deserves) the
 			// hydration grace; from here it resolves on the normal path.
 			delete(e.hydrated, fp)
-			// Still active — refresh content + LastSeen, persist.
+			// Still active — refresh content + LastSeen, persist. The title
+			// too: it names the cause the rule read (a config error that turns
+			// from a read timeout into a missing key, a pre-upgrade title on an
+			// insight hydrated after a deploy). The evidence follows so the
+			// in-memory insight matches the rule's current reading; the stores
+			// do not persist it on the record (the episode keeps the proof it
+			// opened with), so nothing durable was lost before.
 			e.insights[idx].Severity = ins.Severity
+			e.insights[idx].Title = ins.Title
 			e.insights[idx].Message = ins.Message
 			e.insights[idx].Suggestion = ins.Suggestion
+			e.insights[idx].Evidence = ins.Evidence
+			e.insights[idx].EvidenceCount = ins.EvidenceCount
 			e.insights[idx].LastSeen = now
 			e.persistActive(&e.insights[idx], now)
 		} else {

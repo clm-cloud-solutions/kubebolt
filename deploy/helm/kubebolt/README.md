@@ -50,6 +50,7 @@ overrides the value this chart sets:
 | Domain | Where in the UI | Chart values that seed it |
 |--------|-----------------|---------------------------|
 | Kobi (AI copilot) — provider, model, API key, fallback | Administration → AI (Kobi) | `copilot.*` |
+| Kobi's cloud connectors (AWS, Azure) | Administration → AI (Kobi) → Connectors | `mcpConnectors.*` (the Azure sidecar, the AWS principal) |
 | Notifications (Slack, Discord, SMTP, severity gates) | Administration → System → Notifications | `extraEnv` |
 | General (display name, refresh interval) | Administration → System → General | `extraEnv` |
 | Authentication (token lifetimes; restart required) | Administration → Access → Authentication | `extraEnv` |
@@ -151,7 +152,7 @@ Full reference with comments: [`values.yaml`](https://github.com/clm-cloud-solut
 |-----------|-------------|---------|
 | `metrics.storage.embedded.enabled` | Deploy the bundled single-node VictoriaMetrics StatefulSet | `true` |
 | `metrics.storage.embedded.image.repository` | VictoriaMetrics image | `victoriametrics/victoria-metrics` |
-| `metrics.storage.embedded.image.tag` | VictoriaMetrics tag | `v1.154.0-scratch` |
+| `metrics.storage.embedded.image.tag` | VictoriaMetrics tag | `v1.155.0-scratch` |
 | `metrics.storage.embedded.image.pullPolicy` | Pull policy | `IfNotPresent` |
 | `metrics.storage.embedded.retention` | Retention window | `30d` |
 | `metrics.storage.embedded.persistence.enabled` | Use a PVC (otherwise `emptyDir`) | `true` |
@@ -191,7 +192,7 @@ preferred place to configure it.
 | `copilot.provider` | `anthropic` or `openai` (use `openai` + `copilot.baseUrl` for any OpenAI-compatible endpoint) | `anthropic` |
 | `copilot.model` | Model name; provider default if empty | `""` |
 | `copilot.baseUrl` | Custom / self-hosted endpoint | `""` |
-| `copilot.maxTokens` | Max output tokens per response | `4096` |
+| `copilot.maxTokens` | Max output tokens per response, reasoning included; empty = per model (16384 where reasoning counts, 4096 otherwise) | `""` |
 | `copilot.apiKey` | LLM API key (prefer `existingSecret`) | `""` |
 | `copilot.existingSecret` | Existing Secret with an `api-key` key | `""` |
 | `copilot.fallback.enabled` | Use a fallback model when the primary fails (429, 5xx, network) | `false` |
@@ -199,6 +200,24 @@ preferred place to configure it.
 | `copilot.fallback.model` | Fallback model (required when fallback is enabled) | `""` |
 | `copilot.fallback.baseUrl` | Fallback endpoint | `""` |
 | `copilot.fallback.apiKey` / `copilot.fallback.existingSecret` | Fallback API key, inline or from a Secret with `api-key` | `""` |
+| `copilot.escalation.model` | Model the conversation moves to the first time Kobi leaves the cluster (a cloud connector, another cluster); same provider and key as the primary | `""` |
+
+### Kobi's cloud connectors
+
+Kobi reads the AWS and Azure resources a workload depends on, read-only. The
+connectors are set up in **Administration → AI (Kobi) → Connectors**; the
+chart provides what has to run or be known at deploy time. Guide:
+[docs/guides/kobi-mcp-connectors.md](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/guides/kobi-mcp-connectors.md).
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `mcpConnectors.enabled` | `false` removes the Connectors tab and Kobi's cloud tools | `true` |
+| `mcpConnectors.aws.principalArn` | The AWS identity the API runs as (its IRSA or Pod Identity role), printed in the AWS trust policy | `""` |
+| `mcpConnectors.azure.sidecar.enabled` | Run the Azure MCP Server as a second container of the API pod, on its loopback | `false` |
+| `mcpConnectors.azure.sidecar.existingSecret` | Secret with the read-only service principal: `tenant-id`, `client-id`, `client-secret` (required with the sidecar) | `""` |
+| `mcpConnectors.azure.sidecar.image.*` | `mcr.microsoft.com/azure-sdk/azure-mcp`, the release Kobi's allowlist was reviewed against, by digest. Change it only with a KubeBolt release | `3.0.0-beta.46` |
+| `mcpConnectors.azure.sidecar.resources` | Sidecar requests and limits | 20m / 128Mi, 500m / 512Mi |
+| `mcpConnectors.azure.sidecar.securityContext` | Non-root (uid 1654), read-only root filesystem, no capabilities. On OpenShift unset `runAsUser` | see `values.yaml` |
 
 The chart templates also honor `nameOverride` and `fullnameOverride`.
 

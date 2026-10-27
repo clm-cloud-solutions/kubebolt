@@ -19,6 +19,9 @@ import { useAuth } from '@/contexts/AuthContext'
 import { canonicalListRoute } from '@/utils/routes'
 import type { ActionProposal, ActionProposalAction } from '@/services/copilot/types'
 import { buildTriggerPrompt } from '@/services/copilot/triggers'
+import { handoffOrigin, handoffPrefix } from '@/services/copilot/handoff'
+import { useScope } from '@/utils/scope'
+import type { ClusterInfo } from '@/types/kubernetes'
 
 type Status = 'pending' | 'executing' | 'success' | 'error' | 'dismissed'
 
@@ -46,8 +49,9 @@ interface Props {
 export function ActionProposalCard({ proposal, toolCallId }: Props) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const { recordProposalOutcome, conversationId, openPanel, sendMessage, askInCluster } =
+  const { recordProposalOutcome, conversationId, openPanel, sendMessage, askInCluster, activeClusterContext } =
     useCopilot()
+  const scope = useScope()
   // The switch is the one proposal that does not mutate the cluster — it moves
   // the operator to another one. goHome:false because the conversation is the
   // destination, not the dashboard.
@@ -154,15 +158,22 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
         : context
     if (!context || !question) throw new Error('the proposal is missing the cluster or the question')
 
+    // Where the switch starts, read BEFORE switching: afterwards the active
+    // cluster is already the target.
+    const origin = handoffOrigin(
+      scope,
+      activeClusterContext,
+      queryClient.getQueryData<ClusterInfo[]>(['clusters']),
+    )
+
     await switchCluster.mutateAsync(context)
     openPanel()
 
-    // What was learned on the other side travels attributed, so the fresh
-    // conversation does not restate it as its own finding.
+    // What was learned on the other side travels attributed — with where it
+    // was learned — so the fresh conversation does not restate it as its own
+    // finding, nor take itself to be where it came from.
     const established =
-      typeof proposal.params.established === 'string' && proposal.params.established
-        ? `(From the fleet view: ${proposal.params.established})\n\n`
-        : ''
+      typeof proposal.params.established === 'string' ? handoffPrefix(proposal.params.established, origin) : ''
     askInCluster(context, `${established}${question}`, { trigger: 'cluster_switch' })
     return `Switched to ${label} and asked there`
   }
@@ -949,6 +960,7 @@ function investigateStall(
   proposal: ActionProposal,
   detail: string,
   timeoutMs: number,
+  missing?: { draining: number; notReady: number },
 ) {
   send(
     buildTriggerPrompt({
@@ -960,6 +972,7 @@ function investigateStall(
         name: proposal.target.name,
         detail,
         timeoutSeconds: Math.round(timeoutMs / 1000),
+        ...missing,
       },
     }),
     { trigger: 'action_stalled' },
@@ -1032,6 +1045,17 @@ function readWorkloadCounts(type: string, item: Record<string, unknown> | undefi
     default:
       return empty
   }
+}
+
+// stallMissing says what was still missing against the goal: pods beyond it
+// still shutting down, and pods of it not ready. Undefined when the card
+// cannot tell (a backend without livePodCount) or the counts already match
+// (a generation the controller had not observed): the prompt then covers both.
+function stallMissing(counts: WorkloadCounts, goal: number) {
+  if (counts.livePods === null || !Number.isFinite(goal)) return undefined
+  const draining = Math.max(0, counts.livePods - goal)
+  const notReady = Math.max(0, goal - counts.ready)
+  return draining > 0 || notReady > 0 ? { draining, notReady } : undefined
 }
 
 function WorkloadProgress({
@@ -1151,6 +1175,11 @@ function WorkloadProgress({
       (haveLivePods ? counts.livePods === target : true)
   }
 
+  const missing = stallMissing(
+    counts,
+    rollingUpdateActions.has(proposal.action) ? counts.desired : Number(proposal.params.replicas),
+  )
+
   // Latch `done` once we reach the goal state so polling stops, AND
   // persist that into the proposal so a future re-mount of this card
   // (which would otherwise restart polling against a now-stale target)
@@ -1180,9 +1209,9 @@ function WorkloadProgress({
       return
     }
     handledStalls.add(toolCallId)
-    investigateStall(sendMessage, proposal, line, timeoutMs)
+    investigateStall(sendMessage, proposal, line, timeoutMs, missing)
     recordProposalStalled(toolCallId, line)
-  }, [timedOut, isComplete, done, line, sendMessage, proposal, recordProposalStalled, toolCallId, timeoutMs])
+  }, [timedOut, isComplete, done, line, sendMessage, proposal, recordProposalStalled, toolCallId, timeoutMs, missing])
 
   const isStalled = timedOut && !isComplete
   const Icon = isComplete ? CheckCircle2 : isStalled ? AlertTriangle : Loader2
@@ -1204,7 +1233,7 @@ function WorkloadProgress({
         <>
           <span className="text-[10px]">· did not converge in {Math.round(timeoutMs / 1000)}s</span>
           <button
-            onClick={() => investigateStall(sendMessage, proposal, line, timeoutMs)}
+            onClick={() => investigateStall(sendMessage, proposal, line, timeoutMs, missing)}
             disabled={isLoading}
             className="text-[10px] font-mono text-kobi-accent hover:underline disabled:opacity-40 disabled:no-underline disabled:cursor-not-allowed inline-flex items-center gap-1"
           >

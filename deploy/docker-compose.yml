@@ -63,11 +63,15 @@ services:
       - KUBEBOLT_AI_API_KEY=${KUBEBOLT_AI_API_KEY:-}
       - KUBEBOLT_AI_MODEL=${KUBEBOLT_AI_MODEL:-}
       - KUBEBOLT_AI_BASE_URL=${KUBEBOLT_AI_BASE_URL:-}
-      - KUBEBOLT_AI_MAX_TOKENS=${KUBEBOLT_AI_MAX_TOKENS:-4096}
+      - KUBEBOLT_AI_MAX_TOKENS=${KUBEBOLT_AI_MAX_TOKENS:-}
       - KUBEBOLT_AI_FALLBACK_PROVIDER=${KUBEBOLT_AI_FALLBACK_PROVIDER:-}
       - KUBEBOLT_AI_FALLBACK_API_KEY=${KUBEBOLT_AI_FALLBACK_API_KEY:-}
       - KUBEBOLT_AI_FALLBACK_MODEL=${KUBEBOLT_AI_FALLBACK_MODEL:-}
       - KUBEBOLT_AI_FALLBACK_BASE_URL=${KUBEBOLT_AI_FALLBACK_BASE_URL:-}
+      - KUBEBOLT_AI_ESCALATION_MODEL=${KUBEBOLT_AI_ESCALATION_MODEL:-}
+      - KUBEBOLT_AI_ESCALATION_PROVIDER=${KUBEBOLT_AI_ESCALATION_PROVIDER:-}
+      - KUBEBOLT_AI_ESCALATION_API_KEY=${KUBEBOLT_AI_ESCALATION_API_KEY:-}
+      - KUBEBOLT_AI_ESCALATION_BASE_URL=${KUBEBOLT_AI_ESCALATION_BASE_URL:-}
       - KUBEBOLT_AI_SHOW_TOOL_CALLS=${KUBEBOLT_AI_SHOW_TOOL_CALLS:-true}
       # How long the UI polls an executed action for convergence before marking
       # it stalled and auto-triggering a Kobi root-cause turn. Default 90s.
@@ -108,12 +112,91 @@ services:
       # silently truncates caches over the agent tunnel). "true" only when no
       # cluster is reached through an agent.
       - KUBEBOLT_WATCHLIST_CLIENT=${KUBEBOLT_WATCHLIST_CLIENT:-false}
+      # Kobi's cloud connectors (docs/guides/kobi-mcp-connectors.md). On by
+      # default; "false" removes the Connectors tab and Kobi's cloud tools.
+      - KUBEBOLT_MCP_CONNECTORS=${KUBEBOLT_MCP_CONNECTORS:-true}
+      - KUBEBOLT_MCP_AWS_PRINCIPAL_ARN=${KUBEBOLT_MCP_AWS_PRINCIPAL_ARN:-}
+      - KUBEBOLT_MCP_TOOL_TIMEOUT=${KUBEBOLT_MCP_TOOL_TIMEOUT:-30s}
+  # The Azure MCP Server for Kobi's Azure connector, started only with
+  # `docker compose --profile azure up -d`. It joins the api container's
+  # network and listens on its loopback, with its own sign-in off: nothing
+  # else can reach it. The service principal comes from AZURE_TENANT_ID,
+  # AZURE_CLIENT_ID and AZURE_CLIENT_SECRET in deploy/.env. The image is the
+  # one deploy/helm/kubebolt/values.yaml pins (a test keeps them equal).
+  azure-mcp:
+    profiles: ["azure"]
+    image: mcr.microsoft.com/azure-sdk/azure-mcp:3.0.0-beta.46@sha256:eaf976c3b537de579d043822e45f47958b8b1647aaf11b6c4e8e9d18ea05c810
+    network_mode: "service:api"
+    depends_on: [api]
+    command:
+      - --transport
+      - http
+      - --mode
+      - namespace
+      - --read-only
+      - --disable-proxy-tools
+      - --disable-caching
+      - --dangerously-disable-http-incoming-auth
+      - --namespace
+      - acr
+      - --namespace
+      - advisor
+      - --namespace
+      - aks
+      - --namespace
+      - applens
+      - --namespace
+      - cosmos
+      - --namespace
+      - eventhubs
+      - --namespace
+      - group
+      - --namespace
+      - keyvault
+      - --namespace
+      - monitor
+      - --namespace
+      - mysql
+      - --namespace
+      - optimization
+      - --namespace
+      - postgres
+      - --namespace
+      - quota
+      - --namespace
+      - redis
+      - --namespace
+      - resourcehealth
+      - --namespace
+      - role
+      - --namespace
+      - servicebus
+      - --namespace
+      - sql
+      - --namespace
+      - storage
+      - --namespace
+      - subscription
+    environment:
+      - ASPNETCORE_URLS=http://127.0.0.1:5001
+      - AZURE_TOKEN_CREDENTIALS=EnvironmentCredential
+      - AZURE_MCP_COLLECT_TELEMETRY=false
+      - AZURE_MCP_DANGEROUSLY_DISABLE_HTTPS_REDIRECTION=true
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID:-}
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID:-}
+      - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET:-}
+      - HOME=/tmp
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
   web:
     build: ../apps/web
     ports: ["3000:3000"]
     depends_on: [api]
   victoriametrics:
-    image: victoriametrics/victoria-metrics:v1.154.0-scratch
+    image: victoriametrics/victoria-metrics:v1.155.0-scratch
     ports: ["8428:8428"]
     volumes:
       - kubebolt-vm-data:/victoria-metrics-data

@@ -29,7 +29,7 @@ helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
   --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=arn:aws:iam::123456789012:role/kubebolt-role
 ```
 
-> KubeBolt itself doesn't need AWS permissions — it only talks to the Kubernetes API. IRSA is only relevant if you're running KubeBolt alongside AWS-integrated workloads that share the ServiceAccount.
+> KubeBolt doesn't need AWS permissions to show and operate the cluster — that goes through the Kubernetes API. An IAM role on its ServiceAccount (IRSA, or Pod Identity below) matters when Kobi's AWS cloud connector should read the AWS resources your workloads depend on: it is the identity KubeBolt signs with, or assumes the connector's read-only role from. Set `mcpConnectors.aws.principalArn` to that role's ARN so the trust policy the setup guide prints names it — see [Cloud connectors for Kobi](kobi-mcp-connectors.md#aws).
 
 ## EKS Pod Identity (recommended for new clusters)
 
@@ -91,4 +91,5 @@ KubeBolt degrades gracefully. If the ServiceAccount lacks permissions for certai
 ## Next steps
 
 - **Historical metrics and remote clusters** — install the [kubebolt-agent](../../deploy/helm/kubebolt-agent/README.md) chart. It ships kubelet/cAdvisor (and Hubble, if present) metrics for the Capacity and Monitor views, and connects clusters whose API server the backend can't reach directly.
+- **Let Kobi read AWS** — the load balancers, databases and queues behind your workloads, read-only: [Cloud connectors for Kobi](kobi-mcp-connectors.md#aws).
 - **Already on Amazon Managed Service for Prometheus (AMP)?** The agent can read it instead of scraping: see [aws-amp.md](../integrations/aws-amp.md). Other options: [`deployment-scenarios.md`](../deployment-scenarios.md).

@@ -45,10 +45,17 @@ type ProviderConfig struct {
 
 // CopilotConfig holds the AI Copilot configuration loaded from env vars.
 type CopilotConfig struct {
-	Enabled   bool
-	Primary   ProviderConfig
-	Fallback  *ProviderConfig // nil if not configured
-	MaxTokens int             // default 4096
+	Enabled  bool
+	Primary  ProviderConfig
+	Fallback *ProviderConfig // nil if not configured
+	// Escalation is the model a conversation moves to, for good, once it
+	// leaves the selected cluster (a cloud connector, another cluster of the
+	// organization, a cluster switch): copilot.EscalationTrigger. nil when
+	// not configured. Its key and endpoint default to the primary's when the
+	// provider is the same. KUBEBOLT_AI_ESCALATION_MODEL (+ _PROVIDER,
+	// _API_KEY, _BASE_URL).
+	Escalation *ProviderConfig
+	MaxTokens  int // 0 = per model, see copilot.MaxTokensFor
 
 	// Conversation memory management. See KUBEBOLT_AI_* docs in .env.example.
 	AutoCompact          bool    // default true
@@ -98,8 +105,7 @@ func LoadCopilotConfig() CopilotConfig {
 			Model:    os.Getenv("KUBEBOLT_AI_MODEL"),
 			BaseURL:  os.Getenv("KUBEBOLT_AI_BASE_URL"),
 		},
-		MaxTokens:            4096,
-		AutoCompact:          true,
+		AutoCompact:               true,
 		AutoCompactThreshold:      0.80,
 		CompactPreserveTurns:      3,
 		ShowToolCalls:             true,
@@ -161,6 +167,15 @@ func LoadCopilotConfig() CopilotConfig {
 			APIKey:   fbKey,
 			Model:    os.Getenv("KUBEBOLT_AI_FALLBACK_MODEL"),
 			BaseURL:  os.Getenv("KUBEBOLT_AI_FALLBACK_BASE_URL"),
+		}
+	}
+
+	if model := os.Getenv("KUBEBOLT_AI_ESCALATION_MODEL"); model != "" {
+		cfg.Escalation = &ProviderConfig{
+			Provider: os.Getenv("KUBEBOLT_AI_ESCALATION_PROVIDER"),
+			APIKey:   os.Getenv("KUBEBOLT_AI_ESCALATION_API_KEY"),
+			Model:    model,
+			BaseURL:  os.Getenv("KUBEBOLT_AI_ESCALATION_BASE_URL"),
 		}
 	}
 

@@ -11,6 +11,8 @@ import (
 	"strconv"
 
 	"k8s.io/apimachinery/pkg/labels"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 )
 
 // FlowEdge is the rendered-friendly shape of a single flow, for both
@@ -92,6 +94,49 @@ func (h *handlers) handleFlowEdges(w http.ResponseWriter, r *http.Request) {
 
 	ns := r.URL.Query().Get("namespace")
 
+	resp, err := h.computeFlowEdges(r.Context(), windowMin, ns)
+	if err != nil {
+		respondError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, resp)
+}
+
+// flowScope is whose flows a query may read: the cluster UID and the org the
+// series are scoped to, and the connector whose caches tell pod and node
+// addresses from external ones (nil for a metrics-only cluster).
+type flowScope struct {
+	uid    string
+	tenant string
+	conn   *cluster.Connector
+}
+
+// flowScopeFor resolves the scope from the request context — the same
+// per-request accessors the dashboards use, never the global active slot.
+func (h *handlers) flowScopeFor(ctx context.Context) flowScope {
+	sc := flowScope{uid: h.activeClusterUID(ctx), tenant: h.activeTenantIDFor(ctx)}
+	if h.manager != nil {
+		sc.conn = h.manager.Connector(ctx)
+	}
+	return sc
+}
+
+// scope pins a query to the cluster and the org.
+func (sc flowScope) scope(q string) string {
+	return scopeQueryByTenant(scopeQueryByCluster(q, sc.uid), sc.tenant)
+}
+
+// computeFlowEdges is the body of GET /flows/edges for any caller that holds
+// only a context (Kobi's get_external_connections): the cluster comes from
+// ctx and so does the org — auth.TenantIDFromContext, with the same
+// "default" → no tenant filter rule as the handler.
+func (h *handlers) computeFlowEdges(ctx context.Context, windowMin int, ns string) (FlowEdgesResponse, error) {
+	return computeFlowEdgesIn(ctx, h.flowScopeFor(ctx), windowMin, ns)
+}
+
+// computeFlowEdgesIn runs the flow queries for an explicit scope. The only
+// error is the pod-to-pod query failing; every other query is best-effort.
+func computeFlowEdgesIn(ctx context.Context, sc flowScope, windowMin int, ns string) (FlowEdgesResponse, error) {
 	var eventsSelector string
 	var httpSelector string
 	var latSelector string
@@ -122,53 +167,56 @@ func (h *handlers) handleFlowEdges(w http.ResponseWriter, r *http.Request) {
 	// secondary cluster (e.g. docker-desktop running in parallel with
 	// kind) doesn't contribute flows that belong to a different
 	// visual.
-	uid := h.activeClusterUID(r.Context())
-	eventsQuery := scopeQueryByCluster(fmt.Sprintf(
+	// Tenant isolation: scope every flow query to the requesting org's
+	// tenant_id too, not just the cluster. Without it a tenant with no agent
+	// (no flows of its own) would see the default tenant's Hubble traffic on
+	// the Cluster Map. "" (default org / OSS) leaves the query unscoped.
+	scope := sc.scope
+	eventsQuery := scope(fmt.Sprintf(
 		`sum by (source_namespace, source_pod, destination_namespace, destination_pod, verdict) (rate(pod_flow_events_total%s[%dm]))`,
 		eventsSelector, windowMin,
-	), uid)
-	httpQuery := scopeQueryByCluster(fmt.Sprintf(
+	))
+	httpQuery := scope(fmt.Sprintf(
 		`sum by (source_namespace, source_pod, destination_namespace, destination_pod, status_class) (rate(pod_flow_http_requests_total%s[%dm]))`,
 		httpSelector, windowMin,
-	), uid)
+	))
 	// Avg latency = rate(sum) / rate(count). Small windows with 0 count
 	// yield NaN, which we filter out below.
-	latQuery := scopeQueryByCluster(fmt.Sprintf(
+	latQuery := scope(fmt.Sprintf(
 		`sum by (source_namespace, source_pod, destination_namespace, destination_pod) (rate(pod_flow_http_latency_seconds_sum%s[%dm])) / sum by (source_namespace, source_pod, destination_namespace, destination_pod) (rate(pod_flow_http_latency_seconds_count%s[%dm]))`,
 		latSelector, windowMin, latSelector, windowMin,
-	), uid)
+	))
 	// Pod-to-external L4 flows — destination outside the cluster.
 	// destination_ip carries the peer address; the DNS query below lets
 	// us label it with an FQDN when the same pod resolved it recently.
-	externalQuery := scopeQueryByCluster(fmt.Sprintf(
+	externalQuery := scope(fmt.Sprintf(
 		`sum by (source_namespace, source_pod, destination_ip, verdict) (rate(pod_flow_external_events_total%s[%dm]))`,
 		externalSelector, windowMin,
-	), uid)
+	))
 	// DNS resolutions keyed to (src pod, ip) so the map below is O(1)
 	// per external flow lookup. FQDN wins from the row with the
 	// highest rate if the same IP resolves from multiple hostnames
 	// (rare, e.g. CNAMEs observed both as origin and canonical).
-	dnsQuery := scopeQueryByCluster(fmt.Sprintf(
+	dnsQuery := scope(fmt.Sprintf(
 		`sum by (source_namespace, source_pod, resolved_ip, fqdn) (rate(pod_dns_resolutions_total%s[%dm]))`,
 		dnsSelector, windowMin,
-	), uid)
+	))
 
-	eventsRows, err := runInstantQuery(r.Context(), eventsQuery)
+	eventsRows, err := runInstantQuery(ctx, eventsQuery)
 	if err != nil {
-		respondError(w, http.StatusBadGateway, err.Error())
-		return
+		return FlowEdgesResponse{}, err
 	}
 
 	// L7 queries are best-effort — if they fail (metric doesn't exist
 	// yet, VM hiccup) we still return the event rates. The cluster map
 	// falls back to verdict coloring.
-	httpRows, _ := runInstantQuery(r.Context(), httpQuery)
-	latRows, _ := runInstantQuery(r.Context(), latQuery)
+	httpRows, _ := runInstantQuery(ctx, httpQuery)
+	latRows, _ := runInstantQuery(ctx, latQuery)
 	// External flows + DNS are also best-effort. Clusters without
 	// Cilium L7 DNS visibility simply see no FQDN labels; the external
 	// edges still render, just with destination_ip as the visible peer.
-	externalRows, _ := runInstantQuery(r.Context(), externalQuery)
-	dnsRows, _ := runInstantQuery(r.Context(), dnsQuery)
+	externalRows, _ := runInstantQuery(ctx, externalQuery)
+	dnsRows, _ := runInstantQuery(ctx, dnsQuery)
 
 	// Pre-bucket HTTP by pair so the edge-build loop below is O(1) lookup.
 	httpByPair := map[pairKey]*L7Summary{}
@@ -250,7 +298,7 @@ func (h *handlers) handleFlowEdges(w http.ResponseWriter, r *http.Request) {
 	// internal IPs would otherwise pile up in the synthetic (external)
 	// region after every pod restart.
 	var podCIDRs []*net.IPNet
-	if conn := h.manager.Connector(r.Context()); conn != nil {
+	if conn := sc.conn; conn != nil {
 		if pl := conn.PodLister(); pl != nil {
 			if pods, err := pl.List(labels.Everything()); err == nil {
 				for _, p := range pods {
@@ -339,11 +387,10 @@ func (h *handlers) handleFlowEdges(w http.ResponseWriter, r *http.Request) {
 	// Same cluster scope as the main queries. Best-effort — on probe failure we
 	// leave SourcePresent=false and the UI shows the setup CTA.
 	if !resp.SourcePresent {
-		presence, _ := runInstantQuery(r.Context(), scopeQueryByCluster(
-			`count(count_over_time(pod_flow_events_total{source="hubble"}[15m]))`, uid))
+		presence, _ := runInstantQuery(ctx, scope(`count(count_over_time(pod_flow_events_total{source="hubble"}[15m]))`))
 		resp.SourcePresent = len(presence) > 0 && presence[0].Value > 0
 	}
-	respondJSON(w, http.StatusOK, resp)
+	return resp, nil
 }
 
 // pairKey identifies a directed pod-to-pod flow (source → destination) for

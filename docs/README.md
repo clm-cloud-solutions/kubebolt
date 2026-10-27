@@ -33,6 +33,7 @@ with the code, so they are versioned with each release.
 | [Kobi Copilot](guides/copilot.md) | Enabling Kobi, configuration, actions and guardrails |
 | [AI providers](guides/copilot-providers.md) | Anthropic and OpenAI-compatible providers, models, self-hosted LLMs |
 | [MCP server](guides/kobi-mcp.md) | Kobi's read-only tools in Claude Code, Cursor and other MCP clients |
+| [Cloud connectors](guides/kobi-mcp-connectors.md) | Kobi reads the AWS and Azure resources a workload depends on, read-only |
 
 ## Integrations
 

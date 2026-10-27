@@ -72,3 +72,27 @@ describe('compactCopilotSession — serialization', () => {
     await expect(compactCopilotSession([makeMsg({})], false)).rejects.toThrow(/503/)
   })
 })
+
+describe('serializeMessages — trigger', () => {
+  it('carries the trigger of a message the UI wrote, and none for a typed one', async () => {
+    const { serializeMessages } = await import('./chat')
+    const out = serializeMessages([
+      makeMsg({ content: 'Puedes escalar a 0 a oomy-app?' }),
+      makeMsg({ content: 'I ran the action…', trigger: 'action_stalled' }),
+    ])
+    expect(out[0].trigger).toBeUndefined()
+    expect(out[1].trigger).toBe('action_stalled')
+  })
+})
+
+describe('serializeMessages — view', () => {
+  it('sends back the page the server stamped, so the next turn reads the history the same', async () => {
+    const { serializeMessages } = await import('./chat')
+    const out = serializeMessages([
+      makeMsg({ content: 'La tienda está dando errores', view: '/deployments/shop-frontend/shop-web' }),
+      makeMsg({ content: 'Nuevo mensaje' }),
+    ])
+    expect(out[0].view).toBe('/deployments/shop-frontend/shop-web')
+    expect(out[1].view).toBeUndefined()
+  })
+})

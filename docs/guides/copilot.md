@@ -19,22 +19,53 @@ Public documentation: [kubebolt.io/docs/copilot](https://kubebolt.io/docs/copilo
 
 ## What Kobi can do
 
-Kobi works through **26 tools** that the backend executes on its behalf (the LLM never talks
-to your cluster directly).
+Kobi works through **41 tools** that the backend executes on its behalf (the LLM never talks
+to your cluster directly), plus the tools of the cloud connectors an administrator sets up.
 
-**17 read tools** — `get_cluster_overview`, `list_resources`, `get_resource_detail`,
-`get_resource_yaml`, `get_resource_describe`, `get_pod_logs`, `get_workload_pods`,
-`get_workload_history`, `get_cronjob_jobs`, `get_topology`, `get_insights`, `get_events`,
-`search_resources`, `get_permissions`, `list_clusters`, `get_workload_metrics`,
-`get_kubebolt_docs`.
+**31 read tools:**
+
+- Cluster: `get_cluster_overview`, `list_resources`, `get_resource_detail`,
+  `get_resource_yaml`, `get_resource_describe`, `get_pod_logs`, `get_workload_pods`,
+  `get_workload_history`, `get_cronjob_jobs`, `get_topology`, `get_events`,
+  `search_resources`, `get_permissions`, `get_external_connections` (what each address a
+  workload calls is: in the cluster, another of your clusters, or outside).
+- Metrics and cost: `get_workload_metrics`, `query_metrics`, `get_right_sizing`,
+  `get_recent_deploys`.
+- Insights and their history: `get_insights`, `get_insight_episodes`, `get_insight_episode`,
+  `get_operational_episodes`.
+- Security: `get_findings`, `get_finding_workloads`, `get_finding_detail`,
+  `get_runtime_events`.
+- Fleet and coverage: `list_clusters`, `get_fleet_summary`, `get_coverage`.
+- Procedures and docs: `load_skill`, `get_kubebolt_docs`.
+
+**1 navigation offer** — `offer_cluster_switch` draws a card that switches the cluster you
+are looking at when the answer lives in another one. It changes nothing in any cluster.
 
 **9 action proposals** — `propose_restart_workload`, `propose_debug_pod`,
 `propose_scale_workload`, `propose_rollback_deployment`, `propose_delete_resource`,
 `propose_set_resources`, `propose_set_image`, `propose_set_env`, `propose_patch_hpa`. A
 proposal changes nothing by itself; see [Actions and approval](#actions-and-approval).
 
-The same 17 read tools are also available to external MCP hosts (Claude Code, Cursor, CI) —
-see [kobi-mcp.md](kobi-mcp.md).
+**Cloud connectors** — when the cause sits outside the cluster, Kobi reads the AWS or Azure
+resources a workload depends on (`mcp__aws__…`, `mcp__azure__…`), read-only by
+construction, at most 12 cloud calls per question, each one audited. An administrator sets
+them up in Administration → AI (Kobi) → Connectors; see
+[kobi-mcp-connectors.md](kobi-mcp-connectors.md).
+
+**Skills** — KubeBolt's own procedures (a crash loop, an image that will not pull, a
+dependency outside the cluster, a security finding, a rollout to undo…) are embedded in the
+binary and served by `load_skill`. Kobi loads one when the question calls for it, so a
+procedure costs nothing on the turns that do not use it.
+
+The 31 read tools are also available to external MCP hosts (Claude Code, Cursor, CI) — see
+[kobi-mcp.md](kobi-mcp.md). The navigation offer and the cloud connectors stay inside
+KubeBolt.
+
+**The investigation, as it happens.** While Kobi works, the chat shows each step as a card
+with a readable title (the logs it read, the load balancer it looked up). A mark shows where
+it leaves the cluster ("Leaves the cluster → AWS us-east-2 · read-only"). When the question
+ends, the steps fold into a summary. An answer that read a cloud carries a footnote that says
+so, even with the tool cards hidden.
 
 Kobi answers even when **no cluster is connected**: it still talks about itself, KubeBolt and
 Kubernetes (and can use `get_kubebolt_docs`), and tells you in its own words that there is no
@@ -145,9 +176,9 @@ the key if that happens.
 |---|---|---|
 | `KUBEBOLT_AI_PROVIDER` | `anthropic` | `anthropic` or `openai` (`openai` covers every OpenAI-compatible API) |
 | `KUBEBOLT_AI_API_KEY` | — | Your provider API key. **Kobi is disabled when no key is configured** (here or in the UI). |
-| `KUBEBOLT_AI_MODEL` | `claude-sonnet-5` (anthropic) / `gpt-4o` (openai) | Model ID sent to the provider |
+| `KUBEBOLT_AI_MODEL` | `claude-haiku-5-5` (anthropic) / `gpt-4o` (openai) | Model ID sent to the provider |
 | `KUBEBOLT_AI_BASE_URL` | provider default | Full endpoint URL, used as-is (e.g. `.../v1/chat/completions`) |
-| `KUBEBOLT_AI_MAX_TOKENS` | `4096` | Cap on output tokens per provider call |
+| `KUBEBOLT_AI_MAX_TOKENS` | per model: `16384` where reasoning counts against the cap (Claude, OpenAI reasoning models), `4096` otherwise | Cap on output tokens per provider call, the model's reasoning included |
 
 ### Fallback provider (optional)
 
@@ -226,6 +257,33 @@ Admins can turn proposals off entirely (`KUBEBOLT_AI_ACTIONS_ENABLED=false`) or 
 destructive ones (`KUBEBOLT_AI_DESTRUCTIVE_ACTIONS_ENABLED=false`), from the environment or
 from the Configuration page. When a proposal is blocked by that policy, Kobi says so instead
 of blaming your role, and offers the equivalent `kubectl` command.
+
+### Escalation model
+
+Kobi can run on a small model and move to a stronger one, for the rest of the
+conversation, the first time it leaves the selected cluster: a cloud connector call,
+`get_external_connections`, the `external-dependencies` procedure, a cluster switch offer,
+or a conversation opened from a cluster switch. Questions inside one cluster stay on the
+small model.
+
+| Variable | Required | Description |
+|---|---|---|
+| `KUBEBOLT_AI_ESCALATION_MODEL` | No | **Setting this enables escalation** (e.g. `claude-sonnet-5-5` with `claude-haiku-5-5` as the primary) |
+| `KUBEBOLT_AI_ESCALATION_PROVIDER` | No | Defaults to the primary provider |
+| `KUBEBOLT_AI_ESCALATION_API_KEY` | No | Defaults to the primary key when the provider is the same |
+| `KUBEBOLT_AI_ESCALATION_BASE_URL` | No | Defaults to the primary endpoint when the provider is the same |
+
+The model can also be set from the UI, under **Escalation model** in the primary provider's
+card (Administration → AI (Kobi) → Configuration). It runs on the primary's provider and key;
+**Off** turns escalation off, including one set by environment variable. The change applies
+on the next message.
+
+Measured on KubeBolt's eval cases (Haiku 5.5 → Sonnet 5.5): inside one cluster it costs what
+Haiku costs (escalated 1 conversation in 57) with the same results; when the investigation
+leaves the cluster it costs what Sonnet costs and reads the cloud as Sonnet does, but the
+first steps, before it leaves, are Haiku's. Each session records whether it escalated, why
+and what the escalation model consumed, and Administration → AI (Kobi) → Usage prices each
+model's share.
 
 ## Recipes
 
@@ -466,6 +524,8 @@ read-only, set `KUBEBOLT_AI_ACTIONS_ENABLED=false` instead.
   models, configuration examples, costs and compatibility notes.
 - **[kobi-mcp.md](kobi-mcp.md)** — Use Kobi's read-only tools from Claude Code, Cursor or any
   MCP host.
+- **[kobi-mcp-connectors.md](kobi-mcp-connectors.md)** — Let Kobi read the AWS and Azure
+  resources your workloads depend on.
 - [kubebolt.io/docs/copilot](https://kubebolt.io/docs/copilot) ·
   [kubebolt.io/docs/enabling-kobi](https://kubebolt.io/docs/enabling-kobi) ·
   [kubebolt.io/docs/kobi](https://kubebolt.io/docs/kobi)

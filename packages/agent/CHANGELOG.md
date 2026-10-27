@@ -11,6 +11,17 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.4.6] — 2026-10-27
+
+Chart-only security update: the agent's code is the same as 1.4.5. Same v1.0
+metric/label schema — drop-in within 1.x.
+
+### Security
+
+- **vmagent v1.154.0 → v1.155.0** in the chart's `scrape.image`: built on Go
+  1.27.3, it no longer carries CVE-2026-111943 and reports 0 CRITICAL/HIGH.
+  Matters only with `scrape.enabled=true`.
+
 ## [1.4.5] — 2026-10-26
 
 Security rebuild: the agent's code is the same as 1.4.4. Same v1.0
