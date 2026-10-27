@@ -45,4 +45,7 @@
 # v1.155.0-rc0-scratch has it fixed (0 findings on both images), and a release
 # candidate does not ship. Waived until the v1.155.0 final: move the three pins
 # then and delete this entry.
-CVE-2026-111943  # 2026-10-26 lmaina — Go stdlib crypto/x509 denylist of untrusted intermediates; reachable only on VM's outbound TLS (vmagent https scrape, remote storage), the bundled path is in-cluster plaintext. Remove-by 2026-11-09
+#
+# 2026-10-27: 2.5.0 moves the three pins to the v1.155.0-scratch final (released
+# 2026-10-26, Go 1.27.3): 0 CRITICAL/HIGH on both images with the Trivy DB of
+# 2026-10-27. The CVE-2026-111943 waiver is removed.
