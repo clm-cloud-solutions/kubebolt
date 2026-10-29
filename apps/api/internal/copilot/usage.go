@@ -297,3 +297,44 @@ func SubtractUsage(a, b Usage) Usage {
 		LongCacheCreation1hTokens: sub(a.LongCacheCreation1hTokens, b.LongCacheCreation1hTokens),
 	}
 }
+
+// ModelShare is the part of a session one model consumed.
+type ModelShare struct {
+	Provider string
+	Model    string
+	Usage    Usage
+}
+
+// ModelShares splits the session's usage by the model that consumed it, so a
+// price is always one model's: Usage is the whole session's and Model the one
+// it ended on, and pricing the two together charged an escalated session's
+// first rounds at the escalation model's price. An escalated session is the
+// model it moved from — everything the escalation model did not answer,
+// including a fallback that took over after it — and the escalation model's
+// share. A record without FromModel cannot be split and stays whole.
+func (rec SessionRecord) ModelShares() []ModelShare {
+	esc := rec.Escalation
+	if esc == nil || esc.FromModel == "" {
+		return []ModelShare{{Provider: rec.Provider, Model: rec.Model, Usage: rec.Usage}}
+	}
+	shares := make([]ModelShare, 0, 2)
+	if from := SubtractUsage(rec.Usage, esc.Usage); from != (Usage{}) {
+		shares = append(shares, ModelShare{Provider: esc.FromProvider, Model: esc.FromModel, Usage: from})
+	}
+	if esc.Usage != (Usage{}) {
+		shares = append(shares, ModelShare{Provider: esc.Provider, Model: esc.Model, Usage: esc.Usage})
+	}
+	return shares
+}
+
+// EstimatedUSD is the session's estimated cost, each share at its own model's
+// price. known is false when no share's model has one.
+func (rec SessionRecord) EstimatedUSD() (usd float64, known bool) {
+	for _, s := range rec.ModelShares() {
+		if p, ok := PricingFor(s.Provider, s.Model); ok {
+			usd += EstimateUSD(s.Usage, p)
+			known = true
+		}
+	}
+	return usd, known
+}
