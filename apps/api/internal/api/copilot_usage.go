@@ -170,11 +170,10 @@ func computeUsageSummary(records []copilot.SessionRecord) usageSummaryResponse {
 			agg.TotalBytes += t.Bytes
 		}
 
-		// Per-record pricing (each session priced by its own model) so a mixed
-		// model group sums correctly.
-		if pricing, known := copilot.PricingFor(rec.Provider, rec.Model); known {
-			resp.EstimatedUSD += copilot.EstimateUSD(rec.Usage, pricing)
-		}
+		// Per-record pricing, each model's share at its own price
+		// (SessionRecord.ModelShares), so a mixed model group sums correctly.
+		usd, _ := rec.EstimatedUSD()
+		resp.EstimatedUSD += usd
 	}
 
 	resp.TotalBilled = resp.InputTokens + resp.OutputTokens
@@ -244,7 +243,8 @@ func groupKeyFor(rec copilot.SessionRecord, groupBy string) string {
 		return rec.Cluster
 	case "model":
 		// Resolve empty model to the provider default so pricing + display
-		// reflect the model actually used.
+		// reflect the model actually used. An escalated session sits under the
+		// model it ended on, its cost each model's share at its own price.
 		m := copilot.ResolvedModel(rec.Provider, rec.Model)
 		if m == "" {
 			return rec.Provider
@@ -380,9 +380,8 @@ func (h *handlers) handleCopilotUsageTimeseries(w http.ResponseWriter, r *http.R
 		b.OutputTokens += rec.Usage.OutputTokens
 		b.CacheRead += rec.Usage.CacheReadTokens
 		b.Compacts += len(rec.Compacts)
-		if pricing, known := copilot.PricingFor(rec.Provider, rec.Model); known {
-			b.EstimatedUSD += copilot.EstimateUSD(rec.Usage, pricing)
-		}
+		usd, _ := rec.EstimatedUSD()
+		b.EstimatedUSD += usd
 	}
 
 	out := make([]timeseriesBucket, 0, len(buckets))
@@ -417,16 +416,32 @@ func (h *handlers) handleCopilotUsageSessions(w http.ResponseWriter, r *http.Req
 	}
 
 	// Attach estimated cost per record for the UI, without mutating the
-	// stored record. Wrap into a response shape.
+	// stored record. Wrap into a response shape. An escalated session also
+	// carries what each model cost, which is what its total adds up.
+	type modelShare struct {
+		Provider     string        `json:"provider"`
+		Model        string        `json:"model"`
+		Usage        copilot.Usage `json:"usage"`
+		EstimatedUSD float64       `json:"estimatedUsd"`
+	}
 	type enrichedSession struct {
 		copilot.SessionRecord
-		EstimatedUSD float64 `json:"estimatedUsd"`
+		EstimatedUSD float64      `json:"estimatedUsd"`
+		ModelShares  []modelShare `json:"modelShares,omitempty"`
 	}
 	enriched := make([]enrichedSession, 0, len(records))
 	for _, rec := range records {
 		item := enrichedSession{SessionRecord: rec}
-		if pricing, known := copilot.PricingFor(rec.Provider, rec.Model); known {
-			item.EstimatedUSD = copilot.EstimateUSD(rec.Usage, pricing)
+		item.EstimatedUSD, _ = rec.EstimatedUSD()
+		// Only a record that kept the model it moved from can be split.
+		if rec.Escalation != nil && rec.Escalation.FromModel != "" {
+			for _, s := range rec.ModelShares() {
+				share := modelShare{Provider: s.Provider, Model: s.Model, Usage: s.Usage}
+				if p, ok := copilot.PricingFor(s.Provider, s.Model); ok {
+					share.EstimatedUSD = copilot.EstimateUSD(s.Usage, p)
+				}
+				item.ModelShares = append(item.ModelShares, share)
+			}
 		}
 		enriched = append(enriched, item)
 	}

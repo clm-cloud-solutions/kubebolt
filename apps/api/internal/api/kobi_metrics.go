@@ -168,7 +168,11 @@ func (m *KobiMetrics) ObserveSession(rec *copilot.SessionRecord) {
 			m.toolResults.WithLabelValues(tenant, cluster, source, result).Add(float64(n))
 		}
 	}
-	m.ObserveUsage(tenant, rec.Provider, rec.Model, rec.Usage)
+	// Each model's tokens and cost under its own label: an escalated turn's
+	// first rounds were the configured model's, not the escalation model's.
+	for _, s := range rec.ModelShares() {
+		m.ObserveUsage(tenant, s.Provider, s.Model, s.Usage)
+	}
 }
 
 // ObserveModelCall records how long a model call that answered took.

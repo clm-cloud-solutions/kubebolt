@@ -529,11 +529,13 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			return nil
 		}
 		return &copilot.EscalationRecord{
-			Provider: escalation.Provider,
-			Model:    copilot.ResolvedModel(escalation.Provider, escalation.Model),
-			Reason:   escalationReason,
-			Round:    escalationRound,
-			Usage:    escalatedUsage,
+			Provider:     escalation.Provider,
+			Model:        copilot.ResolvedModel(escalation.Provider, escalation.Model),
+			FromProvider: cfg.Primary.Provider,
+			FromModel:    copilot.ResolvedModel(cfg.Primary.Provider, cfg.Primary.Model),
+			Reason:       escalationReason,
+			Round:        escalationRound,
+			Usage:        escalatedUsage,
 		}
 	}
 
