@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -254,5 +255,69 @@ func TestParseRange(t *testing.T) {
 		if span < c.wantH-2*time.Second || span > c.wantH+2*time.Second {
 			t.Errorf("parseRange(%q) span = %v, want ~%v", c.input, span, c.wantH)
 		}
+	}
+}
+
+// An escalated session costs each model's share at its own price — in the
+// summary and in the session list, which also shows the shares.
+func TestUsage_EscalatedSessionIsPricedAtEachModel(t *testing.T) {
+	h, cleanup := setupUsageTest(t)
+	defer cleanup()
+
+	haiku := copilot.Usage{InputTokens: 2000, OutputTokens: 3000, CacheReadTokens: 200000, CacheCreationTokens: 50000}
+	sonnet := copilot.Usage{InputTokens: 1000, OutputTokens: 3000, CacheReadTokens: 60000, CacheCreationTokens: 60000}
+	total := haiku
+	total.Add(sonnet)
+	fixture := &copilot.SessionRecord{
+		UserID: "u1", Provider: "anthropic", Model: "claude-sonnet-5-5",
+		Trigger: "manual", Reason: "done", Rounds: 7, Usage: total,
+		Escalation: &copilot.EscalationRecord{
+			Provider: "anthropic", Model: "claude-sonnet-5-5",
+			FromProvider: "anthropic", FromModel: "claude-haiku-5-5",
+			Reason: "mcp__aws__call", Round: 5, Usage: sonnet,
+		},
+	}
+	recordFixture(t, h, fixtureNow(), fixture)
+
+	price := func(u copilot.Usage, model string) float64 {
+		p, _ := copilot.PricingFor("anthropic", model)
+		return copilot.EstimateUSD(u, p)
+	}
+	wantUSD := price(haiku, "claude-haiku-5-5") + price(sonnet, "claude-sonnet-5-5")
+	if whole := price(total, "claude-sonnet-5-5"); whole <= wantUSD {
+		t.Fatalf("fixture does not tell the two prices apart: whole $%v, split $%v", whole, wantUSD)
+	}
+
+	rec := httptest.NewRecorder()
+	h.handleCopilotUsageSummary(rec, httptest.NewRequest(http.MethodGet, "/admin/copilot/usage/summary?range=24h", nil))
+	var summary usageSummaryResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &summary); err != nil {
+		t.Fatalf("decode summary: %v", err)
+	}
+	if math.Abs(summary.EstimatedUSD-wantUSD) > 1e-12 {
+		t.Errorf("summary estimatedUsd = %v, want %v", summary.EstimatedUSD, wantUSD)
+	}
+
+	rec = httptest.NewRecorder()
+	h.handleCopilotUsageSessions(rec, httptest.NewRequest(http.MethodGet, "/admin/copilot/usage/sessions?range=24h", nil))
+	var list []struct {
+		EstimatedUSD float64 `json:"estimatedUsd"`
+		ModelShares  []struct {
+			Model        string  `json:"model"`
+			EstimatedUSD float64 `json:"estimatedUsd"`
+		} `json:"modelShares"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil || len(list) != 1 {
+		t.Fatalf("decode sessions: %v (%d sessions)", err, len(list))
+	}
+	s := list[0]
+	if math.Abs(s.EstimatedUSD-wantUSD) > 1e-12 {
+		t.Errorf("session estimatedUsd = %v, want %v", s.EstimatedUSD, wantUSD)
+	}
+	if len(s.ModelShares) != 2 || s.ModelShares[0].Model != "claude-haiku-5-5" || s.ModelShares[1].Model != "claude-sonnet-5-5" {
+		t.Fatalf("modelShares = %+v, want Haiku then Sonnet", s.ModelShares)
+	}
+	if got := s.ModelShares[0].EstimatedUSD + s.ModelShares[1].EstimatedUSD; math.Abs(got-s.EstimatedUSD) > 1e-12 {
+		t.Errorf("the shares add up to $%v, the session says $%v", got, s.EstimatedUSD)
 	}
 }

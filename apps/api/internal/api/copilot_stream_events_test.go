@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -230,5 +231,34 @@ func TestKobiChat_EscalationIsAnnouncedOnEveryTurnItCovers(t *testing.T) {
 		if ev.name == "text" || ev.name == "tool_call" || ev.name == "usage" {
 			t.Fatalf("second turn: %s came before the escalation was announced", ev.name)
 		}
+	}
+}
+
+// A turn that escalates keeps the model it moved from, so each model's rounds
+// are priced at its own price: the first round was the configured model's,
+// the answer the escalation model's.
+func TestKobiChat_EscalatedSessionRecordsTheModelItMovedFrom(t *testing.T) {
+	prov := newScripted(callsThenAnswer(func() []copilot.ToolCall { return []copilot.ToolCall{mcpCall("c1")} }))
+	wiringEscalation = &config.ProviderConfig{Provider: prov.name, Model: "escalation-model"}
+	defer func() { wiringEscalation = nil }()
+	w := newWiring(t, true, prov.name)
+	w.enable(t)
+
+	w.chat(t, "why is checkout failing?")
+	sess := w.sessions.last(t)
+	esc := sess.Escalation
+	if esc == nil {
+		t.Fatal("the session that called the connector did not escalate")
+	}
+	if esc.FromProvider != prov.name || esc.FromModel != "fake-model" {
+		t.Errorf("moved from %s/%s, want %s/fake-model", esc.FromProvider, esc.FromModel, prov.name)
+	}
+	round := copilot.Usage{InputTokens: 10, OutputTokens: 5}
+	want := []copilot.ModelShare{
+		{Provider: prov.name, Model: "fake-model", Usage: round},
+		{Provider: prov.name, Model: "escalation-model", Usage: round},
+	}
+	if got := sess.ModelShares(); !reflect.DeepEqual(got, want) {
+		t.Errorf("ModelShares() = %+v, want %+v", got, want)
 	}
 }

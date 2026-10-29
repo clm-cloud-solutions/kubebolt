@@ -17,6 +17,11 @@ import (
 type EscalationRecord struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
+	// FromProvider and FromModel are the model the session moved from, the
+	// configured one: SessionRecord.ModelShares prices what it consumed at
+	// its own price. Empty on records written before they existed.
+	FromProvider string `json:"fromProvider,omitempty"`
+	FromModel    string `json:"fromModel,omitempty"`
 	// Reason is what moved the conversation: "handoff" (it opened from a
 	// cluster switch), "history" (an earlier turn had escalated), or the
 	// tool whose call did it.

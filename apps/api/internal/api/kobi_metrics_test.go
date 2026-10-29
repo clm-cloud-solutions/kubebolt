@@ -81,6 +81,39 @@ func TestKobiMetrics_ObserveSession(t *testing.T) {
 	}
 }
 
+// An escalated turn's tokens and cost go to the model that consumed them: its
+// first rounds were the configured model's, not the escalation model's.
+func TestKobiMetrics_EscalatedSessionCountsEachModel(t *testing.T) {
+	m := NewKobiMetrics(prometheus.NewRegistry())
+	m.ObserveSession(&copilot.SessionRecord{
+		Provider: "anthropic", Model: "claude-sonnet-5-5", Reason: "done",
+		Usage: copilot.Usage{InputTokens: 300, OutputTokens: 70},
+		Escalation: &copilot.EscalationRecord{
+			Provider: "anthropic", Model: "claude-sonnet-5-5",
+			FromProvider: "anthropic", FromModel: "claude-haiku-5-5",
+			Reason: "mcp__aws__call", Round: 2,
+			Usage: copilot.Usage{InputTokens: 100, OutputTokens: 20},
+		},
+	})
+	for _, c := range []struct {
+		model         string
+		input, output float64
+	}{
+		{"claude-haiku-5-5", 200, 50},
+		{"claude-sonnet-5-5", 100, 20},
+	} {
+		if got := testutil.ToFloat64(m.tokens.WithLabelValues("", "anthropic", c.model, "input")); got != c.input {
+			t.Errorf("%s input = %v, want %v", c.model, got, c.input)
+		}
+		if got := testutil.ToFloat64(m.tokens.WithLabelValues("", "anthropic", c.model, "output")); got != c.output {
+			t.Errorf("%s output = %v, want %v", c.model, got, c.output)
+		}
+		if cost := testutil.ToFloat64(m.costUSD.WithLabelValues("", "anthropic", c.model)); cost <= 0 {
+			t.Errorf("%s cost = %v, want its share's price", c.model, cost)
+		}
+	}
+}
+
 // The client names the trigger. An unknown one must not open a new series.
 func TestKobiMetrics_UnknownTriggerIsOther(t *testing.T) {
 	m := NewKobiMetrics(prometheus.NewRegistry())

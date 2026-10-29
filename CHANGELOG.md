@@ -6,6 +6,27 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.5.1] — 2026-10-29
+
+Fixes what an escalated Kobi conversation cost. Drop-in, no schema change;
+the agent stays on 1.4.6. Full note:
+[docs/releases/v2.5.1.md](docs/releases/v2.5.1.md).
+
+### Fixed
+
+- **An escalated turn was priced whole at the escalation model.** The rounds
+  the configured model answered before the move were counted at the
+  stronger model's price (a turn shown at $0.456 cost $0.218). Each turn now
+  records the model it moved from, and the Kobi Usage page and the
+  `kubebolt_kobi_copilot_tokens_total` / `kubebolt_kobi_copilot_cost_usd_total`
+  series price each model's part at its own price. Turns recorded before keep
+  their old estimate.
+
+### Changed
+
+- The Kobi session detail names both models of an escalated turn, why it
+  moved, what each model cost over which rounds, and the cache writes.
+
 ## [2.5.0] — 2026-10-27
 
 Kobi follows the investigation outside the cluster. Drop-in, no schema

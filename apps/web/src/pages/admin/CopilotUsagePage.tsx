@@ -12,6 +12,7 @@ import {
   RefreshCw,
   ChevronLeft,
   ChevronRight,
+  TrendingUp,
 } from 'lucide-react'
 import { api } from '@/services/api'
 import { useClusterLabel } from '@/hooks/useClusterLabel'
@@ -21,6 +22,7 @@ import { CopilotUsageKpis } from '@/components/admin/CopilotUsageKpis'
 import { fmtCredits, fmtUsd, useAiSpendUnit } from '@/hooks/useAiSpendUnit'
 import { RangeMenu, RangeMenuItem } from '@/components/shared/RangeMenu'
 import { TOOLTIP_SURFACE } from '@/components/shared/Tooltip'
+import { escalationSentence, sessionModelLabel, shareRounds } from '@/pages/admin/sessionEscalation'
 import type {
   CopilotSessionEnriched,
   CopilotUsageBucket,
@@ -540,19 +542,45 @@ function SessionModal({
     <Modal badge="Kobi session" title={title} onClose={onClose} size="lg">
       <div className="flex-1 overflow-y-auto p-5 space-y-4">
           <div className="grid grid-cols-2 gap-3 text-xs">
-            <KV label="Model" value={`${session.provider} · ${session.model || 'default'}`} />
+            <KV label="Model" value={sessionModelLabel(session)} />
             <KV label="Trigger" value={session.trigger || 'manual'} />
             <KV label="Rounds" value={String(session.rounds)} />
             <KV label="Duration" value={fmtDuration(session.durationMs)} />
             <KV label="Input" value={fmtTokens(session.usage.inputTokens)} />
             <KV label="Output" value={fmtTokens(session.usage.outputTokens)} />
             <KV label="Cache read" value={fmtTokens(session.usage.cacheReadTokens ?? 0)} />
+            <KV label="Cache write" value={fmtTokens(session.usage.cacheCreationTokens ?? 0)} />
             {unit === 'credits' ? (
               <KV label="Credits" value={fmtCredits(session.credits ?? 0)} />
             ) : (
               <KV label="Cost (est.)" value={fmtUsd(session.estimatedUsd)} />
             )}
           </div>
+
+          {session.escalation && (
+            <div>
+              <div className="flex items-center gap-1.5 mb-2">
+                <TrendingUp className="w-3.5 h-3.5 text-kb-accent" />
+                <h4 className="text-xs font-semibold text-kb-text-primary">Escalation</h4>
+              </div>
+              <div className="text-[11px] font-mono text-kb-text-secondary mb-1.5">
+                {escalationSentence(session.escalation)}
+              </div>
+              {session.modelShares && session.modelShares.length > 0 && (
+                <div className="space-y-1">
+                  {session.modelShares.map((m) => (
+                    <div key={`${m.provider}/${m.model}`} className="flex items-center gap-2 text-[11px] font-mono">
+                      <span className="flex-1 text-kb-text-secondary truncate">{m.model}</span>
+                      <span className="text-kb-text-tertiary">{shareRounds(m, session)}</span>
+                      <span className="w-16 text-right text-kb-text-primary">
+                        {unit === 'credits' ? fmtCredits(m.credits ?? 0) : fmtUsd(m.estimatedUsd)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {session.tools && Object.keys(session.tools).length > 0 && (
             <div>

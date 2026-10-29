@@ -80,7 +80,38 @@ export interface CopilotSessionEnriched {
   fallback: boolean
   tools?: Record<string, { calls: number; bytes: number; errors: number; durationMs: number }>
   compacts?: Array<{ turnsFolded: number; tokensBefore: number; tokensAfter: number; model: string }>
+  // Set when the session moved to the escalation model. fromModel is the model
+  // it moved from; absent on sessions recorded before it was kept.
+  escalation?: SessionEscalation
   estimatedUsd: number
   // Where the platform bills credits (see the summary's). Absent in OSS.
+  credits?: number
+  // What each model cost, on escalated sessions: the session's cost is their sum.
+  modelShares?: SessionModelShare[]
+}
+
+export interface SessionEscalation {
+  provider: string
+  model: string
+  fromProvider?: string
+  fromModel?: string
+  // What moved it: "handoff" (opened from a cluster switch), "history" (an
+  // earlier turn had moved), or the tool whose call did it.
+  reason: string
+  // The round after which it moved; 0 = from the start.
+  round: number
+}
+
+export interface SessionModelShare {
+  provider: string
+  model: string
+  usage: {
+    inputTokens: number
+    outputTokens: number
+    cacheReadTokens?: number
+    cacheCreationTokens?: number
+  }
+  estimatedUsd: number
+  // Where the platform bills credits. Absent in OSS.
   credits?: number
 }
