@@ -40,13 +40,27 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
-Service account name
+Service account name — the API's. It carries everything that reaches outside
+the pod: the ClusterRole, the cloud identity (Workload Identity, IRSA) and the
+AWS token of the cloud connectors.
 */}}
 {{- define "kubebolt.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create }}
 {{- default (include "kubebolt.fullname" .) .Values.serviceAccount.name }}
 {{- else }}
 {{- default "default" .Values.serviceAccount.name }}
+{{- end }}
+{{- end }}
+
+{{/*
+The web runs under its own ServiceAccount, bound to nothing, so the API's
+identity never reaches it.
+*/}}
+{{- define "kubebolt.web.serviceAccountName" -}}
+{{- if .Values.web.serviceAccount.create }}
+{{- default (printf "%s-web" (include "kubebolt.fullname" .) | trunc 63 | trimSuffix "-") .Values.web.serviceAccount.name }}
+{{- else }}
+{{- default "default" .Values.web.serviceAccount.name }}
 {{- end }}
 {{- end }}
 

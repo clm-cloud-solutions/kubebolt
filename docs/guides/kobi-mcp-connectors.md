@@ -104,6 +104,14 @@ uses it to assume your role. Where it comes from:
   Pod Identity association, and set `mcpConnectors.aws.principalArn` to that
   role's ARN so the trust policy names it. For the IAM role mode across
   accounts, that role also needs `sts:AssumeRole` on the reader role.
+- **Other clusters (AKS, GKE, on-premises):** register the cluster's OIDC
+  issuer as an identity provider in IAM, create a role that trusts it for
+  `system:serviceaccount:<namespace>:<the API's ServiceAccount>` with
+  audience `sts.amazonaws.com`, and set `mcpConnectors.aws.principalArn` to
+  that role with `mcpConnectors.aws.webIdentity.enabled=true`. The API pod
+  mounts a token of its ServiceAccount for AWS STS and the AWS SDK exchanges
+  it for the role. Only the API mounts it; the web runs under its own
+  ServiceAccount, which that role does not trust.
 - **Docker Compose:** the compose file mounts `~/.aws` into the API
   container. The IAM role mode signs with its default profile; *This
   machine's credentials* can name a profile in the drawer.
