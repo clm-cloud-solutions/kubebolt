@@ -49,9 +49,7 @@ func applyCopilotPlatformFields(cfg *config.CopilotConfig, stored *StoredCopilot
 	if stored.Primary != nil {
 		applyStoredProvider(&cfg.Primary, stored.Primary, crypto)
 	}
-	if stored.Fallback != nil {
-		applyStoredFallback(cfg, stored.Fallback, crypto)
-	}
+	applyStoredFallbackSettings(cfg, stored, crypto)
 	applyStoredEscalation(cfg, stored.EscalationModel)
 	if stored.MaxTokens != nil {
 		cfg.MaxTokens = *stored.MaxTokens
@@ -257,12 +255,6 @@ func (r *Runtime) RenderMaskedCopilotPlatform() (MaskedCopilot, error) {
 	if effective.Escalation != nil {
 		out.Effective.EscalationModel = effective.Escalation.Model
 	}
-	if effective.Fallback != nil {
-		out.Effective.HasFallback = true
-		out.Effective.FallbackProvider = effective.Fallback.Provider
-		out.Effective.FallbackModel = effective.Fallback.Model
-		out.Effective.FallbackAPIKeyMasked = maskSecret(effective.Fallback.APIKey)
-		out.Effective.FallbackBaseURL = effective.Fallback.BaseURL
-	}
+	renderEffectiveFallback(&out.Effective, effective.Fallback, stored.fallbackOff(), r.envBase.Fallback)
 	return out, nil
 }

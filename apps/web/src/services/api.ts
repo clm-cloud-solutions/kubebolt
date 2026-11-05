@@ -2002,6 +2002,9 @@ export interface CopilotSettingsResponse {
   stored: {
     hasPrimaryOverride: boolean
     hasFallbackOverride: boolean
+    // The fallback was turned off here, env included. While off, effective's
+    // fallback fields describe the env fallback that turning it on restores.
+    fallbackOff?: boolean
     primary?: {
       provider?: string
       apiKeyMasked?: string
