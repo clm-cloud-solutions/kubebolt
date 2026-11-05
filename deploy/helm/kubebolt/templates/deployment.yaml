@@ -2,6 +2,10 @@
 {{- if and $azureMCP (not .Values.mcpConnectors.azure.sidecar.existingSecret) }}
 {{- fail "mcpConnectors.azure.sidecar.enabled=true requires mcpConnectors.azure.sidecar.existingSecret (keys tenant-id, client-id, client-secret)" }}
 {{- end }}
+{{- $awsWebIdentity := and .Values.mcpConnectors.enabled .Values.mcpConnectors.aws.webIdentity.enabled }}
+{{- if and $awsWebIdentity (not (regexMatch "^arn:aws[a-z-]*:iam::[0-9]{12}:role/" .Values.mcpConnectors.aws.principalArn)) }}
+{{- fail "mcpConnectors.aws.webIdentity.enabled=true requires mcpConnectors.aws.principalArn: the ARN of the IAM role the API's token is exchanged for" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -33,7 +37,7 @@ spec:
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if or .Values.auth.enabled (and .Values.agentIngest.enabled .Values.agentIngest.tls.enabled) $azureMCP }}
+      {{- if or .Values.auth.enabled (and .Values.agentIngest.enabled .Values.agentIngest.tls.enabled) $azureMCP $awsWebIdentity }}
       volumes:
         {{- if .Values.auth.enabled }}
         - name: data
@@ -71,6 +75,20 @@ spec:
           emptyDir: {}
         - name: azure-mcp-no-token
           emptyDir: {}
+        {{- end }}
+        {{- if $awsWebIdentity }}
+        # A token of the API's ServiceAccount that only AWS STS accepts (its
+        # audience): the AWS SDK exchanges it for mcpConnectors.aws.principalArn,
+        # the identity that assumes the connector's role. Only the api
+        # container mounts it, and no other pod of the release runs under this
+        # ServiceAccount.
+        - name: aws-web-identity
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: {{ .Values.mcpConnectors.aws.webIdentity.audience | quote }}
+                  expirationSeconds: {{ .Values.mcpConnectors.aws.webIdentity.expirationSeconds }}
+                  path: token
         {{- end }}
       {{- end }}
       containers:
@@ -250,6 +268,14 @@ spec:
             - name: KUBEBOLT_MCP_AWS_PRINCIPAL_ARN
               value: {{ . | quote }}
             {{- end }}
+            {{- if $awsWebIdentity }}
+            - name: AWS_ROLE_ARN
+              value: {{ .Values.mcpConnectors.aws.principalArn | quote }}
+            - name: AWS_WEB_IDENTITY_TOKEN_FILE
+              value: /var/run/secrets/kubebolt/aws/token
+            - name: AWS_ROLE_SESSION_NAME
+              value: kubebolt-api
+            {{- end }}
             {{- /* ── Agent ingest (Sprint A) ── */ -}}
             {{- if .Values.agentIngest.enabled }}
             - name: KUBEBOLT_AGENT_GRPC_ADDR
@@ -307,6 +333,11 @@ spec:
             {{- if and .Values.agentIngest.enabled .Values.agentIngest.tls.enabled }}
             - name: agent-ingest-tls
               mountPath: /etc/kubebolt-agent-tls
+              readOnly: true
+            {{- end }}
+            {{- if $awsWebIdentity }}
+            - name: aws-web-identity
+              mountPath: /var/run/secrets/kubebolt/aws
               readOnly: true
             {{- end }}
           livenessProbe:
@@ -446,11 +477,10 @@ spec:
         {{- include "kubebolt.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: web
     spec:
-      # The chart's ServiceAccount, like the api: without it the pod ran as the
-      # namespace's `default` SA and an SCC grant for the release landed on the
-      # wrong subject. nginx never calls the Kubernetes API, and this SA is bound
-      # to the chart's ClusterRole: its token is not mounted here.
-      serviceAccountName: {{ include "kubebolt.serviceAccountName" . }}
+      # The web's own ServiceAccount, bound to nothing: nginx never calls the
+      # Kubernetes API, and the API's ServiceAccount carries the ClusterRole and
+      # the cloud identities. Its token is not mounted.
+      serviceAccountName: {{ include "kubebolt.web.serviceAccountName" . }}
       automountServiceAccountToken: false
       {{- with .Values.web.podSecurityContext }}
       securityContext:

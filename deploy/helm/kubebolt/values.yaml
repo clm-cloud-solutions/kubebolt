@@ -84,6 +84,13 @@ web:
   # runs under any UID in group 0, so nothing needs to be set for OpenShift.
   podSecurityContext: {}
   securityContext: {}
+  # The web's own ServiceAccount (<release>-web), bound to nothing; its token is
+  # never mounted. create=false runs the pod under `name`, or the namespace's
+  # default.
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
 
 # Service configuration for the main HTTP service (web UI + API behind
 # nginx proxy in the web pod).
@@ -151,7 +158,10 @@ gatewayAPI:
     host: agent.kubebolt.example.com
     tlsSecretName: kubebolt-agent-tls
 
-# ServiceAccount for API to access the cluster
+# The API's ServiceAccount: the ClusterRole is bound to it, and it carries the
+# cloud identities (Workload Identity / IRSA annotations, the AWS token of
+# mcpConnectors.aws.webIdentity). The web has its own (web.serviceAccount),
+# bound to nothing.
 serviceAccount:
   create: true
   name: ""
@@ -443,10 +453,20 @@ mcpConnectors:
   enabled: true
   aws:
     # KUBEBOLT_MCP_AWS_PRINCIPAL_ARN: the AWS identity the API runs as (the
-    # IRSA or EKS Pod Identity role of serviceAccount), printed as the
-    # principal of the trust policy in the connector's setup guide. Empty
-    # leaves a placeholder there.
+    # IRSA or EKS Pod Identity role of serviceAccount, or the role of
+    # webIdentity below), printed as the principal of the trust policy in the
+    # connector's setup guide. Empty leaves a placeholder there.
     principalArn: ""
+    # Where that identity comes from outside EKS. The API pod gets a token of
+    # its ServiceAccount for `audience`, and the AWS SDK exchanges it for
+    # principalArn (AssumeRoleWithWebIdentity). That role must trust this
+    # cluster's OIDC issuer for `system:serviceaccount:<namespace>:<the API's
+    # ServiceAccount>`. On EKS, IRSA or Pod Identity provide it instead: leave
+    # this off and annotate serviceAccount.
+    webIdentity:
+      enabled: false
+      audience: sts.amazonaws.com
+      expirationSeconds: 3600
   azure:
     # The Azure MCP Server as a second container of the API pod. It holds one
     # read-only service principal and listens on the pod's loopback with its
