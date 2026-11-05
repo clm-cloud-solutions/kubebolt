@@ -1007,7 +1007,7 @@ func TestPartialBindingIsRebuiltInTheBackground(t *testing.T) {
 	// A rebuild that is no better is thrown away; the one in use stays.
 	h.clock.Advance(time.Second)
 	h.toolNames(ctx, mcpcatalog.ConsumerKobi)
-	eventually(t, "the no-better rebuild closed", func() bool { return h.fb.bindCount() == 2 && h.fb.binding(1).closed.Load() })
+	eventually(t, "the no-better rebuild closed", func() bool { return h.fb.bindCount() == 2 && h.fb.closedBinding(1) })
 	if h.fb.binding(0).closed.Load() {
 		t.Fatal("the binding in use was replaced by one missing as much")
 	}
@@ -1120,7 +1120,7 @@ func TestPartialRebindBacksOffWhileNothingImproves(t *testing.T) {
 		h.toolNames(ctx, mcpcatalog.ConsumerKobi)
 		binds++
 		eventually(t, "the no-better rebuild closed", func() bool {
-			return h.fb.bindCount() == binds && h.fb.binding(binds-1).closed.Load()
+			return h.fb.bindCount() == binds && h.fb.closedBinding(binds-1)
 		})
 	}
 	if h.fb.binding(0).closed.Load() {
