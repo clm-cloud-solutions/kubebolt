@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { routeScope, isGlobalScope, survivesDeadCluster, CATCH_ALL_ROUTE, SCOPE_TABLE } from './scope'
+import { routeScope, isGlobalScope, survivesDeadCluster, isResourceDetailType, CATCH_ALL_ROUTE, SCOPE_TABLE } from './scope'
 
 // El test que evita que la tabla de ámbitos derive.
 //
@@ -135,9 +135,30 @@ describe('routeScope', () => {
 
   it('casa por segmento, no por substring', () => {
     // '/podsomething' no es '/pods'. Sin el separador, un recurso futuro cuyo
-    // nombre empiece igual que uno global heredaría el ámbito equivocado.
-    expect(routeScope('/homelab')).toBe('cluster')
-    expect(routeScope('/fleetwide')).toBe('cluster')
+    // nombre empiece igual que uno de otro ámbito heredaría el equivocado.
+    // Sin prefijo que case, una dirección es la 404, que es global.
+    expect(routeScope('/podsomething')).toBe('global')
+    expect(routeScope('/mapping')).toBe('global')
+  })
+
+  it('una dirección que no existe es la 404, global aunque el cluster esté caído', () => {
+    for (const path of ['/nope', '/nope/x', '/a/b/c/d', '/nope/default/x']) {
+      expect(routeScope(path), path).toBe('global')
+      expect(survivesDeadCluster(path), path).toBe(true)
+    }
+    // Bajo un prefijo declarado hereda el de su sección, como cualquier sub-ruta.
+    expect(routeScope('/admin/nope')).toBe('global')
+    expect(routeScope('/pods/nope')).toBe('cluster')
+  })
+
+  it('el comodín sólo es detalle con un tipo que el API sirve', () => {
+    expect(isResourceDetailType('pods')).toBe(true)
+    expect(isResourceDetailType('persistentvolumeclaims')).toBe(true)
+    expect(isResourceDetailType('ciliumclusterwidenetworkpolicies')).toBe(true)
+    expect(isResourceDetailType('nope')).toBe(false)
+    expect(isResourceDetailType('')).toBe(false)
+    expect(routeScope('/namespaces/_/kube-system')).toBe('cluster')
+    expect(routeScope('/replicasets/default/api-7c9f')).toBe('cluster')
   })
 
   it('la barra final no cambia el ámbito', () => {

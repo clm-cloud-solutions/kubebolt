@@ -29,6 +29,8 @@ import { api, ApiError, binaryValuesOf } from '@/services/api'
 import { useResources, useResourceDetail, useResourceDescribe, useResourceYAML, useResourceEvents, useTopology, usePodLogs, useDeploymentPods, useDeploymentHistory, useStatefulSetPods, useDaemonSetPods, useJobPods, useCronJobJobs, useWorkloadHistory } from '@/hooks/useResources'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
+import { NotFoundPage } from '@/pages/NotFoundPage'
+import { isResourceDetailType } from '@/utils/scope'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { MutationErrorToast, classifyMutationError, type MutationErrorVariant } from '@/components/shared/MutationErrorToast'
 import { StatusBadge } from './StatusBadge'
@@ -3992,7 +3994,11 @@ function WorkloadHistoryTab({ type, namespace, name }: { type: string; namespace
 
 export function ResourceDetailPage() {
   const { type = '', namespace = '', name = '' } = useParams<{ type: string; namespace: string; name: string }>()
-  const { data: item, isLoading, error, refetch, dataUpdatedAt, isFetching } = useResourceDetail(type, namespace, name)
+  // A first segment that is no resource type is an address that does not
+  // exist, not a resource: no request (an empty type disables the query) and
+  // the 404 page below, after the hooks.
+  const knownType = isResourceDetailType(type)
+  const { data: item, isLoading, error, refetch, dataUpdatedAt, isFetching } = useResourceDetail(knownType ? type : '', namespace, name)
   // Tab is URL-driven (?tab=pods etc.) so deep links from the Copilot's
   // ActionProposalCard land directly on the right view. Default is "overview".
   const [searchParams, setSearchParams] = useSearchParams()
@@ -4055,6 +4061,7 @@ export function ResourceDetailPage() {
   // fresh without an explicit reset. If the previous URL had ?tab=, that's
   // dropped naturally on navigation.
 
+  if (!knownType) return <NotFoundPage />
   if (isLoading) return <LoadingSpinner />
   // Only show full-screen error when we have NO data to render.
   // If we previously loaded `item` and a subsequent refetch failed

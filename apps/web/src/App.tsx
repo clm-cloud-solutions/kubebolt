@@ -30,6 +30,7 @@ import { HomePage } from '@/pages/HomePage'
 import { ApplicationsPage } from '@/pages/ApplicationsPage'
 import { HelmReleaseDetailPage } from '@/pages/HelmReleaseDetailPage'
 import { LoginPage } from '@/pages/LoginPage'
+import { NotFoundPage } from '@/pages/NotFoundPage'
 import { APITokensPage } from '@/pages/admin/APITokensPage'
 import { AccessHub } from '@/pages/admin/AccessHub'
 import { AgentsHub } from '@/pages/admin/AgentsHub'
@@ -177,6 +178,9 @@ export default function App() {
               {/* Admin / Insights — the #44 matrix hub: Rules, both suppression
                   layers (policy + mutes) and the install-wide episode history. */}
               <Route path="/admin/insights" element={<RequireRole role="admin"><InsightsHubPage /></RequireRole>} />
+              {/* Last on purpose: an address no route matches. Without it the
+                  screen stayed blank, chrome included. */}
+              <Route path="*" element={<NotFoundPage />} />
             </Route>
           </Routes>
         </CopilotProvider>
