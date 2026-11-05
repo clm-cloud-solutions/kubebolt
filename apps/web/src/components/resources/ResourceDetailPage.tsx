@@ -1896,6 +1896,15 @@ function YAMLTab({ type, namespace, name, canEdit }: { type: string; namespace: 
   if (error) return <ErrorState message={error.message} />
 
   const lines = (yaml ?? '').split('\n')
+  // On apply the server puts back every value that still reads REDACTED
+  // (cluster/yaml_roundtrip.go); the hint says how to change one instead.
+  const hiddenHint = !(yaml ?? '').includes(': REDACTED')
+    ? null
+    : type === 'secrets'
+      ? 'Hidden values are kept when you apply. To change one, keep data as it is and add a stringData section with the new value in plain text. Values under data must be base64.'
+      : type === 'configmaps'
+        ? 'Hidden values are kept when you apply. To change one, replace REDACTED with the new value.'
+        : null
 
   function startEdit() {
     setEditValue(yaml ?? '')
@@ -1983,6 +1992,12 @@ function YAMLTab({ type, namespace, name, canEdit }: { type: string; namespace: 
       {saveError && (
         <div className="mb-2 px-3 py-2 rounded bg-status-error-dim border border-status-error/20 text-xs text-status-error font-mono">
           {saveError}
+        </div>
+      )}
+
+      {editing && hiddenHint && (
+        <div className="mb-2 px-3 py-2 rounded bg-status-info-dim border border-status-info/20 text-xs text-status-info">
+          {hiddenHint}
         </div>
       )}
 

@@ -4806,7 +4806,8 @@ func (c *Connector) resourceYAML(resourceType, namespace, name string, writes *[
 		return nil, fmt.Errorf("fetching resource: %w", err)
 	}
 
-	// Strip managedFields and last-applied-configuration — internal metadata that adds noise
+	// Strip managedFields and last-applied-configuration — internal metadata that adds noise.
+	// Everything hidden here, ApplyResourceYAML puts back (yaml_roundtrip.go).
 	if metadata, ok := obj.Object["metadata"].(map[string]interface{}); ok {
 		if writes != nil {
 			*writes = summarizeManagedFields(metadata["managedFields"])
@@ -4814,7 +4815,7 @@ func (c *Connector) resourceYAML(resourceType, namespace, name string, writes *[
 		delete(metadata, "managedFields")
 		// Remove last-applied-configuration — it's verbose and for secrets it contains unredacted data
 		if annotations, ok := metadata["annotations"].(map[string]interface{}); ok {
-			delete(annotations, "kubectl.kubernetes.io/last-applied-configuration")
+			delete(annotations, lastAppliedAnnotation)
 		}
 	}
 
@@ -4822,7 +4823,7 @@ func (c *Connector) resourceYAML(resourceType, namespace, name string, writes *[
 	if resourceType == "secrets" {
 		if data, ok := obj.Object["data"].(map[string]interface{}); ok {
 			for k := range data {
-				data[k] = "REDACTED"
+				data[k] = redactedPlaceholder
 			}
 		}
 	}
@@ -4831,10 +4832,8 @@ func (c *Connector) resourceYAML(resourceType, namespace, name string, writes *[
 	if resourceType == "configmaps" {
 		if data, ok := obj.Object["data"].(map[string]interface{}); ok {
 			for k, v := range data {
-				if s, ok := v.(string); ok && len(s) > 0 {
-					if looksLikeSensitiveKey(k) || looksLikeSensitiveValue(s) {
-						data[k] = "REDACTED"
-					}
+				if s, ok := v.(string); ok && configMapValueHidden(k, s) {
+					data[k] = redactedPlaceholder
 				}
 			}
 		}
@@ -4989,7 +4988,6 @@ func ownerKindToResourceType(kind string) string {
 	return ""
 }
 
-// ApplyResourceYAML updates a resource from raw YAML using the dynamic client.
 // CreateResource creates a new resource via the dynamic client. Used
 // by the apply-new-manifest endpoint (Tier 2 #10) to land any kind
 // the dynamic client can resolve without a typed-client switch.
@@ -5062,7 +5060,11 @@ func (c *Connector) PatchResourceMetadata(ctx context.Context, resourceType, nam
 	return obj.Object, nil
 }
 
-func (c *Connector) ApplyResourceYAML(resourceType, namespace, name string, yamlData []byte) error {
+// ApplyResourceYAML updates a resource from the YAML the viewer showed and the
+// person edited. What the viewer hid comes back from the live object before
+// the Update (yaml_roundtrip.go); an edit that cannot be made safely returns an
+// *EditRefusedError.
+func (c *Connector) ApplyResourceYAML(ctx context.Context, resourceType, namespace, name string, yamlData []byte) error {
 	if c.dynamicClient == nil {
 		return fmt.Errorf("dynamic client not available")
 	}
@@ -5076,25 +5078,28 @@ func (c *Connector) ApplyResourceYAML(resourceType, namespace, name string, yaml
 	if err := sigsyaml.Unmarshal(yamlData, &rawObj); err != nil {
 		return fmt.Errorf("invalid YAML: %w", err)
 	}
+	if err := checkEditTarget(rawObj, name, namespace, isClusterScoped(resourceType)); err != nil {
+		return err
+	}
 
 	obj := &unstructured.Unstructured{Object: rawObj}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
 
-	if isClusterScoped(resourceType) {
-		_, err := c.dynamicClient.Resource(gvr).Update(ctx, obj, metav1.UpdateOptions{FieldManager: fieldmanager.Name})
-		if err != nil {
-			return err
-		}
-	} else {
-		_, err := c.dynamicClient.Resource(gvr).Namespace(namespace).Update(ctx, obj, metav1.UpdateOptions{FieldManager: fieldmanager.Name})
-		if err != nil {
-			return err
-		}
+	var client dynamic.ResourceInterface = c.dynamicClient.Resource(gvr)
+	if !isClusterScoped(resourceType) {
+		client = c.dynamicClient.Resource(gvr).Namespace(namespace)
 	}
-
-	return nil
+	live, err := client.Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("reading the current object: %w", err)
+	}
+	if err := restoreHiddenValues(resourceType, rawObj, live.Object); err != nil {
+		return err
+	}
+	_, err = client.Update(ctx, obj, metav1.UpdateOptions{FieldManager: fieldmanager.Name})
+	return err
 }
 
 // --- List helpers ---
