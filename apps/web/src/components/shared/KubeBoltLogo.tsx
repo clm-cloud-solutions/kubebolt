@@ -1,5 +1,7 @@
-// KubeBoltLogo — single source of truth for the lightning-bolt brand
-// mark used in the Sidebar header, the AboutModal hero, and any
+// KubeBoltLogo — single source of truth for the Split Bolt, KubeBolt's
+// mark: two congruent wedges on a 32 grid with a 2.5 gap between them. The
+// gap never closes and the mark takes no stroke, gradient or rotation.
+// Used in the Sidebar header, the AboutModal hero, and any
 // future surfaces that need it. Geometry matches the favicon
 // (apps/web/public/favicon.svg), so the browser tab and the in-app
 // logo render the same shape — important since the tab icon is the
@@ -21,12 +23,12 @@ interface Props {
 export function KubeBoltLogo({ className }: Props) {
   return (
     <svg
-      viewBox="0 0 22 22"
+      viewBox="0 0 32 32"
       className={className}
       aria-hidden
       xmlns="http://www.w3.org/2000/svg"
     >
-      <path d="M12 2L4 12h6l-2 8 10-12h-6l2-6z" fill="currentColor" />
+      <path d="M21.5 3.5 L8.5 14.75 L21.5 14.75 Z M10.5 28.5 L23.5 17.25 L10.5 17.25 Z" fill="currentColor" />
     </svg>
   )
 }
