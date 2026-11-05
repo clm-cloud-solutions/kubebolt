@@ -137,6 +137,43 @@ const PUBLIC_ROUTES = [
 // propósito y no como un olvido.
 export const CATCH_ALL_ROUTE = '/:type/:namespace/:name'
 
+// Los tipos que ese comodín sabe pintar: el `switch` de
+// `Connector.GetResourceDetail` (apps/api/internal/cluster/connector.go).
+// Un tipo nuevo allí se añade aquí, o su detalle cae en la página 404.
+const DETAIL_RESOURCE_TYPES: ReadonlySet<string> = new Set([
+  'pods',
+  'deployments',
+  'services',
+  'nodes',
+  'namespaces',
+  'statefulsets',
+  'daemonsets',
+  'jobs',
+  'cronjobs',
+  'ingresses',
+  'networkpolicies',
+  'pdbs',
+  'configmaps',
+  'serviceaccounts',
+  'secrets',
+  'pvcs',
+  'persistentvolumeclaims',
+  'pvs',
+  'persistentvolumes',
+  'hpas',
+  'horizontalpodautoscalers',
+  'storageclasses',
+  'replicasets',
+  'endpoints',
+  'gateways',
+  'httproutes',
+  'certificates',
+  'argocdapps',
+  'vpas',
+  'ciliumnetworkpolicies',
+  'ciliumclusterwidenetworkpolicies',
+])
+
 // Prefijos ordenados de más largo a más corto, para que `/platform/settings`
 // gane a `/platform` si algún día divergen. Se calcula una vez.
 const ORDERED: ReadonlyArray<readonly [string, RouteScope]> = [
@@ -158,8 +195,27 @@ export function routeScope(pathname: string): RouteScope {
   for (const [prefix, scope] of ORDERED) {
     if (path === prefix || path.startsWith(prefix + '/')) return scope
   }
-  // Sólo llega aquí el comodín del detalle de recurso. Ver CATCH_ALL_ROUTE.
-  return 'cluster'
+  // Aquí llegan el comodín del detalle de recurso (ver CATCH_ALL_ROUTE) y las
+  // direcciones que no existen. Un tipo de recurso de verdad es de cluster; el
+  // resto es la página 404 (NotFoundPage), que no lee del cluster: global, para
+  // que un cluster caído no la tape con "Cluster unreachable".
+  return isResourceDetailPath(path) ? 'cluster' : 'global'
+}
+
+/**
+ * isResourceDetailType — ¿sirve el detalle de recurso este primer segmento?
+ * Es la lista del `switch` de `Connector.GetResourceDetail` en Go, alias
+ * incluidos; con cualquier otro tipo el API responde 403 (pregunta por el
+ * permiso antes que por el tipo) y la pantalla decía "Access Restricted".
+ */
+export function isResourceDetailType(type: string): boolean {
+  return DETAIL_RESOURCE_TYPES.has(type)
+}
+
+/** `/:type/:namespace/:name` con un tipo que existe. */
+function isResourceDetailPath(path: string): boolean {
+  const segments = path.split('/').slice(1)
+  return segments.length === 3 && segments.every((s) => s !== '') && isResourceDetailType(segments[0])
 }
 
 /**
