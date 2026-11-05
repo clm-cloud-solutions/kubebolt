@@ -1,11 +1,12 @@
-import type { ReactNode } from 'react'
-import type { LucideIcon } from 'lucide-react'
+import type { ComponentType, ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
 export interface AdminHubTab {
   key: string
   label: string
-  Icon: LucideIcon
+  // Loosened from LucideIcon so Kobi's face qualifies too — every lucide icon
+  // satisfies this shape.
+  Icon: ComponentType<{ className?: string }>
   /**
    * Optional title rendered above the content. Use it for tabs whose content
    * has no header of its own (the Settings-style tabs); omit it for full pages
@@ -41,6 +42,7 @@ export function AdminHub({ tabs, rightSlot }: { tabs: AdminHubTab[]; rightSlot?:
                 key={tab.key}
                 type="button"
                 onClick={() => setParams({ tab: tab.key })}
+                data-tab-state={isActive ? 'active' : 'inactive'}
                 className={`flex items-center gap-2 px-3 py-2 text-xs font-medium border-b-2 -mb-px transition-colors ${
                   isActive
                     ? 'border-kb-accent text-kb-accent'

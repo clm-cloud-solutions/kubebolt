@@ -148,10 +148,13 @@
      colour is not the only channel — each state carries its own animation
      (watching pulses the dot, investigating expands two rings, awaiting
      marches a dashed circle), so state survives without relying on hue.
-     amber/sky stay on the 700 tier, where they do clear 3:1. */
+     amber/sky stay on the 700 tier, where they do clear 3:1.
+     Investigating is green since 2026-11-04 (brand guidelines, «The color
+     of each state»): reading is work that needs nothing from you, and
+     amber means one thing only — Executing. */
   --kobi-sigil-static: #00b864;
   --kobi-sigil-watching: #00b864;
-  --kobi-sigil-investigating: #b45309;
+  --kobi-sigil-investigating: #00b864;
   --kobi-sigil-awaiting: #0369a1;
   /* Kobi-scoped status. The amber dim uses a LIVELIER base than the
      amber text (amber-500, not 700): at low alpha the 700 read beige,
@@ -213,7 +216,7 @@
   /* Sigil — 400 tier on dark (as shipped). */
   --kobi-sigil-static: #00e07a;
   --kobi-sigil-watching: #00e07a;
-  --kobi-sigil-investigating: #fbbf24;
+  --kobi-sigil-investigating: #00e07a;
   --kobi-sigil-awaiting: #38bdf8;
   --kobi-st-ok-rgb: 52 211 153;
   --kobi-st-warn-rgb: 251 191 36;

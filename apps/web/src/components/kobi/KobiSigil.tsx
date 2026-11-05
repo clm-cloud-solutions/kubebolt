@@ -7,6 +7,10 @@
  *
  * Color is controlled via `currentColor`. The `state` prop sets a default
  * Tailwind text color for that state; override by passing `className`.
+ *
+ * Inside the product Kobi wears its face (KobiFace): the floating button, the
+ * panel, Ask Kobi, the menu and the tabs. The Sigil is the brand mark — logo,
+ * lockups, print — and never shares a bar with the face.
  */
 
 export type KobiSigilState =
@@ -193,26 +197,4 @@ export function KobiSigil({
       )}
     </svg>
   )
-}
-
-// ── Icon adapters ────────────────────────────────────────────────────
-//
-// Drop-in replacements for lucide icons in tab strips and headers
-// (anything typed ComponentType<{ className?: string }>). They inherit
-// currentColor from the surrounding text like lucide does; the Tailwind
-// w-*/h-* classes override the SVG's own width/height attributes.
-//
-// Drawn with lucide's weight: its 2-unit stroke on a 24 box is 2.67 on the
-// sigil's 32. At the sigil's own 1.8 a 14 px icon got a 0.8 px K, faint next
-// to the lucide icons around it and lost on a filled (accent) button.
-const ICON_STROKE = 2.67
-
-/** Kobi Copilot mark — fixed intelligence dot. */
-export function KobiSigilIcon({ className }: { className?: string }) {
-  return <KobiSigil inheritColor stroke={ICON_STROKE} className={className} />
-}
-
-/** Kobi Autopilot mark — the dot orbits the K (autonomous mode). */
-export function KobiAutopilotIcon({ className }: { className?: string }) {
-  return <KobiSigil autonomous inheritColor stroke={ICON_STROKE} className={className} />
 }

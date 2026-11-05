@@ -1,0 +1,283 @@
+/* KobiFace — Sentinel. Ported from the site's KobiFace.astro; the spec is the
+   brand guidelines (kobi/brand/brand-guidelines.md) and kobi/brand/face/.
+   Light is the default; the app's `.dark` class turns the dark tokens on. */
+
+:root {
+  /* On light the dot is #00a35a (3.29:1 on white), not the Sigil's #00b864. */
+  --kf-ok: #00a35a;
+  --kf-await: #0369a1;
+  --kf-exec: #b45309;
+  --kf-neutral: #78716c;
+  --kf-off: #a8a29e;
+}
+.dark {
+  --kf-ok: #00e07a;
+  --kf-await: #38bdf8;
+  --kf-exec: #fbbf24;
+  --kf-neutral: #a8a29e;
+  --kf-off: #57534e;
+}
+
+.kf {
+  display: block;
+  flex: none;
+  overflow: visible;
+  --kf-sh: 1;
+  --dz: 1;
+  --s: 1;
+  transition: opacity 200ms ease;
+}
+
+/* --- fixed parts ------------------------------------------------------ */
+.kf-shell { fill: #ebeae7; stroke: rgba(26, 27, 46, 0.2); }
+.dark .kf:not([data-fab]) .kf-shell { stroke-width: 0; }
+.kf-visor { fill: #0f100f; }
+.kf-gloss { fill: none; stroke: rgba(255, 255, 255, 0.14); stroke-width: 2; stroke-linecap: round; }
+.kf-k { fill: none; stroke: #2b2d2c; stroke-width: 1.8; stroke-linecap: square; }
+.kf-k circle { fill: #2b2d2c; stroke: none; }
+.kf-ground { fill: rgba(26, 27, 46, 0.14); }
+.dark .kf-ground { fill: rgba(0, 0, 0, 0.5); }
+.kf-orbit { fill: none; stroke: currentColor; color: var(--kf-c, var(--kf-ok)); }
+
+/* The floating button's shadow, and the pool of light it reads on in dark. */
+.kf-sh0 { stop-color: #1a1b2e; stop-opacity: 0.3; }
+.kf-sh1 { stop-color: #1a1b2e; stop-opacity: 0; }
+.dark .kf-sh0 { stop-color: #000000; stop-opacity: 0.8; }
+.dark .kf-sh1 { stop-color: #000000; }
+.kf-pool0 { stop-color: #f5f2ec; stop-opacity: 0.16; }
+.kf-pool1 { stop-color: #f5f2ec; stop-opacity: 0; }
+.kf-pool { display: none; }
+.dark .kf-pool { display: inline; }
+
+/* The forehead K: 128 screen px. */
+.kf[data-k='none'] .kf-k { display: none; }
+@media (max-resolution: 1.99dppx) {
+  .kf[data-k='hi2'] .kf-k { display: none; }
+  .kf[data-shapes='hi2'] { --kf-sh: 0; }
+}
+@media (max-resolution: 1.49dppx) {
+  .kf[data-k='hi15'] .kf-k { display: none; }
+  .kf[data-shapes='hi15'] { --kf-sh: 0; }
+}
+.kf[data-shapes='none'] { --kf-sh: 0; }
+
+/* --- eyes ------------------------------------------------------------- */
+.kf-eyes { transform-box: view-box; }
+.kf-eye {
+  fill: #00e07a;
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: scaleY(var(--s));
+  transition: transform 240ms ease-out, fill 300ms ease;
+}
+.kf-body { transform-box: view-box; transform-origin: 60px 106px; }
+
+/* --- the dot and its color ------------------------------------------- */
+.kf-pres { color: var(--kf-c, var(--kf-ok)); transition: color 300ms ease; }
+.kf-dot {
+  fill: currentColor;
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: scale(var(--dz));
+  transition: transform 240ms ease-out;
+}
+.kf-ring {
+  display: none;
+  fill: none;
+  stroke: currentColor;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+/* --- states ----------------------------------------------------------- */
+:is(.kf, .kf-statedot)[data-state='watching'] { --kf-c: var(--kf-ok); --s: 1; }
+:is(.kf, .kf-statedot)[data-state='investigating'] { --kf-c: var(--kf-ok); --s: 0.85; }
+:is(.kf, .kf-statedot)[data-state='awaiting'] { --kf-c: var(--kf-await); --s: 1.05; }
+:is(.kf, .kf-statedot)[data-state='executing'] { --kf-c: var(--kf-exec); --s: 0.6; }
+:is(.kf, .kf-statedot)[data-state='verifying'] { --kf-c: var(--kf-ok); --s: 0.72; }
+:is(.kf, .kf-statedot)[data-state='nocause'] { --kf-c: var(--kf-neutral); --s: 0.8; --dz: 0.72; }
+:is(.kf, .kf-statedot)[data-state='unavailable'] { --kf-c: var(--kf-off); --s: 0.15; }
+.kf[data-state='unavailable'] .kf-eye { fill: #57534e; }
+
+/* With something around it, the dot shrinks so dot and ring clear the
+   shell. Only if the shape is drawn (--kf-sh); otherwise the whole dot. */
+.kf:is([data-state='investigating'], [data-state='awaiting'], [data-state='executing'], [data-state='verifying']) {
+  --dz: calc(1 + (var(--kf-rz) - 1) * var(--kf-sh));
+}
+.kf[data-auto] { --dz: 1; }
+
+/* The shapes, in motion. Investigating's resting shape is the closed ring;
+   in motion it is two waves outward. */
+.kf[data-state='investigating'] .kf-wave,
+.kf[data-state='awaiting'] .kf-aw,
+.kf[data-state='executing'] .kf-ex,
+.kf[data-state='verifying'] .kf-ver { display: inline; }
+.kf[data-shapes='none'] .kf-rings { display: none; }
+@media (max-resolution: 1.99dppx) {
+  .kf[data-shapes='hi2'] .kf-rings { display: none; }
+}
+@media (max-resolution: 1.49dppx) {
+  .kf[data-shapes='hi15'] .kf-rings { display: none; }
+}
+
+/* --- motion ----------------------------------------------------------- */
+.kf[data-state='watching'] .kf-eye { animation: kf-blink 6s infinite; }
+.kf[data-state='watching'] .kf-eyes { animation: kf-idle 9s ease-in-out infinite; }
+.kf[data-state='watching'] .kf-body { animation: kf-breathe 4.8s ease-in-out infinite; }
+.kf[data-state='watching'] .kf-dot { animation: kf-pulse 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+
+.kf[data-state='investigating'] .kf-eyes { animation: kf-read 3.6s ease-in-out infinite; }
+.kf[data-state='investigating'] .kf-body { animation: kf-tilt 3.6s ease-in-out infinite; }
+.kf-wave { animation: kf-wave 1.6s cubic-bezier(0.16, 1, 0.3, 1) infinite; }
+.kf-wave-b { animation-delay: 0.8s; }
+
+.kf[data-state='awaiting'] .kf-eye { animation: kf-blink 8s infinite; }
+.kf[data-state='awaiting'] .kf-eyes { animation: kf-glance 4.5s ease-in-out infinite; }
+.kf-aw { animation: kf-march 2s linear infinite; }
+
+.kf[data-state='executing'] .kf-eyes { animation: kf-track 2.4s ease-in-out infinite; }
+.kf[data-state='executing'] .kf-body { animation: kf-lean 2.4s ease-in-out infinite; }
+.kf-ex { animation: kf-conv 1.4s cubic-bezier(0.4, 0, 1, 1) infinite; }
+
+.kf[data-state='verifying'] .kf-eye { animation: kf-blink 5s infinite; }
+.kf[data-state='verifying'] .kf-eyes { animation: kf-compare 4s ease-in-out infinite; }
+.kf-ver { animation: kf-arc 3s ease-in-out infinite; }
+
+.kf[data-state='nocause'] .kf-eyes { animation: kf-search 6s ease-in-out infinite; }
+
+.kf-eye-r { animation-delay: 60ms !important; }
+/* Woken by hover: the blink lands about 0.3 s in instead of 5.6 s. */
+.kf[data-eager] .kf-eye { animation-delay: -5.3s !important; }
+.kf[data-eager] .kf-eye-r { animation-delay: -5.24s !important; }
+
+/* At 24 px or less only the dot and the blink move: moving less than a
+   pixel reads as a tremor. */
+.kf[data-tiny] .kf-eyes,
+.kf[data-tiny] .kf-body { animation: none !important; }
+
+/* Autopilot: the dot goes around the head in 8 s, no rings. */
+.kf[data-auto] .kf-pres {
+  transform-box: view-box;
+  transform-origin: 60px 66px;
+  animation: kf-orbit 8s linear infinite;
+}
+
+/* --- the floating button ----------------------------------------------- */
+/* At rest there is no dot: it would float over the content and read as the
+   status of whatever is underneath. It appears on hover or focus. */
+.kf[data-fab] .kf-pres {
+  opacity: 0;
+  transform: translateY(var(--kf-rise));
+  transition: opacity 200ms ease, transform 240ms ease-out, color 300ms ease;
+}
+.kf[data-fab] .kf-head { animation: kf-bob 4.8s ease-in-out infinite; transition: transform 240ms ease-out; }
+.kf[data-fab] .kf-shadow {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: kf-shadow-bob 4.8s ease-in-out infinite;
+  transition: transform 240ms ease-out, opacity 240ms ease-out;
+}
+.kf[data-fab]:is([data-state='awaiting'], [data-state='verifying'], [data-state='nocause'], [data-state='unavailable']) :is(.kf-head, .kf-shadow) {
+  animation: none;
+}
+/* The dot rises to its place relative to the head, which also rises: if it
+   stayed at its resting place the gap would drop from 3.5 px to half a pixel. */
+:is(button, a):is(:hover, :focus-visible) .kf[data-fab] .kf-pres { opacity: 1; transform: translateY(var(--kf-lift)); }
+:is(button, a):is(:hover, :focus-visible) .kf[data-fab] .kf-head { animation: none; transform: translateY(var(--kf-lift)); }
+:is(button, a):is(:hover, :focus-visible) .kf[data-fab] .kf-shadow { animation: none; transform: scaleX(0.78); opacity: 0.55; }
+
+/* --- the face follows its text --------------------------------------- */
+/* Where the text next to it is dimmed (an inactive tab) the face drops to
+   60 %, eyes open and green, and comes back on hover. Never gray: gray with
+   closed eyes means Unavailable. */
+[data-tab-state='inactive']:not(:hover):not(:focus-visible) .kf { opacity: 0.6; }
+
+/* --- on a green fill --------------------------------------------------- */
+/* A surface filled with the accent (the active side of a segmented toggle)
+   swallows the green dot and the Autopilot orbit. There they take the dark
+   ink the accent fill pairs with; the eyes keep their green inside the visor. */
+[data-kf-surface='accent'] .kf { --kf-ok: var(--kobi-ink, #06130c); }
+
+/* --- the state dot beside text ----------------------------------------- */
+.kf-statedot {
+  display: inline-block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--kf-c, var(--kf-ok));
+}
+.kf-statedot[data-halo] {
+  width: 7px;
+  height: 7px;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--kf-c, var(--kf-ok)) 16%, transparent);
+}
+
+/* --- still: avatars, icons, and reduced motion --------------------------- */
+.kf[data-still] * { animation: none !important; }
+.kf[data-still] .kf-wave { display: none; }
+.kf[data-still][data-state='investigating'] .kf-inv { display: inline; }
+.kf[data-still][data-shapes='none'] .kf-inv { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .kf * { animation: none !important; }
+  .kf .kf-wave { display: none; }
+  .kf[data-state='investigating'] .kf-inv { display: inline; }
+  .kf[data-shapes='none'] .kf-inv { display: none; }
+  .kf[data-fab] .kf-pres,
+  :is(button, a):is(:hover, :focus-visible) .kf[data-fab] .kf-pres,
+  :is(button, a):is(:hover, :focus-visible) .kf[data-fab] .kf-head { transform: none; }
+}
+
+@keyframes kf-blink { 0%, 91%, 97%, 100% { transform: scaleY(var(--s)); } 94% { transform: scaleY(0.08); } }
+@keyframes kf-idle {
+  0%, 30% { transform: translate(0, 0); }
+  33%, 47% { transform: translate(calc(var(--g) * -0.8), 0); }
+  50%, 69% { transform: translate(0, 0); }
+  72%, 85% { transform: translate(calc(var(--g) * 0.6), calc(var(--g) * -0.4)); }
+  88%, 100% { transform: translate(0, 0); }
+}
+@keyframes kf-read {
+  0% { transform: translate(calc(var(--g) * -1), calc(var(--g) * -0.5)); }
+  22% { transform: translate(var(--g), calc(var(--g) * -0.5)); }
+  26% { transform: translate(calc(var(--g) * -1), 0); }
+  48% { transform: translate(var(--g), 0); }
+  52% { transform: translate(calc(var(--g) * -1), calc(var(--g) * 0.5)); }
+  74% { transform: translate(var(--g), calc(var(--g) * 0.5)); }
+  78%, 100% { transform: translate(calc(var(--g) * -1), calc(var(--g) * -0.5)); }
+}
+@keyframes kf-glance {
+  0%, 58% { transform: translate(0, calc(var(--g) * -1)); }
+  63%, 78% { transform: translate(calc(var(--g) * 1.3), calc(var(--g) * 0.9)); }
+  83%, 100% { transform: translate(0, calc(var(--g) * -1)); }
+}
+@keyframes kf-track { 0%, 100% { transform: translate(calc(var(--g) * -0.5), 0); } 50% { transform: translate(calc(var(--g) * 0.5), 0); } }
+@keyframes kf-compare {
+  0%, 40% { transform: translate(calc(var(--g) * -0.9), 0); }
+  50%, 90% { transform: translate(calc(var(--g) * 0.9), 0); }
+  100% { transform: translate(calc(var(--g) * -0.9), 0); }
+}
+@keyframes kf-search {
+  0%, 40% { transform: translate(calc(var(--g) * -0.7), calc(var(--g) * 1.3)); }
+  50%, 90% { transform: translate(calc(var(--g) * 0.7), calc(var(--g) * 1.3)); }
+  100% { transform: translate(calc(var(--g) * -0.7), calc(var(--g) * 1.3)); }
+}
+@keyframes kf-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.015); } }
+@keyframes kf-tilt { 0%, 100% { transform: rotate(-3deg); } 50% { transform: rotate(-1.5deg); } }
+@keyframes kf-lean { 0%, 100% { transform: translate(0, -1px) scale(1.02); } 50% { transform: translate(0, -2px) scale(1.025); } }
+@keyframes kf-pulse {
+  0%, 100% { opacity: 1; transform: scale(var(--dz)); }
+  50% { opacity: 0.55; transform: scale(calc(var(--dz) * 0.8)); }
+}
+@keyframes kf-wave { 0% { opacity: 0.9; transform: scale(var(--kf-w0)); } 100% { opacity: 0; transform: scale(1.35); } }
+@keyframes kf-conv { 0% { opacity: 0; transform: scale(1.5); } 70% { opacity: 0.9; } 100% { opacity: 0; transform: scale(1); } }
+@keyframes kf-arc {
+  0% { stroke-dashoffset: 25; opacity: 1; }
+  70%, 85% { stroke-dashoffset: 0; opacity: 1; }
+  95% { stroke-dashoffset: 0; opacity: 0.15; }
+  96% { stroke-dashoffset: 25; opacity: 0.15; }
+  100% { stroke-dashoffset: 25; opacity: 1; }
+}
+@keyframes kf-march { to { stroke-dashoffset: -16.667; } }
+@keyframes kf-orbit { to { transform: rotate(360deg); } }
+@keyframes kf-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(var(--kf-bob)); } }
+@keyframes kf-shadow-bob { 0%, 100% { transform: scaleX(1); opacity: 1; } 50% { transform: scaleX(0.86); opacity: 0.7; } }

@@ -11,7 +11,7 @@ import {
   ShieldCheck,
   Sparkles,
 } from 'lucide-react'
-import { KobiSigilIcon } from '@/components/kobi'
+import { KobiIcon } from '@/components/kobi'
 import { ShiftReportChip, ShiftReportSection, useShiftReport } from '@/components/home/ShiftReportCard'
 import { api } from '@/services/api'
 import { useFleetRollup } from '@/hooks/useFleetRollup'
@@ -82,9 +82,7 @@ function KobiPanel({ conversations }: { conversations: ConversationSummary[] }) 
     <div className="bg-kb-card border border-kb-border rounded-xl p-4 flex flex-col">
       <div className="flex items-center justify-between mb-3">
         <h2 className="text-sm font-semibold text-kb-text-primary flex items-center gap-2">
-          <span className="w-5 h-5 rounded-md bg-kb-accent-light flex items-center justify-center text-kb-accent">
-            <KobiSigilIcon className="w-3.5 h-3.5" />
-          </span>
+          <KobiIcon className="w-5 h-5" />
           Kobi
         </h2>
         <button
@@ -127,7 +125,8 @@ function KobiPanel({ conversations }: { conversations: ConversationSummary[] }) 
       </div>
 
       <div className="mt-3 flex items-center gap-2 bg-kb-elevated border border-kb-border rounded-lg px-3 py-2">
-        <KobiSigilIcon className="w-3.5 h-3.5 text-kb-text-tertiary shrink-0" />
+        {/* The face follows its text: dimmed while the field is empty. */}
+        <KobiIcon className={`w-4 h-4 shrink-0 ${draft ? '' : 'opacity-60'}`} />
         <input
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
