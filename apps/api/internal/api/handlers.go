@@ -693,15 +693,42 @@ func (h *handlers) putResourceYAML(w http.ResponseWriter, r *http.Request) {
 	// carries Secret data, and an audit trail that copies it turns the
 	// compliance record into a second, longer-lived place secrets live.
 	yamlParams := map[string]any{"bytes": len(body)}
+	opts := writeOptionsOf(r)
+	if opts.KeepBinary {
+		yamlParams["keepBinary"] = true
+	}
 
-	if err := conn.ApplyResourceYAML(r.Context(), resourceType, namespace, name, body); err != nil {
+	if err := conn.ApplyResourceYAML(r.Context(), resourceType, namespace, name, body, opts); err != nil {
 		auditMutation(r, "apply_yaml", resourceType, namespace, name, yamlParams, err)
+		var refused *cluster.EditRefusedError
+		if errors.As(err, &refused) {
+			respondEditRefused(w, refused)
+			return
+		}
 		respondError(w, applyYAMLStatus(err), err.Error())
 		return
 	}
 
 	auditMutation(r, "apply_yaml", resourceType, namespace, name, yamlParams, nil)
 	respondJSON(w, http.StatusOK, map[string]string{"status": "applied"})
+}
+
+// writeOptionsOf is what the person confirmed for an edit or a create:
+// ?keepBinary=true sends Secret values that decode to binary as they are,
+// after the editor said which ones (respondEditRefused).
+func writeOptionsOf(r *http.Request) cluster.WriteOptions {
+	return cluster.WriteOptions{KeepBinary: r.URL.Query().Get("keepBinary") == "true"}
+}
+
+// respondEditRefused answers an edit or a create the connector refused. When
+// the only reason is values that decode to binary, binaryValues names them,
+// and the editor offers to send them again as binary.
+func respondEditRefused(w http.ResponseWriter, refused *cluster.EditRefusedError) {
+	body := map[string]any{"error": refused.Error()}
+	if len(refused.BinaryValues) > 0 {
+		body["binaryValues"] = refused.BinaryValues
+	}
+	respondJSON(w, http.StatusBadRequest, body)
 }
 
 // applyYAMLStatus answers an apply that failed with the API server's own code
