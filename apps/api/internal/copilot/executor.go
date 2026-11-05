@@ -1910,6 +1910,7 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 
 // lastWritesNote goes with get_resource_yaml's lastWrites.
 const lastWritesNote = "Each field manager's latest write to this object, newest first, as Kubernetes records it: the client's manager name (not a person), the operation, when, and the fields it owns. " +
+	"KubeBolt's own writes say who made them: kubebolt is a person through KubeBolt, kubebolt-kobi a proposal of yours that a person approved, kubebolt-autopilot Kobi Autopilot. " +
 	"A write to the status subresource is a controller reporting state, not a change to the spec. " +
 	"Fields written only at creation have not changed since; a value held outside Kubernetes (a Key Vault, a database password) can change without any write here."
 

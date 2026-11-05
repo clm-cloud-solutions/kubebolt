@@ -268,7 +268,7 @@ func dryRunCreatePod(ctx context.Context, clientset kubernetes.Interface, namesp
 		},
 		Spec: tmpl.Spec,
 	}
-	_, err := clientset.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{FieldManager: fieldmanager.Name, DryRun: []string{"All"}})
+	_, err := clientset.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{FieldManager: fieldmanager.For(ctx), DryRun: []string{"All"}})
 	// A pods:create RBAC denial is a limitation of THIS preview mechanism, not a
 	// rejection of the action — the SA may well be able to scale/patch the
 	// workload without being able to create pods directly. Treat it as

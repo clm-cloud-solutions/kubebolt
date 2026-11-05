@@ -177,7 +177,7 @@ func (h *handlers) handleSetHpaBounds(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, err = clientset.AutoscalingV1().HorizontalPodAutoscalers(namespace).Patch(
-		ctx, name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{FieldManager: fieldmanager.Name, DryRun: dryRunAll(dryRun)},
+		ctx, name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{FieldManager: fieldmanager.For(ctx), DryRun: dryRunAll(dryRun)},
 	)
 	if dryRun {
 		respondDryRun(w, err, fmt.Sprintf("Would apply · HPA bounds %d/%d → %d/%d", from.MinReplicas, from.MaxReplicas, to.MinReplicas, to.MaxReplicas))

@@ -252,6 +252,11 @@ func NewRouter(
 			// The cluster the request names must be one the caller may read
 			// (an API key limited to some clusters). No-op otherwise.
 			r.Use(h.requireClusterAccess)
+			// Who makes this request's mutations — a person, Kobi Copilot or
+			// Kobi Autopilot — resolved from the principal (finding #69). It
+			// names the field manager of every write and the audit record's
+			// source.
+			r.Use(h.withActionActor)
 
 			// Auth-protected user routes
 			r.Post("/auth/logout", authHandlers.Logout)

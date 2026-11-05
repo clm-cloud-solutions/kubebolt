@@ -113,7 +113,7 @@ func (h *handlers) handleSetRolloutPaused(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if _, err := clientset.AppsV1().Deployments(namespace).Patch(ctx, name,
-		types.MergePatchType, patch, metav1.PatchOptions{FieldManager: fieldmanager.Name}); err != nil {
+		types.MergePatchType, patch, metav1.PatchOptions{FieldManager: fieldmanager.For(ctx)}); err != nil {
 		auditMutation(r, action, resourceType, namespace, name, params, err)
 		respondMutationError(w, err)
 		return

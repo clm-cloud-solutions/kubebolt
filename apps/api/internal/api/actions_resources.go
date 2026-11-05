@@ -221,7 +221,7 @@ func (h *handlers) handleSetResources(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dryRun := dryRunRequested(r)
-	resOpts := metav1.PatchOptions{FieldManager: fieldmanager.Name, DryRun: dryRunAll(dryRun)}
+	resOpts := metav1.PatchOptions{FieldManager: fieldmanager.For(ctx), DryRun: dryRunAll(dryRun)}
 	switch resourceType {
 	case "deployments":
 		_, err = clientset.AppsV1().Deployments(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, resOpts)
