@@ -4995,14 +4995,25 @@ func ownerKindToResourceType(kind string) string {
 // Caller is responsible for the unstructured object's shape (apiVersion,
 // kind, metadata.name, body) and for any pre-flight validation (kind/
 // type consistency, namespace consistency); this method just routes
-// the Create through the right namespaced/cluster-scoped path.
-func (c *Connector) CreateResource(ctx context.Context, resourceType, namespace string, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+// the Create through the right namespaced/cluster-scoped path. A Secret or
+// ConfigMap whose data still reads REDACTED, copied from the viewer, a value
+// that must be base64 and is not, or a Secret value that decodes to binary
+// data the person did not confirm (opts), returns an *EditRefusedError
+// (yaml_roundtrip.go).
+func (c *Connector) CreateResource(ctx context.Context, resourceType, namespace string, obj *unstructured.Unstructured, opts WriteOptions) (*unstructured.Unstructured, error) {
 	if c.dynamicClient == nil {
 		return nil, fmt.Errorf("dynamic client not available")
 	}
 	gvr, ok := resourceTypeToGVR(resourceType)
 	if !ok {
 		return nil, fmt.Errorf("unsupported resource type: %s", resourceType)
+	}
+	var refused refusals
+	refused.add(checkNoPlaceholders(resourceType, obj.Object))
+	refused.add(checkBase64Values(resourceType, obj.Object))
+	refused.add(checkTextValues(resourceType, obj.Object, opts))
+	if err := refused.err(); err != nil {
+		return nil, err
 	}
 	if isClusterScoped(resourceType) {
 		return c.dynamicClient.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{FieldManager: fieldmanager.Name})
@@ -5062,9 +5073,10 @@ func (c *Connector) PatchResourceMetadata(ctx context.Context, resourceType, nam
 
 // ApplyResourceYAML updates a resource from the YAML the viewer showed and the
 // person edited. What the viewer hid comes back from the live object before
-// the Update (yaml_roundtrip.go); an edit that cannot be made safely returns an
-// *EditRefusedError.
-func (c *Connector) ApplyResourceYAML(ctx context.Context, resourceType, namespace, name string, yamlData []byte) error {
+// the Update (yaml_roundtrip.go); an edit that cannot be made safely, a value
+// that must be base64 and is not, or a Secret value that decodes to binary
+// data the person did not confirm (opts), returns an *EditRefusedError.
+func (c *Connector) ApplyResourceYAML(ctx context.Context, resourceType, namespace, name string, yamlData []byte, opts WriteOptions) error {
 	if c.dynamicClient == nil {
 		return fmt.Errorf("dynamic client not available")
 	}
@@ -5095,9 +5107,16 @@ func (c *Connector) ApplyResourceYAML(ctx context.Context, resourceType, namespa
 	if err != nil {
 		return fmt.Errorf("reading the current object: %w", err)
 	}
-	if err := restoreHiddenValues(resourceType, rawObj, live.Object); err != nil {
+	// What the person wrote, every problem in one refusal, before the stored
+	// values come back: a stored value may be binary on purpose.
+	var refused refusals
+	refused.add(checkPlaceholdersKept(resourceType, rawObj, live.Object))
+	refused.add(checkBase64Values(resourceType, rawObj))
+	refused.add(checkTextValues(resourceType, rawObj, opts))
+	if err := refused.err(); err != nil {
 		return err
 	}
+	restoreHiddenValues(resourceType, rawObj, live.Object)
 	_, err = client.Update(ctx, obj, metav1.UpdateOptions{FieldManager: fieldmanager.Name})
 	return err
 }

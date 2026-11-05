@@ -25,7 +25,7 @@ import { CronJobTriggerModal } from '@/components/resources/CronJobTriggerModal'
 import { DrainModal } from '@/components/resources/DrainModal'
 import { NodeSchedulabilityToolbarButton } from '@/components/resources/NodeSchedulabilityToolbarButton'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, ApiError } from '@/services/api'
+import { api, ApiError, binaryValuesOf } from '@/services/api'
 import { useResources, useResourceDetail, useResourceDescribe, useResourceYAML, useResourceEvents, useTopology, usePodLogs, useDeploymentPods, useDeploymentHistory, useStatefulSetPods, useDaemonSetPods, useJobPods, useCronJobJobs, useWorkloadHistory } from '@/hooks/useResources'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
@@ -1890,6 +1890,10 @@ function YAMLTab({ type, namespace, name, canEdit }: { type: string; namespace: 
   const [editValue, setEditValue] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  // The keys the server refused because their value decodes to binary; the
+  // error then offers to apply them as binary. Cleared on any change to the
+  // text, so the confirmation never covers an edit it did not see.
+  const [binaryKeys, setBinaryKeys] = useState<string[] | null>(null)
   const [copied, setCopied] = useState(false)
 
   if (isLoading) return <LoadingSpinner />
@@ -1909,23 +1913,27 @@ function YAMLTab({ type, namespace, name, canEdit }: { type: string; namespace: 
   function startEdit() {
     setEditValue(yaml ?? '')
     setSaveError(null)
+    setBinaryKeys(null)
     setEditing(true)
   }
 
   function cancelEdit() {
     setEditing(false)
     setSaveError(null)
+    setBinaryKeys(null)
   }
 
-  async function saveEdit() {
+  async function saveEdit(keepBinary = false) {
     setSaving(true)
     setSaveError(null)
+    setBinaryKeys(null)
     try {
-      await api.applyResourceYAML(type, namespace, name, editValue)
+      await api.applyResourceYAML(type, namespace, name, editValue, { keepBinary })
       setEditing(false)
       refetch()
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : 'Failed to apply YAML')
+      setBinaryKeys(binaryValuesOf(err))
     } finally {
       setSaving(false)
     }
@@ -1943,7 +1951,7 @@ function YAMLTab({ type, namespace, name, canEdit }: { type: string; namespace: 
               Cancel
             </button>
             <button
-              onClick={saveEdit}
+              onClick={() => saveEdit()}
               disabled={saving || !canEdit}
               title={!canEdit ? 'Editor role required' : undefined}
               className="px-3 py-1.5 text-[10px] font-mono bg-status-info text-white rounded hover:bg-status-info/90 transition-colors disabled:opacity-50 flex items-center gap-1"
@@ -1990,8 +1998,19 @@ function YAMLTab({ type, namespace, name, canEdit }: { type: string; namespace: 
       </div>
 
       {saveError && (
-        <div className="mb-2 px-3 py-2 rounded bg-status-error-dim border border-status-error/20 text-xs text-status-error font-mono">
+        <div className="mb-2 px-3 py-2 rounded bg-status-error-dim border border-status-error/20 text-xs text-status-error font-mono whitespace-pre-wrap break-words">
           {saveError}
+          {binaryKeys && (
+            <div className="mt-2">
+              <button
+                onClick={() => saveEdit(true)}
+                disabled={saving}
+                className="px-3 py-1.5 text-[10px] font-mono bg-kb-elevated text-kb-text-secondary rounded hover:bg-kb-card-hover transition-colors disabled:opacity-40"
+              >
+                Keep as binary
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -2002,7 +2021,13 @@ function YAMLTab({ type, namespace, name, canEdit }: { type: string; namespace: 
       )}
 
       {editing ? (
-        <YAMLEditor value={editValue} onChange={setEditValue} />
+        <YAMLEditor
+          value={editValue}
+          onChange={(v) => {
+            setEditValue(v)
+            setBinaryKeys(null)
+          }}
+        />
       ) : (
         <YamlViewer text={lines.join('\n')} />
       )}
