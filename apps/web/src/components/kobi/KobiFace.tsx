@@ -19,6 +19,10 @@ import './kobi-face.css'
  * - `fab` is the floating button: no dot at rest, it floats on its shadow and
  *   lifts on hover or on the focus of the button around it.
  * - `autopilot`: the dot orbits the head, no rings.
+ * - The eyes say the state with their silhouette: each is a capsule cut by
+ *   two lids in the visor's color, clipped by the visor, and the state puts
+ *   the lids in place (kobi-face.css, the guidelines' «The lids»). The color
+ *   stays green; only the dot carries the state's color.
  *
  * Only two places show the live state: the floating head and the panel
  * header. Everywhere else the face is still, or Watching.
@@ -48,10 +52,15 @@ interface KobiFaceProps {
   label?: string
 }
 
-// Eye: flat top, round bottom. Two round bars read as a pause sign.
-function eye(x: number, y: number, w: number, h: number) {
+// The eye: a capsule over the eye box (x, y, w, h), from y − 0.29h to y + h,
+// round at both ends. Two lids in the visor's color cut it (kobi-face.css
+// places them per state); at rest the upper lid's edge sits on y, so what
+// shows is a flat top and a round bottom: two round bars read as a pause sign.
+function capsule(x: number, y: number, w: number, h: number) {
   const r = w / 2
-  return `M${x} ${y} H${x + w} V${y + h - r} A${r} ${r} 0 0 1 ${x} ${y + h - r} Z`
+  const top = r2(y - 0.29 * h)
+  const bottom = y + h
+  return `M${x} ${r2(top + r)} A${r} ${r} 0 0 1 ${x + w} ${r2(top + r)} V${bottom - r} A${r} ${r} 0 0 1 ${x} ${bottom - r} Z`
 }
 
 interface Geometry {
@@ -170,12 +179,16 @@ export function KobiFace({
   const orbitW = size >= 64 ? 0.8 : r2(64 / size)
 
   const shadowId = `kf-sh-${uid}`
+  // The lids are clipped by the visor, so they never show on the shell.
+  const visorClipId = `kf-vc-${uid}`
   // The floating button: 1.5 px of bob and 3 px of lift, in grid units.
   const u = 120 / size
   const style = {
     '--kf-rz': +(rd / G.dr).toFixed(3),
     '--kf-w0': +(rd / R).toFixed(3),
     '--g': `${gaze}px`,
+    // The eye box height: the lids move in fractions of it.
+    '--kf-h': `${G.eh}px`,
     ...(fab ? { '--kf-bob': `${-r2(1.5 * u)}px`, '--kf-lift': `${-r2(3 * u)}px`, '--kf-rise': '10px' } : {}),
   } as CSSProperties
 
@@ -198,6 +211,11 @@ export function KobiFace({
       {...(label ? { role: 'img', 'aria-label': label } : { 'aria-hidden': true })}
       focusable="false"
     >
+      <defs>
+        <clipPath id={visorClipId}>
+          <rect x={vx} y={vy} width={vw} height={vh} rx={vrx} />
+        </clipPath>
+      </defs>
       {fab && (
         <>
           <defs>
@@ -236,11 +254,35 @@ export function KobiFace({
             </g>
           )}
           <rect className="kf-visor" x={vx} y={vy} width={vw} height={vh} rx={vrx} />
-          {gloss && <path className="kf-gloss" d="M35 51 Q40 47 47 47" />}
-          <g className="kf-eyes">
-            <path className="kf-eye" d={eye(G.eyes[0][0], G.eyes[0][1], G.ew, G.eh)} />
-            <path className="kf-eye kf-eye-r" d={eye(G.eyes[1][0], G.eyes[1][1], G.ew, G.eh)} />
+          <g clipPath={`url(#${visorClipId})`}>
+            <g className="kf-eyes">
+              {G.eyes.map(([ex, ey], i) => {
+                const cx = r2(ex + G.ew / 2)
+                return (
+                  <g
+                    key={i}
+                    className={i === 0 ? 'kf-eye kf-eye-l' : 'kf-eye kf-eye-r'}
+                    style={{ transformOrigin: `${cx}px ${r2(ey + G.eh / 2)}px` }}
+                  >
+                    <path className="kf-ball" d={capsule(ex, ey, G.ew, G.eh)} />
+                    {/* At rest the upper lid ends on the eye box's top edge and
+                        the lower one starts below it; the state moves them. */}
+                    <rect
+                      className="kf-lid kf-lid-up"
+                      x={ex - 4}
+                      y={ey - 2 * G.eh}
+                      width={G.ew + 8}
+                      height={2 * G.eh}
+                      style={{ transformOrigin: `${cx}px ${ey}px` }}
+                    />
+                    <rect className="kf-lid kf-lid-lo" x={ex - 4} y={ey + G.eh} width={G.ew + 8} height={2 * G.eh} />
+                  </g>
+                )
+              })}
+            </g>
           </g>
+          {/* Over the eyes, so the upper lids never hide it. */}
+          {gloss && <path className="kf-gloss" d="M35 51 Q40 47 47 47" />}
         </g>
       </g>
 
