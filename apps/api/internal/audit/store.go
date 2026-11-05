@@ -18,8 +18,9 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-// Record is one audited mutation. Source distinguishes "ui" from
-// "copilot_proposal" (the X-KubeBolt-Action-Source header). When a Kobi
+// Record is one audited mutation. Source says who made it: "ui" or "api" (a
+// person, in a session or with a token), "copilot_proposal" or "autopilot"
+// (Kobi), resolved from the principal (finding #69). When a Kobi
 // chat was seeded from an insight, OriginatingInsightID carries that
 // insight's occurrence id (Sprint 0 → closes the insight→action provenance
 // loop).
@@ -52,7 +53,16 @@ type Record struct {
 	// ConversationID links a copilot_proposal-sourced action back to the Kobi
 	// conversation that proposed it, so the admin action-history can jump to
 	// the chat that produced the mutation ("why was this pod restarted?").
+	// Set only when the conversation is the caller's own (finding #69).
 	ConversationID string `json:"conversationId,omitempty"`
+	// ClaimedSource is what the request said it was (X-KubeBolt-Action-Source)
+	// when the server did not believe it: Source is what it was.
+	ClaimedSource string `json:"claimedSource,omitempty"`
+	// AutopilotRunID and AutopilotIncidentID tie an Autopilot action to the run
+	// and the incident it belongs to. The approval of an approve_and_execute
+	// run is its own record (autopilot_approval) carrying the same run id.
+	AutopilotRunID      string `json:"autopilotRunId,omitempty"`
+	AutopilotIncidentID string `json:"autopilotIncidentId,omitempty"`
 }
 
 // Record classes. ClassMutation is the zero value: something changed.

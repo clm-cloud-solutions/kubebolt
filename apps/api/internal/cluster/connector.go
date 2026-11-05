@@ -5016,9 +5016,9 @@ func (c *Connector) CreateResource(ctx context.Context, resourceType, namespace 
 		return nil, err
 	}
 	if isClusterScoped(resourceType) {
-		return c.dynamicClient.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{FieldManager: fieldmanager.Name})
+		return c.dynamicClient.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{FieldManager: fieldmanager.For(ctx)})
 	}
-	return c.dynamicClient.Resource(gvr).Namespace(namespace).Create(ctx, obj, metav1.CreateOptions{FieldManager: fieldmanager.Name})
+	return c.dynamicClient.Resource(gvr).Namespace(namespace).Create(ctx, obj, metav1.CreateOptions{FieldManager: fieldmanager.For(ctx)})
 }
 
 // IsClusterScopedType is the public wrapper around isClusterScoped so
@@ -5061,9 +5061,9 @@ func (c *Connector) PatchResourceMetadata(ctx context.Context, resourceType, nam
 		err error
 	)
 	if isClusterScoped(resourceType) {
-		obj, err = c.dynamicClient.Resource(gvr).Patch(ctx, name, types.MergePatchType, patchJSON, metav1.PatchOptions{FieldManager: fieldmanager.Name})
+		obj, err = c.dynamicClient.Resource(gvr).Patch(ctx, name, types.MergePatchType, patchJSON, metav1.PatchOptions{FieldManager: fieldmanager.For(ctx)})
 	} else {
-		obj, err = c.dynamicClient.Resource(gvr).Namespace(namespace).Patch(ctx, name, types.MergePatchType, patchJSON, metav1.PatchOptions{FieldManager: fieldmanager.Name})
+		obj, err = c.dynamicClient.Resource(gvr).Namespace(namespace).Patch(ctx, name, types.MergePatchType, patchJSON, metav1.PatchOptions{FieldManager: fieldmanager.For(ctx)})
 	}
 	if err != nil {
 		return nil, err
@@ -5096,6 +5096,9 @@ func (c *Connector) ApplyResourceYAML(ctx context.Context, resourceType, namespa
 
 	obj := &unstructured.Unstructured{Object: rawObj}
 
+	// The caller's context carries the actor (fieldmanager.For) and the request's
+	// values; the write does not inherit its cancellation, as before, so a client
+	// that goes away does not abort it halfway.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
 
@@ -5117,7 +5120,7 @@ func (c *Connector) ApplyResourceYAML(ctx context.Context, resourceType, namespa
 		return err
 	}
 	restoreHiddenValues(resourceType, rawObj, live.Object)
-	_, err = client.Update(ctx, obj, metav1.UpdateOptions{FieldManager: fieldmanager.Name})
+	_, err = client.Update(ctx, obj, metav1.UpdateOptions{FieldManager: fieldmanager.For(ctx)})
 	return err
 }
 
@@ -6232,8 +6235,11 @@ func (c *Connector) GetDeploymentHistory(namespace, deploymentName string) []map
 // annotations at the time of the call. Errors if the deployment has fewer
 // than 2 revisions, if the target revision can't be found, or if the
 // target equals the current (no-op).
-func (c *Connector) RollbackDeployment(namespace, name string, toRevision int, dryRun bool) (int, int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+func (c *Connector) RollbackDeployment(ctx context.Context, namespace, name string, toRevision int, dryRun bool) (int, int, error) {
+	// The caller's context carries the actor (fieldmanager.For) and the request's
+	// values; the write does not inherit its cancellation, as before, so a client
+	// that goes away does not abort it halfway.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
 
 	// Fetch live (not informer-cached) so the Update call has the latest
@@ -6310,7 +6316,7 @@ func (c *Connector) RollbackDeployment(namespace, name string, toRevision int, d
 	}
 	dep.Spec.Template = *newTemplate
 
-	upOpts := metav1.UpdateOptions{FieldManager: fieldmanager.Name}
+	upOpts := metav1.UpdateOptions{FieldManager: fieldmanager.For(ctx)}
 	if dryRun {
 		upOpts.DryRun = []string{"All"}
 	}

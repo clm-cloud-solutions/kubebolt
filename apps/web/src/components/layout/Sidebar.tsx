@@ -30,7 +30,6 @@ import {
   ShieldOff,
   Users,
   UsersRound,
-  Bot,
   KeyRound,
   Lightbulb,
   Puzzle,
@@ -50,6 +49,7 @@ import { AboutModal } from '@/components/layout/AboutModal'
 import { KubeBoltLogo } from '@/components/shared/KubeBoltLogo'
 import type { ClusterOverview } from '@/types/kubernetes'
 import { eePinnedNavItems } from '@/ee/registry'
+import { KobiIcon } from '@/components/kobi'
 import { useMetricsOnly } from '@/hooks/useMetricsOnly'
 import { useAdminLanding } from '@/hooks/useAdminLanding'
 
@@ -225,8 +225,9 @@ const adminItems = [
   { label: 'Access', path: '/admin/access', icon: <Shield className="w-4 h-4" /> },
   // Agents & Ingest — getting data in: Agent Tokens · Activity · Integrations · Config.
   { label: 'Agents & Ingest', path: '/admin/agents', icon: <Radio className="w-4 h-4" /> },
-  // AI (Kobi) — copilot Config · Usage.
-  { label: 'AI (Kobi)', path: '/admin/ai', icon: <Bot className="w-4 h-4" /> },
+  // AI (Kobi) — copilot Config · Usage. Kobi's face, still: the hub is Kobi's
+  // own settings.
+  { label: 'AI (Kobi)', path: '/admin/ai', icon: <KobiIcon className="w-4 h-4" /> },
   // Insights — the #44 rule matrix + both suppression layers + history.
   { label: 'Insights', path: '/admin/insights', icon: <Lightbulb className="w-4 h-4" /> },
   // System — instance-wide: General · Notifications.

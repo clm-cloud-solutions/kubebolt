@@ -442,8 +442,11 @@ func extractImagesFromControllerRevision(raw []byte) ([]ImagePair, error) {
 // after summary. Errors map cleanly to the same HTTP layer that
 // already serves Deployment rollbacks: "no rollback history",
 // "target revision N not found", "no-op".
-func (c *Connector) RollbackStatefulSet(namespace, name string, toRevision int64, dryRun bool) (int64, int64, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+func (c *Connector) RollbackStatefulSet(ctx context.Context, namespace, name string, toRevision int64, dryRun bool) (int64, int64, error) {
+	// The caller's context carries the actor (fieldmanager.For) and the request's
+	// values; the write does not inherit its cancellation, as before, so a client
+	// that goes away does not abort it halfway.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
 
 	sts, err := c.clientset.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
@@ -484,7 +487,7 @@ func (c *Connector) RollbackStatefulSet(namespace, name string, toRevision int64
 	}
 
 	sts.Spec.Template = *template
-	stsOpts := metav1.UpdateOptions{FieldManager: fieldmanager.Name}
+	stsOpts := metav1.UpdateOptions{FieldManager: fieldmanager.For(ctx)}
 	if dryRun {
 		stsOpts.DryRun = []string{"All"}
 	}
@@ -498,8 +501,11 @@ func (c *Connector) RollbackStatefulSet(namespace, name string, toRevision int64
 // shape difference vs STS is that DaemonSets don't expose
 // status.{update,current}Revision — we identify the active
 // revision as max(Revision) among owned CRs.
-func (c *Connector) RollbackDaemonSet(namespace, name string, toRevision int64, dryRun bool) (int64, int64, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+func (c *Connector) RollbackDaemonSet(ctx context.Context, namespace, name string, toRevision int64, dryRun bool) (int64, int64, error) {
+	// The caller's context carries the actor (fieldmanager.For) and the request's
+	// values; the write does not inherit its cancellation, as before, so a client
+	// that goes away does not abort it halfway.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
 
 	ds, err := c.clientset.AppsV1().DaemonSets(namespace).Get(ctx, name, metav1.GetOptions{})
@@ -536,7 +542,7 @@ func (c *Connector) RollbackDaemonSet(namespace, name string, toRevision int64, 
 	}
 
 	ds.Spec.Template = *template
-	dsOpts := metav1.UpdateOptions{FieldManager: fieldmanager.Name}
+	dsOpts := metav1.UpdateOptions{FieldManager: fieldmanager.For(ctx)}
 	if dryRun {
 		dsOpts.DryRun = []string{"All"}
 	}

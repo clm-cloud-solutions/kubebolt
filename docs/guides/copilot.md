@@ -248,8 +248,12 @@ Kobi never mutates the cluster on its own. When a fix is warranted, it calls one
    Editor or Admin, so a Viewer can read a proposal but not run it. On agent-connected
    clusters, the agent's permission tier must also allow writes.
 4. **Audit** — every executed action is recorded in the audit trail with source
-   `copilot_proposal` (versus `ui` for a direct click), so approved Kobi actions can be told
-   apart from manual ones (`GET /api/v1/admin/actions`).
+   `copilot_proposal` (versus `ui` for a direct click and `api` for an API token), so approved
+   Kobi actions can be told apart from manual ones (`GET /api/v1/admin/actions`). The server
+   decides the source: a proposal counts as Kobi's only when it comes from your own
+   conversation. In the cluster, Kobi's writes carry the field manager `kubebolt-kobi`
+   (everything else KubeBolt writes, `kubebolt`), which
+   `kubectl get <kind> <name> -o yaml --show-managed-fields` shows.
 5. **Follow-through** — after execution the card tracks the rollout. If it does not converge
    within `KUBEBOLT_AI_ACTION_PROGRESS_TIMEOUT`, Kobi is asked to investigate why.
 

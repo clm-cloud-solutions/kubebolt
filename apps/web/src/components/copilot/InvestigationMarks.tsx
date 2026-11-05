@@ -1,6 +1,7 @@
 import { useContext, useEffect, useState } from 'react'
 import { QueryClientContext } from '@tanstack/react-query'
 import { AlertCircle, BookOpen, ChevronDown, ListChecks, Loader2, Square } from 'lucide-react'
+import { KobiStateDot } from '@/components/kobi'
 import { CloudProviderIcon } from '@/components/shared/CloudProviderIcon'
 import { MCP_CONNECTORS_KEY } from '@/components/admin/mcp/ConnectorBits'
 import { connectorShortName } from '@/utils/toolName'
@@ -176,11 +177,9 @@ export function InvestigationStrip({ live, onStop }: { live?: LiveInvestigation;
     : ''
   return (
     <div className="flex items-center gap-2 mb-2 pl-2.5 pr-2 py-1.5 rounded-lg bg-kobi-card border border-kobi-border text-[12px]">
-      <span
-        className="w-[7px] h-[7px] rounded-full shrink-0 bg-kobi-sigil-investigating"
-        style={{ boxShadow: '0 0 0 3px color-mix(in srgb, var(--kobi-sigil-investigating) 16%, transparent)' }}
-        aria-hidden
-      />
+      {/* The state's dot, the same one the floating head's pill starts
+          with: Investigating is green (it was amber until 2026-11-04). */}
+      <KobiStateDot state="investigating" halo />
       <span className="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0">
         <span className="font-medium text-kobi-text">Investigating</span>
         <span className="font-mono text-[11.5px] tabular-nums text-kobi-text-secondary">{formatClock(elapsed)}</span>

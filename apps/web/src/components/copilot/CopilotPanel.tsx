@@ -27,7 +27,8 @@ import { useCopilot } from '@/contexts/CopilotContext'
 import { useClusterOverview } from '@/hooks/useClusterOverview'
 import { useInsights } from '@/hooks/useInsights'
 import { generateCopilotSuggestions } from '@/utils/copilotSuggestions'
-import { KobiSigil, type KobiSigilState } from '@/components/kobi'
+import { KobiFace } from '@/components/kobi'
+import { useKobiPresence } from './useKobiPresence'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ActionProposalCard } from './ActionProposalCard'
 import { ToolCallCard } from './ToolCallCard'
@@ -324,38 +325,9 @@ export function CopilotPanel() {
     document.addEventListener('mouseup', onUp)
   }
 
-  // A "pending proposal" is one where Kobi has emitted an action_proposal
-  // tool result but the operator has not yet clicked Execute or Dismiss
-  // (executionStatus is undefined). When at least one such card is
-  // rendered, Kobi is effectively waiting for a decision — that's the
-  // semantic the awaiting Sigil state communicates.
-  const hasPendingProposal = useMemo(() => {
-    for (const m of messages) {
-      if (m.role !== 'user' || !m.toolResults) continue
-      for (const tr of m.toolResults) {
-        const proposal = parseActionProposal(tr.content)
-        if (proposal && proposal.executionStatus === undefined) {
-          return true
-        }
-      }
-    }
-    return false
-  }, [messages])
-
-  // Map runtime state to Kobi Sigil state, by precedence:
-  //   investigating — model is generating or tool calls are in flight
-  //   awaiting      — at least one proposal card is waiting for the
-  //                   operator's Execute / Dismiss decision
-  //   watching      — idle resting state
-  // Investigating wins over awaiting because active work is the more
-  // current signal (the operator may have just re-sent a follow-up
-  // before clicking on the prior card).
-  const kobiState: KobiSigilState =
-    isLoading || pendingToolCalls.length > 0
-      ? 'investigating'
-      : hasPendingProposal
-        ? 'awaiting'
-        : 'watching'
+  // The live state: the header is one of the two places that show it (the
+  // floating head is the other). Same hook, so the two never disagree.
+  const presence = useKobiPresence()
 
   if (!config?.enabled || !isOpen) return null
 
@@ -449,35 +421,33 @@ export function CopilotPanel() {
       {/* Header */}
       <div className="px-4 py-3 border-b border-kobi-border flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2 min-w-0">
-          {/* The avatar background tints with the state, in the same color
-              family as the Sigil inside. At small sizes (18px) the inner
-              SVG state changes alone are too subtle — tinting the whole
-              circle makes the transition unmistakable without abandoning
-              the calm-SRE register. */}
-          <div
-            className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 transition-colors duration-300 ${
-              kobiState === 'investigating'
-                ? 'bg-amber-100 dark:bg-amber-950/40'
-                : kobiState === 'awaiting'
-                  ? 'bg-sky-100 dark:bg-sky-950/40'
-                  : 'bg-kobi-accent-light'
-            }`}
-          >
-            <KobiSigil state={kobiState} size={18} />
-          </div>
+          {/* Kobi's face at 32 px with the live state, no tile: the shell is
+              its own container. Line 2 says the state in words while Kobi
+              works, and the model while it watches. */}
+          <KobiFace size={32} state={presence.state} />
           <div className="flex flex-col min-w-0">
             <span className="font-display text-[15px] font-semibold tracking-tight text-kobi-text leading-tight truncate">
               Kobi
             </span>
-            <span
-              className="text-[10px] font-mono text-kobi-text-tertiary uppercase tracking-[0.08em] truncate"
-              title={[config.model, escalatedModel].filter(Boolean).join(' → ')}
-            >
-              {config.provider} · {modelLabel(config.model)}
-              {/* Once the conversation left the cluster it runs on the
-                  escalation model: the header says which. */}
-              {escalatedModel && <span className="text-kobi-text-secondary"> → {modelLabel(escalatedModel)}</span>}
-            </span>
+            {presence.state === 'watching' ? (
+              <span
+                className="text-[10px] font-mono text-kobi-text-tertiary uppercase tracking-[0.08em] truncate"
+                title={[config.model, escalatedModel].filter(Boolean).join(' → ')}
+              >
+                {config.provider} · {modelLabel(config.model)}
+                {/* Once the conversation left the cluster it runs on the
+                    escalation model: the header says which. */}
+                {escalatedModel && <span className="text-kobi-text-secondary"> → {modelLabel(escalatedModel)}</span>}
+              </span>
+            ) : (
+              <span
+                className="text-[10px] font-mono text-kobi-text-secondary uppercase tracking-[0.08em] truncate"
+                title={presence.detail ? `${presence.label} · ${presence.detail}` : presence.label}
+              >
+                {presence.label}
+                {presence.detail && <span className="text-kobi-text-tertiary normal-case tracking-normal"> · {presence.detail}</span>}
+              </span>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-1 shrink-0">
@@ -969,11 +939,11 @@ function EmptyState() {
 
   return (
     <div className="flex flex-col items-center justify-center h-full text-center px-4 py-8">
-      {/* Hero — Kobi Sigil in its watching state. The empty state is
-          a pause point; the gentle dot pulse communicates presence
-          without performing enthusiasm. */}
+      {/* Hero — Kobi's face, Watching. The empty state is a pause point;
+          the blink and the dot's pulse say presence without performing
+          enthusiasm. */}
       <div className="mb-4">
-        <KobiSigil state="watching" size={56} />
+        <KobiFace size={64} state="watching" />
       </div>
       <h3 className="font-display text-base font-semibold tracking-tight text-kobi-text mb-1">Kobi</h3>
       <p className="text-sm text-kobi-text-secondary mb-4 max-w-xs">
@@ -1063,9 +1033,9 @@ function MessageBubble({ message }: { message: CopilotMessage }) {
   // rendering immediately after the bubble.
   return (
     <div className="flex justify-start gap-2 group max-w-[95%] min-w-0">
-      <div className="w-6 h-6 rounded-full bg-kobi-accent-light flex items-center justify-center shrink-0 mt-0.5">
-        <KobiSigil state="static" size={14} />
-      </div>
+      {/* Kobi's avatar: the face at 24 px, Watching and still. It never
+          shows the live state — only the header and the floating head do. */}
+      <KobiFace size={24} still className="mt-0.5" />
       {/* relative: hosts the tail. The tail can't live inside the bubble —
           its overflow-hidden (copy button / code blocks) would clip it. */}
       <div className="relative flex flex-col items-start min-w-0 flex-1">

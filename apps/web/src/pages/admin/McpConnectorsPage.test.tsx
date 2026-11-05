@@ -10,7 +10,7 @@ import { McpConnectorsPage } from './McpConnectorsPage'
 
 // Only for the launcher test: the page itself never reads Kobi's context.
 vi.mock('@/contexts/CopilotContext', () => ({
-  useCopilot: () => ({ config: { enabled: true }, isOpen: false, togglePanel: () => {} }),
+  useCopilot: () => ({ config: { enabled: true }, isOpen: false, togglePanel: () => {}, messages: [], isLoading: false, pendingToolCalls: [] }),
 }))
 
 // user-event fires its events through its own copy of @testing-library/dom
