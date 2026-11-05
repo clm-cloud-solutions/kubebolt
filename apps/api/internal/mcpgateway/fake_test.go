@@ -113,6 +113,16 @@ func (f *fakeBinder) binding(i int) *fakeBinding {
 	return f.bindings[i]
 }
 
+// closedBinding reports whether binding i exists and is closed. Bind counts
+// the attempt and records the binding under two separate locks, so a poll
+// that waits on bindCount can see the count before the binding: binding(i)
+// would index past the end there.
+func (f *fakeBinder) closedBinding(i int) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return i < len(f.bindings) && f.bindings[i].closed.Load()
+}
+
 func (f *fakeBinder) set(fn func(f *fakeBinder)) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
