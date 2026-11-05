@@ -655,6 +655,16 @@ func TestAWSGuide(t *testing.T) {
 		t.Fatal("default role name not used")
 	}
 
+	// The guide opens with what protects the customer's account, and names
+	// only the CloudTrail session this edition signs with.
+	safety := strings.Join(g.Safety, " ")
+	if len(g.Safety) != 4 || !strings.Contains(safety, "External ID") || !strings.Contains(safety, "`kubebolt-kobi`") {
+		t.Fatalf("safety = %q", g.Safety)
+	}
+	if strings.Contains(safety, "kubebolt-autopilot") {
+		t.Fatal("the guide names a session this edition never uses")
+	}
+
 	// Before the org has its external ID, or with a stored value that is not
 	// one, the policy carries a placeholder the text explains.
 	for _, fields := range []map[string]string{nil, {"externalId": "x\ny"}, {"externalId": "kb-too-short"}} {

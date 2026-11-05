@@ -2767,7 +2767,9 @@ export interface McpConnector {
   // A sentence an admin can act on, set when status is 'error'.
   lastError?: string
   kobiMinRole: McpKobiMinRole
-  setupGuide: { steps: McpSetupStep[] | null }
+  // safety: a few lines on what protects the customer's side, shown above
+  // the steps. May carry `inline code` spans in backticks.
+  setupGuide: { safety?: string[] | null; steps: McpSetupStep[] | null }
 }
 
 export interface McpConnectorPut {

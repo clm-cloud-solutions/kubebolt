@@ -239,7 +239,20 @@ func awsGuide(env Env, fields map[string]string) SetupGuide {
 			Alternative: true,
 		})
 	}
-	return SetupGuide{Steps: steps}
+	return SetupGuide{Safety: awsSafety(), Steps: steps}
+}
+
+// awsSafety is the guide's opening: what protects the customer's account,
+// stated as facts they can check in their own console.
+func awsSafety() []string {
+	return []string{
+		"The role lives in your account. You decide what it can read, and you can remove it at any time.",
+		"It is read-only. The policy below also denies secret values, S3 object contents and database queries, and those " +
+			"denials hold even if a broader policy is attached to the role later.",
+		"Only KubeBolt can assume it, and only with your organization's External ID. Keep that condition in the trust " +
+			"policy: it ties the role to your organization.",
+		"Every call appears in your CloudTrail under the role's session, `kubebolt-kobi`.",
+	}
 }
 
 // awsTrustExternalIDNote says where the policy's external ID comes from: the

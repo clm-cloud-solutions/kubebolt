@@ -112,7 +112,12 @@ type SetupStep struct {
 
 // SetupGuide is the ordered manual for one connector.
 type SetupGuide struct {
-	Steps []SetupStep `json:"steps"`
+	// Safety is a few short lines on what protects the customer's side of the
+	// connection, shown above the steps. Facts the customer can check, never
+	// warnings: what the role can and cannot do, what ties it to their
+	// organization, where each call shows up.
+	Safety []string    `json:"safety,omitempty"`
+	Steps  []SetupStep `json:"steps"`
 }
 
 // ConnectorDef is one curated connector.

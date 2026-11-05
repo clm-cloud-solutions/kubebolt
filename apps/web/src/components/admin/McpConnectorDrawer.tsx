@@ -454,6 +454,7 @@ export function McpConnectorDrawer({ connector: c, contactUrl, onClose }: Props)
   const families = c.families ?? []
   const never = c.never ?? []
   const steps = c.setupGuide?.steps ?? []
+  const safety = c.setupGuide?.safety ?? []
   const kobiTools = c.tools?.kobi ?? []
   const autopilotTools = c.tools?.autopilot ?? []
   const anyAutopilot = families.some((f) => f.autopilot)
@@ -758,14 +759,14 @@ export function McpConnectorDrawer({ connector: c, contactUrl, onClose }: Props)
                   </Disclosure>
                   {showGuide && (
                     <div id={`${idPrefix}-guide-body`} className="mt-3">
-                      <SetupGuide steps={steps} />
+                      <SetupGuide steps={steps} safety={safety} />
                     </div>
                   )}
                 </>
               ) : (
                 <>
                   <SectionLabel id={`${idPrefix}-guide`}>Before you connect</SectionLabel>
-                  <SetupGuide steps={steps} />
+                  <SetupGuide steps={steps} safety={safety} />
                 </>
               )}
             </section>
