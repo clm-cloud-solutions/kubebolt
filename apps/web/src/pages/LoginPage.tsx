@@ -25,13 +25,21 @@ export function LoginPage() {
     return null
   }
 
-  async function handleSubmit(e: FormEvent) {
+  async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
     setError(null)
     setLoading(true)
 
+    // Read the fields, not the state. A browser that fills saved credentials
+    // on load does not fire onChange, so the state can be empty while the
+    // fields show a username and a password; by the time the form submits
+    // there has been a click or a key, and the fields hold the real values.
+    const fields = new FormData(e.currentTarget)
+    const user = String(fields.get('username') ?? username)
+    const pass = String(fields.get('password') ?? password)
+
     try {
-      await login(username, password)
+      await login(user, pass)
       navigate(from, { replace: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed')
@@ -56,6 +64,7 @@ export function LoginPage() {
           </label>
           <input
             id="username"
+            name="username"
             type="text"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
@@ -74,6 +83,7 @@ export function LoginPage() {
           <div className="relative">
             <input
               id="password"
+              name="password"
               type={showPassword ? 'text' : 'password'}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -92,9 +102,13 @@ export function LoginPage() {
           </div>
         </div>
 
+        {/* Disabled only while signing in. It used to also wait for both
+            fields, and with credentials filled on load (no onChange, see
+            handleSubmit) the button looked dead over two full fields. Empty
+            fields are stopped by `required`. */}
         <button
           type="submit"
-          disabled={loading || !username || !password}
+          disabled={loading}
           className="btn-primary w-full py-2 px-4 text-sm font-medium rounded-lg bg-kb-accent text-white hover:-translate-y-px hover:shadow-[0_8px_24px_-8px_rgba(29,189,125,0.5)] disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:shadow-none transition-all"
         >
           {loading ? 'Signing in...' : 'Sign in'}
