@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
@@ -692,23 +694,40 @@ func (h *handlers) putResourceYAML(w http.ResponseWriter, r *http.Request) {
 	// compliance record into a second, longer-lived place secrets live.
 	yamlParams := map[string]any{"bytes": len(body)}
 
-	if err := conn.ApplyResourceYAML(resourceType, namespace, name, body); err != nil {
+	if err := conn.ApplyResourceYAML(r.Context(), resourceType, namespace, name, body); err != nil {
 		auditMutation(r, "apply_yaml", resourceType, namespace, name, yamlParams, err)
-		errMsg := err.Error()
-		if strings.Contains(errMsg, "forbidden") || strings.Contains(errMsg, "Forbidden") {
-			respondError(w, http.StatusForbidden, errMsg)
-		} else if strings.Contains(errMsg, "invalid") || strings.Contains(errMsg, "Invalid") {
-			respondError(w, http.StatusBadRequest, errMsg)
-		} else if strings.Contains(errMsg, "conflict") || strings.Contains(errMsg, "Conflict") {
-			respondError(w, http.StatusConflict, errMsg)
-		} else {
-			respondError(w, http.StatusInternalServerError, errMsg)
-		}
+		respondError(w, applyYAMLStatus(err), err.Error())
 		return
 	}
 
 	auditMutation(r, "apply_yaml", resourceType, namespace, name, yamlParams, nil)
 	respondJSON(w, http.StatusOK, map[string]string{"status": "applied"})
+}
+
+// applyYAMLStatus answers an apply that failed with the API server's own code
+// when it sent one: a Secret value that is not base64 comes back 400 with no
+// "invalid" in its message, and used to be a 500. The text matches remain for
+// errors that never reached the API server (the YAML did not parse).
+func applyYAMLStatus(err error) int {
+	errMsg := err.Error()
+	var refused *cluster.EditRefusedError
+	switch {
+	case errors.As(err, &refused), apierrors.IsBadRequest(err), apierrors.IsInvalid(err):
+		return http.StatusBadRequest
+	case apierrors.IsForbidden(err):
+		return http.StatusForbidden
+	case apierrors.IsConflict(err):
+		return http.StatusConflict
+	case apierrors.IsNotFound(err):
+		return http.StatusNotFound
+	case strings.Contains(errMsg, "forbidden") || strings.Contains(errMsg, "Forbidden"):
+		return http.StatusForbidden
+	case strings.Contains(errMsg, "invalid") || strings.Contains(errMsg, "Invalid"):
+		return http.StatusBadRequest
+	case strings.Contains(errMsg, "conflict") || strings.Contains(errMsg, "Conflict"):
+		return http.StatusConflict
+	}
+	return http.StatusInternalServerError
 }
 
 func (h *handlers) getResourceYAML(w http.ResponseWriter, r *http.Request) {
