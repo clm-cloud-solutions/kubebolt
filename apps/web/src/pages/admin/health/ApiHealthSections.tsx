@@ -396,7 +396,7 @@ export function VMWritePathCharts({ charts, perInterval }: Omit<SectionCharts, '
         seriesLabel={(l) => human(l.reason ?? 'dropped')}
         accents={FAILURE_PALETTE}
         emptyMessage="VictoriaMetrics dropped no rows in this window."
-        emptyHint="Rows it refuses to store: more labels than -maxLabelsPerTimeseries (40 by default), a label value longer than -maxLabelValueLen, a timestamp outside the retention. The write that carried them still succeeds, so no failed call shows the loss."
+        emptyHint="Rows it refuses to store: more labels than -maxLabelsPerTimeseries (60 in the bundled chart and compose file), a label value longer than -maxLabelValueLen, a timestamp outside the retention. The write that carried them still succeeds, so no failed call shows the loss."
         footnote={`vm_rows_ignored_total by (reason) · ${perInterval}`}
       />
     </>
