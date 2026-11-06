@@ -24,7 +24,16 @@
   overflow: visible;
   --kf-sh: 1;
   --dz: 1;
-  --s: 1;
+  /* The lids, in fractions of the eye box height from its top edge
+     (guidelines, «The lids»). --u: the upper lid's edge; --a: its tilt,
+     negative = outer corner down, mirrored on the right eye; --d: the lower
+     lid's edge (over 1 = below the eye). --ru / --rd: the right eye, when it
+     differs (Verifying). */
+  --u: 0;
+  --a: 0deg;
+  --d: 1.1;
+  --ru: var(--u);
+  --rd: var(--d);
   transition: opacity 200ms ease;
 }
 
@@ -62,14 +71,19 @@
 .kf[data-shapes='none'] { --kf-sh: 0; }
 
 /* --- eyes ------------------------------------------------------------- */
+/* Each eye is a fixed capsule (.kf-ball) cut by two lids in the visor's
+   color, clipped by the visor. The eye never changes shape: the lids decide
+   what shows, and each state puts them in its own place. They move by
+   transform, so a change of state glides in 240 ms in every browser. The
+   blink scales the whole eye around its box's center (set inline). */
 .kf-eyes { transform-box: view-box; }
-.kf-eye {
-  fill: #00e07a;
-  transform-box: fill-box;
-  transform-origin: center;
-  transform: scaleY(var(--s));
-  transition: transform 240ms ease-out, fill 300ms ease;
-}
+.kf-eye { transform-box: view-box; }
+.kf-ball { fill: #00e07a; transition: fill 300ms ease; }
+.kf-lid { fill: #0f100f; transform-box: view-box; transition: transform 240ms ease-out; }
+.kf-eye-l .kf-lid-up { transform: translateY(calc(var(--u) * var(--kf-h))) rotate(var(--a)); }
+.kf-eye-r .kf-lid-up { transform: translateY(calc(var(--ru) * var(--kf-h))) rotate(calc(var(--a) * -1)); }
+.kf-eye-l .kf-lid-lo { transform: translateY(calc((var(--d) - 1) * var(--kf-h))); }
+.kf-eye-r .kf-lid-lo { transform: translateY(calc((var(--rd) - 1) * var(--kf-h))); }
 .kf-body { transform-box: view-box; transform-origin: 60px 106px; }
 
 /* --- the dot and its color ------------------------------------------- */
@@ -90,14 +104,23 @@
 }
 
 /* --- states ----------------------------------------------------------- */
-:is(.kf, .kf-statedot)[data-state='watching'] { --kf-c: var(--kf-ok); --s: 1; }
-:is(.kf, .kf-statedot)[data-state='investigating'] { --kf-c: var(--kf-ok); --s: 0.85; }
-:is(.kf, .kf-statedot)[data-state='awaiting'] { --kf-c: var(--kf-await); --s: 1.05; }
-:is(.kf, .kf-statedot)[data-state='executing'] { --kf-c: var(--kf-exec); --s: 0.6; }
-:is(.kf, .kf-statedot)[data-state='verifying'] { --kf-c: var(--kf-ok); --s: 0.72; }
-:is(.kf, .kf-statedot)[data-state='nocause'] { --kf-c: var(--kf-neutral); --s: 0.8; --dz: 0.72; }
-:is(.kf, .kf-statedot)[data-state='unavailable'] { --kf-c: var(--kf-off); --s: 0.15; }
-.kf[data-state='unavailable'] .kf-eye { fill: #57534e; }
+:is(.kf, .kf-statedot)[data-state='watching'] { --kf-c: var(--kf-ok); }
+:is(.kf, .kf-statedot)[data-state='investigating'] { --kf-c: var(--kf-ok); }
+:is(.kf, .kf-statedot)[data-state='awaiting'] { --kf-c: var(--kf-await); }
+:is(.kf, .kf-statedot)[data-state='executing'] { --kf-c: var(--kf-exec); }
+:is(.kf, .kf-statedot)[data-state='verifying'] { --kf-c: var(--kf-ok); }
+:is(.kf, .kf-statedot)[data-state='nocause'] { --kf-c: var(--kf-neutral); --dz: 0.72; }
+:is(.kf, .kf-statedot)[data-state='unavailable'] { --kf-c: var(--kf-off); }
+
+/* Each state's eye silhouette (guidelines, «The lids»). Watching is the
+   default above. No lid ever tilts toward the nose: it reads as a frown. */
+.kf[data-state='investigating'] { --u: 0.3; --d: 0.9; }
+.kf[data-state='awaiting'] { --u: -0.3; }
+.kf[data-state='executing'] { --u: 0.4; --d: 0.75; }
+.kf[data-state='verifying'] { --ru: 0.36; --rd: 0.8; }
+.kf[data-state='nocause'] { --u: 0.18; --a: -10deg; --d: 0.93; }
+.kf[data-state='unavailable'] { --u: 0.425; --d: 0.575; }
+.kf[data-state='unavailable'] .kf-ball { fill: #57534e; }
 
 /* With something around it, the dot shrinks so dot and ring clear the
    shell. Only if the shape is drawn (--kf-sh); otherwise the whole dot. */
@@ -126,23 +149,32 @@
 .kf[data-state='watching'] .kf-body { animation: kf-breathe 4.8s ease-in-out infinite; }
 .kf[data-state='watching'] .kf-dot { animation: kf-pulse 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
 
+.kf[data-state='investigating'] .kf-eye { animation: kf-blink 7s infinite; }
 .kf[data-state='investigating'] .kf-eyes { animation: kf-read 3.6s ease-in-out infinite; }
 .kf[data-state='investigating'] .kf-body { animation: kf-tilt 3.6s ease-in-out infinite; }
 .kf-wave { animation: kf-wave 1.6s cubic-bezier(0.16, 1, 0.3, 1) infinite; }
 .kf-wave-b { animation-delay: 0.8s; }
 
-.kf[data-state='awaiting'] .kf-eye { animation: kf-blink 8s infinite; }
+/* Awaiting blinks twice: it is waiting for you. */
+.kf[data-state='awaiting'] .kf-eye { animation: kf-blink2 6s infinite; }
 .kf[data-state='awaiting'] .kf-eyes { animation: kf-glance 4.5s ease-in-out infinite; }
 .kf-aw { animation: kf-march 2s linear infinite; }
 
+/* Executing does not blink while it changes something. */
 .kf[data-state='executing'] .kf-eyes { animation: kf-track 2.4s ease-in-out infinite; }
 .kf[data-state='executing'] .kf-body { animation: kf-lean 2.4s ease-in-out infinite; }
 .kf-ex { animation: kf-conv 1.4s cubic-bezier(0.4, 0, 1, 1) infinite; }
 
-.kf[data-state='verifying'] .kf-eye { animation: kf-blink 5s infinite; }
+/* Verifying: the eyes take turns, in step with the gaze that compares. At
+   rest the right one is narrowed. */
 .kf[data-state='verifying'] .kf-eyes { animation: kf-compare 4s ease-in-out infinite; }
+.kf[data-state='verifying'] .kf-eye-l .kf-lid-up { animation: kf-vlu 4s ease-in-out infinite; }
+.kf[data-state='verifying'] .kf-eye-l .kf-lid-lo { animation: kf-vll 4s ease-in-out infinite; }
+.kf[data-state='verifying'] .kf-eye-r .kf-lid-up { animation: kf-vru 4s ease-in-out infinite; }
+.kf[data-state='verifying'] .kf-eye-r .kf-lid-lo { animation: kf-vrl 4s ease-in-out infinite; }
 .kf-ver { animation: kf-arc 3s ease-in-out infinite; }
 
+.kf[data-state='nocause'] .kf-eye { animation: kf-blink 8s infinite; }
 .kf[data-state='nocause'] .kf-eyes { animation: kf-search 6s ease-in-out infinite; }
 
 .kf-eye-r { animation-delay: 60ms !important; }
@@ -228,7 +260,13 @@
   :is(button, a):is(:hover, :focus-visible) .kf[data-fab] .kf-head { transform: none; }
 }
 
-@keyframes kf-blink { 0%, 91%, 97%, 100% { transform: scaleY(var(--s)); } 94% { transform: scaleY(0.08); } }
+@keyframes kf-blink { 0%, 91%, 97%, 100% { transform: scaleY(1); } 94% { transform: scaleY(0.1); } }
+@keyframes kf-blink2 { 0%, 78%, 84%, 90%, 100% { transform: scaleY(1); } 81%, 87% { transform: scaleY(0.1); } }
+/* Verifying's turns: 0–40 % the right eye is narrowed, 50–90 % the left. */
+@keyframes kf-vlu { 0%, 40%, 100% { transform: translateY(0); } 50%, 90% { transform: translateY(calc(0.36 * var(--kf-h))); } }
+@keyframes kf-vll { 0%, 40%, 100% { transform: translateY(calc(0.1 * var(--kf-h))); } 50%, 90% { transform: translateY(calc(-0.2 * var(--kf-h))); } }
+@keyframes kf-vru { 0%, 40%, 100% { transform: translateY(calc(0.36 * var(--kf-h))); } 50%, 90% { transform: translateY(0); } }
+@keyframes kf-vrl { 0%, 40%, 100% { transform: translateY(calc(-0.2 * var(--kf-h))); } 50%, 90% { transform: translateY(calc(0.1 * var(--kf-h))); } }
 @keyframes kf-idle {
   0%, 30% { transform: translate(0, 0); }
   33%, 47% { transform: translate(calc(var(--g) * -0.8), 0); }
