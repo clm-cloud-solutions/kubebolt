@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -36,23 +37,35 @@ func (w *VMWriter) Write(ctx context.Context, samples []*agentv2.Sample) error {
 		return nil
 	}
 	var buf bytes.Buffer
+	var keys []string
 	for _, s := range samples {
 		if s.GetMetricName() == "" {
 			continue
 		}
 		buf.WriteString(s.GetMetricName())
 		if labels := s.GetLabels(); len(labels) > 0 {
+			// Labels are written sorted by name. A Go map ranges in a
+			// different order on every call, and VictoriaMetrics keys its
+			// storage/tsid cache on the series text exactly as received
+			// (unless it runs with -sortLabels): every order was a key of
+			// its own. The cache filled with permutations of the same
+			// series and most inserts missed it and fell back to an
+			// indexdb lookup (one install measured 81% slow inserts and
+			// 2.2M cache entries for ~40k active series).
+			keys = keys[:0]
+			for k := range labels {
+				keys = append(keys, k)
+			}
+			slices.Sort(keys)
 			buf.WriteByte('{')
-			first := true
-			for k, v := range labels {
-				if !first {
+			for i, k := range keys {
+				if i > 0 {
 					buf.WriteByte(',')
 				}
 				buf.WriteString(k)
 				buf.WriteString(`="`)
-				buf.WriteString(escapeLabelValue(v))
+				buf.WriteString(escapeLabelValue(labels[k]))
 				buf.WriteByte('"')
-				first = false
 			}
 			buf.WriteByte('}')
 		}
