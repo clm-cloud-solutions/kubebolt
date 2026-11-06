@@ -218,6 +218,13 @@ services:
       # System › Health charts it. No tenant_id, so it never counts toward
       # the active-series cap.
       - "--selfScrapeInterval=30s"
+      # Keep series of up to 60 labels; VictoriaMetrics drops a wider series
+      # whole (its default is 40). A series that copies a node's labels
+      # (Prometheus jobs that labelmap them, OpenCost's kube_node_labels)
+      # carries them plus about six of its own, and a cloud node has 30-50
+      # (AKS: 44). KubeBolt's own series stay under 30. What is still dropped
+      # counts in vm_rows_ignored_total{reason="too_many_labels"}.
+      - "--maxLabelsPerTimeseries=60"
     restart: unless-stopped
 
 volumes:

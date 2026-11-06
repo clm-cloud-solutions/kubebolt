@@ -8,7 +8,7 @@ import { AnchorLink } from '@/components/shared/kpi/CardLinks'
 import { liveProcess } from '@/utils/promql'
 import { AutoGrid } from './AutoGrid'
 import { Breakdown } from './Breakdown'
-import { duration, HttpCharts, jobStatus, JobsTable, RouteGroupsTable, VMCallsCharts } from './ApiHealthSections'
+import { duration, HttpCharts, jobStatus, JobsTable, RouteGroupsTable, VMCallsCharts, VMWritePathCharts } from './ApiHealthSections'
 import { first, HealthFrame, inInterval, useHealthSparkline, useHealthVector, type HealthFrameProps } from './healthShared'
 
 // Administration › System › Health: is this KubeBolt healthy right now, and if
@@ -283,14 +283,16 @@ function ApiHealthBody({ charts, rangeMinutes, perInterval, perPoint }: HealthFr
             {...charts}
             title="Memory against its limit"
             unit="bytes"
-            chartType="area"
-            accents={['#a855f7']}
-            query={`max(process_resident_memory_bytes{${VM}})`}
-            seriesLabel={() => 'in use'}
+            chartType="stacked"
+            queries={[
+              { query: `max(process_resident_memory_anon_bytes{${VM}})`, prefix: 'anonymous', accent: '#a855f7' },
+              { query: `max(process_resident_memory_file_bytes{${VM}})`, prefix: 'file pages', accent: '#c4b5fd' },
+            ]}
+            seriesLabel={(_l, prefix) => prefix ?? 'in use'}
             referenceLines={vmCap ? [{ y: vmCap, label: `limit ${gib(vmCap)} GiB`, shortLabel: 'limit', color: '#ef4056' }] : undefined}
             emptyMessage="VictoriaMetrics is not reporting on itself."
-            emptyHint="It measures itself when started with --selfScrapeInterval (on in the bundled chart and compose file)."
-            footnote={'process_resident_memory_bytes · process_memory_limit_bytes{job="victoria-metrics"}'}
+            emptyHint="Anonymous memory (caches, buffers) is what an OOM kill counts. File pages are its data files mapped into memory: the kernel takes them back first, and a restart empties them."
+            footnote={'process_resident_memory_anon_bytes · process_resident_memory_file_bytes · process_memory_limit_bytes{job="victoria-metrics"}'}
           />
           <MetricChart
             {...charts}
@@ -318,6 +320,7 @@ function ApiHealthBody({ charts, rangeMinutes, perInterval, perPoint }: HealthFr
             emptyHint="It measures itself when started with --selfScrapeInterval (on in the bundled chart and compose file)."
             footnote={'vm_data_size_bytes · vm_free_disk_space_bytes{job="victoria-metrics"}'}
           />
+          <VMWritePathCharts charts={charts} perInterval={perInterval} />
           <VMCallsCharts charts={charts} perInterval={perInterval} perPoint={perPoint} />
         </AutoGrid>
       </Section>
