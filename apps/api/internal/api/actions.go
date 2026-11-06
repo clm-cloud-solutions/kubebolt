@@ -46,16 +46,17 @@ var setImageableTypes = map[string]bool{
 }
 
 // auditMutation emits a structured audit log entry for any cluster mutation.
-// `source` distinguishes user-initiated UI actions ("ui") from Copilot
-// proposals approved by the user ("copilot_proposal"); it comes from the
-// X-KubeBolt-Action-Source header. It logs via slog (operational log line)
-// AND, when an audit store is wired (Sprint 1), persists a durable record to
-// the kobi_actions bucket for the admin action-history view.
+// `source` says who made it: a person in the UI ("ui") or through an API token
+// ("api"), a Kobi Copilot proposal the person approved ("copilot_proposal"),
+// or Kobi Autopilot ("autopilot"). It is the actor withActionActor resolved
+// from the principal (action_actor.go, finding #69), not the
+// X-KubeBolt-Action-Source header, which only claims it. It logs via slog
+// (operational log line) AND, when an audit store is wired (Sprint 1),
+// persists a durable record to the kobi_actions bucket for the admin
+// action-history view.
 func auditMutation(r *http.Request, action, resourceType, namespace, name string, params map[string]any, err error) {
-	source := r.Header.Get("X-KubeBolt-Action-Source")
-	if source == "" {
-		source = "ui"
-	}
+	actor := actionActorOf(r)
+	source := actor.Source
 	var userID, username string
 	if claims := auth.ContextClaims(r); claims != nil {
 		userID = claims.UserID
@@ -67,6 +68,7 @@ func auditMutation(r *http.Request, action, resourceType, namespace, name string
 		slog.String("audit", "mutation"),
 		slog.String("action", action),
 		slog.String("source", source),
+		slog.String("field_manager", fieldmanager.For(r.Context())),
 		slog.String("user_id", userID),
 		slog.String("username", username),
 		slog.String("role", role),
@@ -80,6 +82,12 @@ func auditMutation(r *http.Request, action, resourceType, namespace, name string
 		attrs = append(attrs, slog.String("error", err.Error()))
 	}
 	attrs = append(attrs, slog.String("result", result))
+	if actor.ClaimedSource != "" {
+		attrs = append(attrs, slog.String("claimed_source", actor.ClaimedSource))
+	}
+	if actor.AutopilotRun != "" {
+		attrs = append(attrs, slog.String("autopilot_run", actor.AutopilotRun))
+	}
 	if err != nil {
 		slog.Warn("cluster mutation", attrs...)
 	} else {
@@ -110,7 +118,12 @@ func auditMutation(r *http.Request, action, resourceType, namespace, name string
 			Params:               params,
 			Result:               result,
 			OriginatingInsightID: r.Header.Get("X-KubeBolt-Origin-Insight"),
-			ConversationID:       r.Header.Get("X-KubeBolt-Conversation-Id"),
+			// Only a conversation the actor resolution checked: a link the
+			// trail offers must lead to the chat that proposed the action.
+			ConversationID:      actor.ConversationID,
+			ClaimedSource:       actor.ClaimedSource,
+			AutopilotRunID:      actor.AutopilotRun,
+			AutopilotIncidentID: actor.AutopilotIncident,
 		}
 		if err != nil {
 			rec.Error = err.Error()
@@ -122,7 +135,9 @@ func auditMutation(r *http.Request, action, resourceType, namespace, name string
 // copilotDestructiveBlocked reports whether this request is a Kobi-proposed
 // destructive action that the admin has disabled via the destructive-ops
 // sub-switch (Sprint 1). UI-initiated actions are governed by RBAC, not this
-// gate — only copilot_proposal-sourced mutations are blocked. Defense in
+// gate — only copilot_proposal-sourced mutations are blocked. It reads the
+// header's CLAIM on purpose: the claim can only make the gate stricter, so it
+// needs no check (the actor that names the write is resolved elsewhere). Defense in
 // depth behind the tool-list filter (which already hides delete from the LLM
 // when destructive ops are off; this also catches scale-to-0, which shares
 // the non-destructive scale tool and so can't be tool-filtered).
@@ -183,7 +198,7 @@ func (h *handlers) handleRestart(w http.ResponseWriter, r *http.Request) {
 	)
 	patchBytes := []byte(restartPatch)
 	dryRun := dryRunRequested(r)
-	opts := metav1.PatchOptions{FieldManager: fieldmanager.Name, DryRun: dryRunAll(dryRun)}
+	opts := metav1.PatchOptions{FieldManager: fieldmanager.For(ctx), DryRun: dryRunAll(dryRun)}
 
 	var err error
 	switch resourceType {
@@ -279,7 +294,7 @@ func (h *handlers) handleScale(w http.ResponseWriter, r *http.Request) {
 		}
 		currentReplicas = scale.Spec.Replicas
 		scale.Spec.Replicas = body.Replicas
-		_, err = clientset.AppsV1().Deployments(namespace).UpdateScale(ctx, name, scale, metav1.UpdateOptions{FieldManager: fieldmanager.Name, DryRun: dryRunAll(dryRun)})
+		_, err = clientset.AppsV1().Deployments(namespace).UpdateScale(ctx, name, scale, metav1.UpdateOptions{FieldManager: fieldmanager.For(ctx), DryRun: dryRunAll(dryRun)})
 	case "statefulsets":
 		scale, gErr := clientset.AppsV1().StatefulSets(namespace).GetScale(ctx, name, metav1.GetOptions{})
 		if gErr != nil {
@@ -288,7 +303,7 @@ func (h *handlers) handleScale(w http.ResponseWriter, r *http.Request) {
 		}
 		currentReplicas = scale.Spec.Replicas
 		scale.Spec.Replicas = body.Replicas
-		_, err = clientset.AppsV1().StatefulSets(namespace).UpdateScale(ctx, name, scale, metav1.UpdateOptions{FieldManager: fieldmanager.Name, DryRun: dryRunAll(dryRun)})
+		_, err = clientset.AppsV1().StatefulSets(namespace).UpdateScale(ctx, name, scale, metav1.UpdateOptions{FieldManager: fieldmanager.For(ctx), DryRun: dryRunAll(dryRun)})
 	}
 
 	// Dry-run: report would-apply / rejection without auditing or side effects.
@@ -366,12 +381,12 @@ func (h *handlers) handleRollback(w http.ResponseWriter, r *http.Request) {
 	switch resourceType {
 	case "deployments":
 		var f, t int
-		f, t, err = conn.RollbackDeployment(namespace, name, int(body.ToRevision), dryRun)
+		f, t, err = conn.RollbackDeployment(r.Context(), namespace, name, int(body.ToRevision), dryRun)
 		fromRev, toRev = int64(f), int64(t)
 	case "statefulsets":
-		fromRev, toRev, err = conn.RollbackStatefulSet(namespace, name, body.ToRevision, dryRun)
+		fromRev, toRev, err = conn.RollbackStatefulSet(r.Context(), namespace, name, body.ToRevision, dryRun)
 	case "daemonsets":
-		fromRev, toRev, err = conn.RollbackDaemonSet(namespace, name, body.ToRevision, dryRun)
+		fromRev, toRev, err = conn.RollbackDaemonSet(r.Context(), namespace, name, body.ToRevision, dryRun)
 	}
 	if fromRev > 0 {
 		params["fromRevision"] = fromRev
@@ -543,7 +558,7 @@ func (h *handlers) handleSetImage(w http.ResponseWriter, r *http.Request) {
 		"toImages":   body.Images,
 	}
 
-	imgOpts := metav1.PatchOptions{FieldManager: fieldmanager.Name, DryRun: dryRunAll(dryRun)}
+	imgOpts := metav1.PatchOptions{FieldManager: fieldmanager.For(ctx), DryRun: dryRunAll(dryRun)}
 	switch resourceType {
 	case "deployments":
 		_, err = clientset.AppsV1().Deployments(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, imgOpts)
@@ -779,7 +794,7 @@ func (h *handlers) handleSetNodeSchedulability(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	if _, err := clientset.CoreV1().Nodes().Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{FieldManager: fieldmanager.Name}); err != nil {
+	if _, err := clientset.CoreV1().Nodes().Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{FieldManager: fieldmanager.For(ctx)}); err != nil {
 		auditMutation(r, action, resourceType, "", name, params, err)
 		log.Printf("%s failed for node/%s: %v", action, name, err)
 		respondMutationError(w, err)

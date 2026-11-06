@@ -1,4 +1,5 @@
-import { Bot, BarChart3, HeartPulse, Plug } from 'lucide-react'
+import { BarChart3, HeartPulse, Plug } from 'lucide-react'
+import { KobiIcon } from '@/components/kobi'
 import { AdminHub } from './AdminHub'
 import { CopilotSettingsTab } from './settings/CopilotSettingsTab'
 import { CopilotUsagePage } from './CopilotUsagePage'
@@ -14,7 +15,7 @@ export function AIHub() {
         {
           key: 'config',
           label: 'Configuration',
-          Icon: Bot,
+          Icon: KobiIcon,
           title: 'AI Copilot (Kobi)',
           subtitle: 'Provider, model, and fallback for the AI copilot.',
           render: () => <CopilotSettingsTab />,

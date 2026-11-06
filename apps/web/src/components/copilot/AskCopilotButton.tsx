@@ -1,6 +1,6 @@
-import type { MouseEvent } from 'react'
+import { useState, type MouseEvent } from 'react'
 import { useCopilot } from '@/contexts/CopilotContext'
-import { KobiSigil } from '@/components/kobi'
+import { KobiFace } from '@/components/kobi'
 import { buildTriggerPrompt, type CopilotTriggerPayload } from '@/services/copilot/triggers'
 
 interface AskCopilotButtonProps {
@@ -19,7 +19,13 @@ interface AskCopilotButtonProps {
 /**
  * AskCopilotButton launches the Kobi panel with a pre-loaded, context-aware
  * prompt built from the payload. Invisible when Kobi is not configured
- * (`config.enabled === false`) — dead-ends hurt trust.
+ * (`config.enabled === false`) — dead-ends hurt trust, and it never needs to
+ * show Unavailable.
+ *
+ * It wears Kobi's face, still: 24 px (S) as the icon button, 16 px (XS) in
+ * the text button. While the cursor or the keyboard focus is on it the face
+ * wakes up Watching — the dot pulses and the eyes blink — and never shows
+ * the live state, which belongs to the floating head and the panel header.
  */
 export function AskCopilotButton({
   payload,
@@ -29,8 +35,16 @@ export function AskCopilotButton({
   onAfterSend,
 }: AskCopilotButtonProps) {
   const { config, openPanel, sendMessage } = useCopilot()
+  const [awake, setAwake] = useState(false)
 
   if (!config?.enabled) return null
+
+  const wake = {
+    onMouseEnter: () => setAwake(true),
+    onMouseLeave: () => setAwake(false),
+    onFocus: () => setAwake(true),
+    onBlur: () => setAwake(false),
+  }
 
   function handleClick(e: MouseEvent<HTMLButtonElement>) {
     e.stopPropagation()
@@ -50,12 +64,10 @@ export function AskCopilotButton({
         type="button"
         onClick={handleClick}
         title={label}
-        className={`group relative inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium text-kobi-accent bg-kobi-accent-light ring-1 ring-kobi-accent/25 shadow-[0_0_0_0_rgba(0,224,122,0)] hover:ring-kobi-accent/50 hover:shadow-[0_0_14px_rgba(0,224,122,0.30)] hover:-translate-y-[0.5px] active:translate-y-0 transition-all duration-200 overflow-hidden ${className}`}
+        {...wake}
+        className={`group relative inline-flex items-center gap-1.5 pl-2 pr-2.5 py-1 rounded-md text-[11px] font-medium text-kobi-accent bg-kobi-accent-light ring-1 ring-kobi-accent/25 shadow-[0_0_0_0_rgba(0,224,122,0)] hover:ring-kobi-accent/50 hover:shadow-[0_0_14px_rgba(0,224,122,0.30)] hover:-translate-y-[0.5px] active:translate-y-0 transition-all duration-200 overflow-hidden ${className}`}
       >
-        <span className="relative flex items-center">
-          <span className="absolute inset-0 rounded-full bg-kobi-accent/60 blur-[3px] animate-ping opacity-60" aria-hidden />
-          <KobiSigil state="static" inheritColor size={14} className="relative" />
-        </span>
+        <KobiFace size={16} still={!awake} eager={awake} className="relative" />
         <span className="relative text-kobi-accent font-semibold">
           {label}
         </span>
@@ -73,9 +85,11 @@ export function AskCopilotButton({
       onClick={handleClick}
       title={label}
       aria-label={label}
-      className={`group relative inline-flex items-center justify-center w-6 h-6 rounded-md text-kobi-accent bg-kobi-accent-light ring-1 ring-kobi-accent/20 hover:ring-kobi-accent/50 hover:scale-105 hover:shadow-[0_0_12px_rgba(0,224,122,0.30)] active:scale-95 transition-all duration-200 ${className}`}
+      {...wake}
+      className={`relative inline-flex items-center justify-center w-6 h-6 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kobi-accent/60 active:scale-95 transition-transform duration-200 ${className}`}
     >
-      <KobiSigil state="static" inheritColor size={14} className="transition-transform duration-200 group-hover:rotate-[8deg]" />
+      {/* No tile: the face's shell is its own container. */}
+      <KobiFace size={24} still={!awake} eager={awake} />
     </button>
   )
 }

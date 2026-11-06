@@ -324,6 +324,7 @@ its own tab instead of the whole context.
 |---|---|
 | `web` image tolerates an arbitrary UID (`chgrp 0` + `chmod g=u` on the four paths) | 2.3.0 |
 | `web` Deployment runs under the chart's ServiceAccount (token not mounted) | 2.3.0 |
+| `web` runs under its own ServiceAccount (`<release>-web`), bound to nothing; an SCC granted to the API's ServiceAccount no longer covers it, and it needs none (`restricted-v2`) | 2.5.2 |
 | Optional `api` / `web` `podSecurityContext` and `securityContext`, empty by default | 2.3.0 |
 | The agent-proxy connect deadline no longer applies to in-cluster / kubeconfig connects, so the outer deadline cannot cut a direct sync short and "agent may be stuck" is not shown where there is no agent | 2.3.0 |
 | The agent chart drops its default `runAsUser` on OpenShift; the agent image's `USER` is numeric | agent 1.4.2 |

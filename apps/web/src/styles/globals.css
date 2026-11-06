@@ -148,10 +148,13 @@
      colour is not the only channel — each state carries its own animation
      (watching pulses the dot, investigating expands two rings, awaiting
      marches a dashed circle), so state survives without relying on hue.
-     amber/sky stay on the 700 tier, where they do clear 3:1. */
+     amber/sky stay on the 700 tier, where they do clear 3:1.
+     Investigating is green since 2026-11-04 (brand guidelines, «The color
+     of each state»): reading is work that needs nothing from you, and
+     amber means one thing only — Executing. */
   --kobi-sigil-static: #00b864;
   --kobi-sigil-watching: #00b864;
-  --kobi-sigil-investigating: #b45309;
+  --kobi-sigil-investigating: #00b864;
   --kobi-sigil-awaiting: #0369a1;
   /* Kobi-scoped status. The amber dim uses a LIVELIER base than the
      amber text (amber-500, not 700): at low alpha the 700 read beige,
@@ -213,7 +216,7 @@
   /* Sigil — 400 tier on dark (as shipped). */
   --kobi-sigil-static: #00e07a;
   --kobi-sigil-watching: #00e07a;
-  --kobi-sigil-investigating: #fbbf24;
+  --kobi-sigil-investigating: #00e07a;
   --kobi-sigil-awaiting: #38bdf8;
   --kobi-st-ok-rgb: 52 211 153;
   --kobi-st-warn-rgb: 251 191 36;
@@ -645,17 +648,18 @@ input:-webkit-autofill:active {
 }
 
 /* Auth pages — breathing aurora glow on the branding panel (ported from the
-   site's "3am" hero). Base position via inline transform; the keyframe nudges
-   scale + opacity. Honors reduced-motion. */
+   site's "3am" hero, at the hero's own values: HeroCluster on the site).
+   Base position via inline transform; the keyframe nudges scale + opacity.
+   Honors reduced-motion. */
 @keyframes auth-aurora {
   0%,
   100% {
     transform: translateX(-50%) scaleX(1);
-    opacity: 0.72;
+    opacity: 0.88;
   }
   50% {
     transform: translateX(-48%) scaleX(1.06);
-    opacity: 0.94;
+    opacity: 1;
   }
 }
 .auth-aurora-anim {
@@ -667,39 +671,23 @@ input:-webkit-autofill:active {
   }
 }
 
-/* Auth panel — the cluster grid (AuthShell ClusterGrid). A healthy node, and one
-   that goes amber and heals: the product in one cell. Held still under
-   prefers-reduced-motion, in its amber state so the signature stays legible. */
+/* Auth panel — the cluster grid (AuthShell ClusterConsole). A healthy node,
+   and one that goes amber while Kobi works on it: the product in one cell.
+   The console's clock (React, ee/authCopy authConsole) sets data-warn; the
+   node only eases between the two. */
 .auth-node {
   border-color: #23302a;
   background: rgba(0, 224, 122, 0.05);
+  transition: border-color 700ms ease, background-color 700ms ease, box-shadow 700ms ease;
 }
-.auth-node-heal {
+.auth-node[data-warn] {
   border-color: rgba(255, 184, 77, 0.6);
   background: rgba(255, 184, 77, 0.14);
   box-shadow: 0 0 22px rgba(255, 184, 77, 0.3);
-  animation: auth-node-heal 10s ease-in-out infinite;
-}
-@keyframes auth-node-heal {
-  0%, 40% {
-    border-color: rgba(255, 184, 77, 0.6);
-    background: rgba(255, 184, 77, 0.14);
-    box-shadow: 0 0 22px rgba(255, 184, 77, 0.3);
-  }
-  55%, 85% {
-    border-color: rgba(0, 224, 122, 0.55);
-    background: rgba(0, 224, 122, 0.12);
-    box-shadow: 0 0 18px rgba(0, 224, 122, 0.28);
-  }
-  100% {
-    border-color: rgba(255, 184, 77, 0.6);
-    background: rgba(255, 184, 77, 0.14);
-    box-shadow: 0 0 22px rgba(255, 184, 77, 0.3);
-  }
 }
 @media (prefers-reduced-motion: reduce) {
-  .auth-node-heal {
-    animation: none;
+  .auth-node {
+    transition: none;
   }
 }
 
@@ -725,36 +713,38 @@ input:-webkit-autofill:active {
 }
 
 /* Auth console (AuthShell ClusterConsole): the site's mockup frame — 12px
-   surface, lit top edge, mono type. The node's status line runs on the node's
-   10 s clock: incident while it is amber, healed while it is green. */
+   surface, lit top edge, mono type. Under the grid Kobi narrates: its face,
+   and beside it the state in the state's color (the face's own tokens,
+   kobi-face.css) over what it is doing. Each beat's line fades in. */
 .auth-console {
   background: linear-gradient(180deg, rgba(19, 20, 19, 0.85), rgba(12, 13, 12, 0.85));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 1px 2px rgba(0, 0, 0, 0.35);
 }
-.auth-line-incident { animation: auth-line-incident 10s ease-in-out infinite; }
-.auth-line-healed { opacity: 0; animation: auth-line-healed 10s ease-in-out infinite; }
-@keyframes auth-line-incident {
-  0%, 44% { opacity: 1; }
-  50%, 94% { opacity: 0; }
-  100% { opacity: 1; }
+.auth-console-state { color: var(--kf-ok); transition: color 300ms ease; }
+.auth-console-state[data-state='awaiting'] { color: var(--kf-await); }
+.auth-console-state[data-state='executing'] { color: var(--kf-exec); }
+.auth-console-say { animation: auth-console-say 320ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+@keyframes auth-console-say {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: none; }
 }
-@keyframes auth-line-healed {
-  0%, 48% { opacity: 0; }
-  55%, 88% { opacity: 1; }
-  94%, 100% { opacity: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .auth-console-say { animation: none; }
 }
 
 /* Auth form — the site's vocabulary on the pages' own markup (AuthShell wraps
    every auth page in .auth-form, so the six pages keep their classes and
    still agree with each other):
-     card    card-v3 shape — 18px, lit top edge, the soft separating shadow
-             and the resting green bevel segment at left-centre (the site's
-             card signature) — on GLASS: the card sits on the night scene, so
-             a translucent surface with a blur reads on any part of the sky
-             without becoming a black box pasted over it;
+     card    the site's .surface — OPAQUE #131413, 18px, a top edge lit by a
+             gradient hairline that fades down the sides, the soft separating
+             shadow and the resting green bevel segment at left-centre (the
+             site's card signature). It used to be glass (a translucent fill
+             with a backdrop blur); the site tried glass and dropped it, its
+             editorial surfaces are opaque;
      labels  mono, uppercase, tracked — the site's small-label voice;
-     fields  pills on Elevated with a hairline; focus shifts the border green
-             and adds a faint ring;
+     fields  pills SUNK into the card (the console doctrine: the card is
+             raised, what you type into is recessed), a hairline and an inner
+             shadow; focus shifts the border green and adds a faint ring;
      primary green pill with warm-black mono text; hover fills paper, lifts
              1px and glows (the site's .btn-primary);
      social  secondary pills that turn green on hover without moving. */
@@ -764,14 +754,17 @@ input:-webkit-autofill:active {
 .auth-form .bg-kb-card {
   position: relative;
   border-radius: 18px;
-  border-color: rgba(245, 242, 236, 0.12);
-  background: linear-gradient(180deg, rgba(28, 30, 28, 0.72), rgba(17, 19, 17, 0.66));
-  -webkit-backdrop-filter: blur(18px) saturate(1.15);
-  backdrop-filter: blur(18px) saturate(1.15);
+  border-color: transparent;
+  background-color: #131413;
+  background-image:
+    linear-gradient(#131413, #131413),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.03) 55%, transparent);
+  background-origin: border-box;
+  background-clip: padding-box, border-box;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    0 30px 80px -30px rgba(0, 0, 0, 0.85),
-    0 0 0 1px rgba(0, 224, 122, 0.04);
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 1px 2px rgba(0, 0, 0, 0.35),
+    0 30px 80px -30px rgba(0, 0, 0, 0.85);
   padding: 1.75rem;
 }
 .auth-form .bg-kb-card::before {
@@ -797,8 +790,9 @@ input:-webkit-autofill:active {
 .auth-form input:not([type='checkbox']):not([type='radio']),
 .auth-form select {
   border-radius: 999px;
-  background-color: var(--kobi-card);
+  background-color: var(--kobi-code-bg);
   border-color: var(--kobi-border);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);
   padding-top: 0.7rem;
   padding-bottom: 0.7rem;
   padding-left: 1.1rem;
@@ -820,13 +814,13 @@ input:-webkit-autofill:active {
    the focus rule. */
 .auth-form input:not([type='checkbox']):not([type='radio']):-webkit-autofill,
 .auth-form input:not([type='checkbox']):not([type='radio']):-webkit-autofill:hover {
-  -webkit-box-shadow: 0 0 0 1000px var(--kobi-card) inset;
-  box-shadow: 0 0 0 1000px var(--kobi-card) inset;
+  -webkit-box-shadow: 0 0 0 1000px var(--kobi-code-bg) inset;
+  box-shadow: 0 0 0 1000px var(--kobi-code-bg) inset;
   -webkit-text-fill-color: var(--kobi-text);
 }
 .auth-form input:not([type='checkbox']):not([type='radio']):-webkit-autofill:focus {
-  -webkit-box-shadow: 0 0 0 1000px var(--kobi-card) inset, 0 0 0 3px rgba(0, 224, 122, 0.12);
-  box-shadow: 0 0 0 1000px var(--kobi-card) inset, 0 0 0 3px rgba(0, 224, 122, 0.12);
+  -webkit-box-shadow: 0 0 0 1000px var(--kobi-code-bg) inset, 0 0 0 3px rgba(0, 224, 122, 0.12);
+  box-shadow: 0 0 0 1000px var(--kobi-code-bg) inset, 0 0 0 3px rgba(0, 224, 122, 0.12);
 }
 .auth-form input.pr-10 + button {
   right: 0.9rem;
@@ -912,9 +906,7 @@ input:-webkit-autofill:active {
   .auth-rise,
   .auth-copy-in,
   .auth-form .bg-kb-card,
-  .auth-form .bg-kb-card > *,
-  .auth-line-incident,
-  .auth-line-healed {
+  .auth-form .bg-kb-card > * {
     animation: none;
   }
   .auth-form .bg-kb-card::after {

@@ -122,7 +122,11 @@ Full reference with comments: [`values.yaml`](https://github.com/clm-cloud-solut
 | `serviceAccount.create` | Create the API ServiceAccount | `true` |
 | `serviceAccount.name` | ServiceAccount name; empty = release fullname | `""` |
 | `serviceAccount.annotations` | ServiceAccount annotations (e.g. IRSA / Workload Identity) | `{}` |
+| `web.serviceAccount.create` / `.name` / `.annotations` | The web pod's own ServiceAccount, bound to nothing, token never mounted; empty name = `<fullname>-web` | `true` / `""` / `{}` |
 | `rbac.create` | Create the ClusterRole / ClusterRoleBinding described in [RBAC](#rbac) | `true` |
+
+Only the API's ServiceAccount is bound to the ClusterRole and carries cloud
+identities. The web runs under its own, so none of those reach it.
 
 ### Agent ingest (gRPC channel for `kubebolt-agent`)
 
@@ -212,12 +216,18 @@ chart provides what has to run or be known at deploy time. Guide:
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `mcpConnectors.enabled` | `false` removes the Connectors tab and Kobi's cloud tools | `true` |
-| `mcpConnectors.aws.principalArn` | The AWS identity the API runs as (its IRSA or Pod Identity role), printed in the AWS trust policy | `""` |
+| `mcpConnectors.aws.principalArn` | The AWS identity the API runs as (its IRSA or Pod Identity role, or the role of `webIdentity`), printed in the AWS trust policy | `""` |
+| `mcpConnectors.aws.webIdentity.enabled` | Outside EKS: mount a token of the API's ServiceAccount and exchange it for `principalArn` (must be a role trusting this cluster's OIDC issuer) | `false` |
+| `mcpConnectors.aws.webIdentity.audience` | Audience of that token | `sts.amazonaws.com` |
+| `mcpConnectors.aws.webIdentity.expirationSeconds` | Lifetime of that token; the kubelet renews it before it expires | `3600` |
 | `mcpConnectors.azure.sidecar.enabled` | Run the Azure MCP Server as a second container of the API pod, on its loopback | `false` |
 | `mcpConnectors.azure.sidecar.existingSecret` | Secret with the read-only service principal: `tenant-id`, `client-id`, `client-secret` (required with the sidecar) | `""` |
 | `mcpConnectors.azure.sidecar.image.*` | `mcr.microsoft.com/azure-sdk/azure-mcp`, the release Kobi's allowlist was reviewed against, by digest. Change it only with a KubeBolt release | `3.0.0-beta.46` |
 | `mcpConnectors.azure.sidecar.resources` | Sidecar requests and limits | 20m / 128Mi, 500m / 512Mi |
 | `mcpConnectors.azure.sidecar.securityContext` | Non-root (uid 1654), read-only root filesystem, no capabilities. On OpenShift unset `runAsUser` | see `values.yaml` |
+
+On EKS, give the API its AWS identity with IRSA or Pod Identity on
+`serviceAccount` and leave `webIdentity` off.
 
 The chart templates also honor `nameOverride` and `fullnameOverride`.
 

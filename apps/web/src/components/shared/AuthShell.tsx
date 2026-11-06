@@ -1,15 +1,25 @@
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useLocation } from 'react-router-dom'
 import { KubeBoltLogo } from '@/components/shared/KubeBoltLogo'
 import { Starfield } from '@/components/shared/Starfield'
+import { KobiFace } from '@/components/kobi'
 import { VERSION } from '@/version'
-import { authLicense, authPillars, authReleaseNotesUrl, authSiteUrl, authTagline } from '@/ee/authCopy'
+import {
+  authConsole,
+  authEyebrow,
+  authLicense,
+  authPillars,
+  authReleaseNotesUrl,
+  authSiteUrl,
+  authTagline,
+} from '@/ee/authCopy'
 
 // AuthShell — the shared chrome for the pre-login pages (Login, SignUp, the
 // password and invite flows). ONE night scene ported from the site's "3am"
-// hero — sky → breathing aurora → horizon glow → starfield → vignette — runs
-// edge to edge behind two columns: the branding copy on the left (desktop
-// only) and the form on the right, on a glass card. The whole shell is forced
+// hero, at the hero's measured values — sky → two breathing auroras →
+// starfield → vignette — runs edge to edge behind two columns: the branding
+// copy on the left (desktop only) and the form on the right, on the site's
+// opaque card. The whole shell is forced
 // to the DARK theme (`.dark` wrapper) so the kb-* tokens resolve to the
 // site-matching dark palette regardless of the user's in-app theme — these
 // pages own their look. Uses ONLY existing tokens/fonts; the brand accent
@@ -25,8 +35,8 @@ import { authLicense, authPillars, authReleaseNotesUrl, authSiteUrl, authTagline
 // customer, mid-task — got the sales argument. Three panels now:
 //
 //   pitch  — login, signup: the only moment someone may not know the product.
-//            The site's spine (See. Understand. Operate.), the pillars, the
-//            proof line.
+//            The site home's headline (From alert to root cause), the
+//            pillars, the proof line, and Kobi working a node in the console.
 //   return — forgot / reset password: no pitch. They want back in.
 //   invite — accept-invite: they do not know the product, and they are not
 //            the buyer either. What it is, without the plan.
@@ -95,32 +105,44 @@ export function AuthShell({
           sized by this row, so it grows with a long form instead of ending
           at the first screen. */}
       <div className="absolute inset-0 z-0 overflow-hidden pointer-events-none" aria-hidden="true">
+        {/* The night is the site hero's (HeroCluster), values included. It
+            used to run a stronger green — an aurora at 0.34 plus a horizon
+            glow at 0.11 — and the lower third read as a green fill; on the
+            site green is an accent, never a fill, and the hero's aurora was
+            measured to 0.20. */}
         {/* sky — lit from above, a step off black so the page has a floor */}
         <div
           className="absolute inset-0"
-          style={{ background: 'radial-gradient(120% 85% at 50% -20%, #171a18 0%, #0f110f 45%, #0a0b0a 100%)' }}
+          style={{ background: 'radial-gradient(120% 80% at 50% -20%, #0d0f0e 0%, #090a09 45%, #060706 100%)' }}
         />
         {/* breathing aurora — the whole horizon, not one column's */}
         <div
           className="absolute left-1/2 z-[1] auth-aurora-anim"
           style={{
-            bottom: '-8%',
-            width: '130%',
-            height: '58%',
+            bottom: '-14%',
+            width: '160%',
+            height: '62%',
             transform: 'translateX(-50%)',
             background:
-              'radial-gradient(60% 100% at 45% 100%, rgba(0,224,122,0.34), rgba(0,224,122,0.14) 40%, transparent 72%)',
-            filter: 'blur(40px)',
+              'radial-gradient(60% 100% at 50% 100%, rgba(0,224,122,0.2), rgba(0,184,100,0.1) 38%, transparent 70%)',
+            filter: 'blur(34px)',
             mixBlendMode: 'screen',
           }}
         />
-        {/* horizon glow */}
+        {/* a second, slower aurora, so the light never breathes in one piece */}
         <div
-          className="absolute inset-x-0 bottom-0 z-[1]"
+          className="absolute left-1/2 z-[1] auth-aurora-anim"
           style={{
-            height: '34%',
-            background: 'linear-gradient(180deg, transparent, rgba(0,224,122,0.06) 60%, rgba(0,224,122,0.11))',
+            bottom: '-10%',
+            width: '120%',
+            height: '50%',
+            transform: 'translateX(-50%)',
+            background: 'radial-gradient(55% 100% at 42% 100%, rgba(0,224,122,0.14), transparent 65%)',
+            filter: 'blur(48px)',
+            opacity: 0.85,
             mixBlendMode: 'screen',
+            animationDuration: '19s',
+            animationDirection: 'alternate-reverse',
           }}
         />
         {/* twinkling starfield */}
@@ -131,13 +153,19 @@ export function AuthShell({
           className="absolute inset-0 z-[3]"
           style={{
             background:
-              'radial-gradient(140% 110% at 50% 45%, transparent 55%, rgba(0,0,0,0.3) 85%, rgba(0,0,0,0.55) 100%)',
+              'radial-gradient(140% 110% at 50% 45%, transparent 55%, rgba(0,0,0,0.3) 85%, rgba(0,0,0,0.5) 100%)',
           }}
         />
       </div>
 
       {/* Branding column — desktop only */}
-      <div className="hidden lg:flex lg:w-[52%] xl:w-[56%] relative z-[1] flex-col justify-between p-12 xl:p-16 2xl:p-24">
+      {/* The panel is sized to the screen's height as well as its width:
+          the vertical padding follows the height (5vh, within bounds) and so
+          does the headline (h2 below), so the three-line headline, the
+          pillars and Kobi's console fit from a 13" laptop to a 27" monitor
+          without scrolling. gap-6 keeps logo, copy and console from ever
+          touching. */}
+      <div className="hidden lg:flex lg:w-[52%] xl:w-[56%] relative z-[1] flex-col justify-between gap-6 px-12 py-[clamp(1.5rem,5vh,3rem)] xl:px-16 xl:py-[clamp(1.5rem,5vh,4rem)] 2xl:px-24">
         <SiteLink className="relative z-[5] flex items-center gap-2.5 w-fit">
           <div className="w-9 h-9 2xl:w-11 2xl:h-11 rounded-lg bg-kb-accent-light flex items-center justify-center">
             <KubeBoltLogo className="w-6 h-6 2xl:w-7 2xl:h-7 text-kb-accent" />
@@ -209,7 +237,7 @@ function BrandingCopy({ panel }: { panel: AuthPanel }) {
   if (panel === 'return') {
     return (
       <>
-        <Eyebrow text="Kubernetes operations platform" />
+        <Eyebrow text={authEyebrow} />
         <h2 className="text-[clamp(2.2rem,3vw,3.6rem)] font-semibold leading-[1.08] tracking-tight">
           Your clusters are{' '}
           <span className="text-kb-accent [text-shadow:0_0_34px_rgba(0,224,122,0.4)]">right where you left them.</span>
@@ -237,16 +265,27 @@ function BrandingCopy({ panel }: { panel: AuthPanel }) {
   }
   return (
     <>
-      <Eyebrow text="Kubernetes operations platform" />
-      <h2 className="text-[clamp(2.6rem,3.6vw,4.4rem)] font-semibold leading-[1.05] tracking-tight">
-        See. Understand.{' '}
-        <span className="text-kb-accent [text-shadow:0_0_34px_rgba(0,224,122,0.4)]">Operate.</span>
+      <Eyebrow text={authEyebrow} />
+      {/* The site home's headline, so whoever clicks «Start free» there
+          lands on the same promise. Three lines, broken where the site
+          breaks them; sized by the screen's width or its height, whichever
+          is tighter (6vh), so three lines fit on a short screen. */}
+      <h2 className="text-[clamp(2.6rem,min(3.6vw,6vh),4.4rem)] font-semibold leading-[1.05] tracking-tight">
+        <span className="block">From alert</span>
+        <span className="block">
+          to <span className="text-kb-accent [text-shadow:0_0_34px_rgba(0,224,122,0.4)]">root cause</span>,
+        </span>
+        <span className="block">no kubectl needed.</span>
       </h2>
       <p className="text-sm xl:text-base 2xl:text-lg text-kb-text-secondary mt-4 xl:mt-5 leading-relaxed max-w-md xl:max-w-lg">
         {authTagline}
       </p>
       <Pillars />
-      <p className="mt-7 xl:mt-9 pt-5 border-t border-kb-border text-xs xl:text-sm text-kb-text-tertiary max-w-md xl:max-w-lg">
+      {/* Steps aside below 1000px of height (laptops and most desktop
+          browsers): with the three-line headline, the panel and Kobi's
+          console do not fit together, and the console says the same thing by
+          showing it. Measured with it: 1728×990 ran 24px past the screen. */}
+      <p className="mt-7 xl:mt-9 pt-5 border-t border-kb-border text-xs xl:text-sm text-kb-text-tertiary max-w-md xl:max-w-lg [@media(max-height:1000px)]:hidden">
         {PROOF_LINE}
       </p>
     </>
@@ -300,35 +339,76 @@ function VersionPill() {
 }
 
 // ClusterConsole is the site's signature — a grid of nodes — framed as what
-// it is: a small console of the product, with its cluster named and one line
-// narrating it. Cropped and rotated in the panel's corner it read as
-// decoration; here one node goes amber, the line says why, and a few seconds
-// later both say it healed: seen, understood, operated, in one cell. The line
-// and the node run on the same 10 s clock (globals.css). Hidden on short
-// screens, where it would push the copy; held still, in the incident state,
-// under prefers-reduced-motion.
+// it is: a small console of the product, and Kobi working it. One node goes
+// amber; under the grid Kobi's face and the line beside it tell what it does
+// about it, beat by beat, until the node is green again: seen, understood,
+// operated, in one cell. The beats are the edition's (ee/authCopy
+// authConsole): OSS stops for your approval, the commercial build runs it in
+// Autopilot. The face takes the states the panel header shows, with the
+// state written beside it, as the site's product views do.
+//
+// The cluster is "your-cluster", not a production name: the console is an
+// example, and the proof line above it is about our production, not this.
+//
+// Hidden below xl and on short screens, where it would push the copy; held
+// still on one beat under prefers-reduced-motion.
 function ClusterConsole() {
+  const { who, autopilot, loop, hold, beats } = authConsole
+  const [still] = useState(() => window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+  const [at, setAt] = useState(() => (still ? hold : 0))
+
+  useEffect(() => {
+    if (still) return
+    let i = 0
+    let timer = 0
+    const next = () => {
+      const n = (i + 1) % beats.length
+      const wait = (n === 0 ? loop : beats[n].at) - beats[i].at
+      timer = window.setTimeout(() => {
+        i = n
+        setAt(n)
+        next()
+      }, wait * 1000)
+    }
+    next()
+    return () => window.clearTimeout(timer)
+  }, [still, beats, loop])
+
+  const beat = beats[at]
   const cells = Array.from({ length: 16 }, (_, i) => i)
   return (
     <div
       aria-hidden="true"
-      className="hidden xl:block [@media(max-height:760px)]:!hidden w-[17rem] 2xl:w-[19rem] shrink-0 rounded-xl border border-kb-border auth-console p-3"
+      className="hidden xl:block [@media(max-height:780px)]:!hidden w-[19rem] 2xl:w-[21rem] shrink-0 rounded-xl border border-kb-border auth-console p-3"
     >
       <div className="flex items-center justify-between mb-2.5 font-mono text-[10px] text-kb-text-tertiary">
         <span className="inline-flex items-center gap-1.5">
           <span className="w-1.5 h-1.5 rounded-full bg-kb-accent shadow-[0_0_6px_#00e07a]" />
-          prod-eu-1
+          your-cluster
         </span>
         <span>16 nodes</span>
       </div>
       <div className="grid grid-cols-8 gap-1.5">
         {cells.map((i) => (
-          <div key={i} className={`h-4 rounded-[4px] border ${i === 5 ? 'auth-node-heal' : 'auth-node'}`} />
+          <div
+            key={i}
+            className="h-4 rounded-[4px] border auth-node"
+            data-warn={i === 5 && beat.node === 'warn' ? '' : undefined}
+          />
         ))}
       </div>
-      <div className="relative h-4 mt-2.5 font-mono text-[10px]">
-        <span className="absolute inset-0 truncate text-status-warn auth-line-incident">node-06 · memory pressure</span>
-        <span className="absolute inset-0 truncate text-kb-accent auth-line-healed">node-06 · healthy again</span>
+      <div className="flex items-center gap-2.5 mt-3 pt-3 border-t border-[rgba(245,242,236,0.07)]">
+        <KobiFace size={32} state={beat.state} autopilot={autopilot} />
+        {/* Keyed by beat, so each line fades in (.auth-console-say). */}
+        <div key={at} className="min-w-0 grid gap-1 auth-console-say">
+          <span className="font-mono text-[10px] leading-none uppercase tracking-[0.12em] text-kb-text-tertiary whitespace-nowrap">
+            {who} ·{' '}
+            <span className="auth-console-state" data-state={beat.state}>
+              {beat.label}
+            </span>
+          </span>
+          <span className="font-mono text-[11px] leading-tight text-[var(--kobi-code-text)] truncate">{beat.detail}</span>
+        </div>
       </div>
     </div>
   )

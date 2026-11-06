@@ -4806,7 +4806,8 @@ func (c *Connector) resourceYAML(resourceType, namespace, name string, writes *[
 		return nil, fmt.Errorf("fetching resource: %w", err)
 	}
 
-	// Strip managedFields and last-applied-configuration — internal metadata that adds noise
+	// Strip managedFields and last-applied-configuration — internal metadata that adds noise.
+	// Everything hidden here, ApplyResourceYAML puts back (yaml_roundtrip.go).
 	if metadata, ok := obj.Object["metadata"].(map[string]interface{}); ok {
 		if writes != nil {
 			*writes = summarizeManagedFields(metadata["managedFields"])
@@ -4814,7 +4815,7 @@ func (c *Connector) resourceYAML(resourceType, namespace, name string, writes *[
 		delete(metadata, "managedFields")
 		// Remove last-applied-configuration — it's verbose and for secrets it contains unredacted data
 		if annotations, ok := metadata["annotations"].(map[string]interface{}); ok {
-			delete(annotations, "kubectl.kubernetes.io/last-applied-configuration")
+			delete(annotations, lastAppliedAnnotation)
 		}
 	}
 
@@ -4822,7 +4823,7 @@ func (c *Connector) resourceYAML(resourceType, namespace, name string, writes *[
 	if resourceType == "secrets" {
 		if data, ok := obj.Object["data"].(map[string]interface{}); ok {
 			for k := range data {
-				data[k] = "REDACTED"
+				data[k] = redactedPlaceholder
 			}
 		}
 	}
@@ -4831,10 +4832,8 @@ func (c *Connector) resourceYAML(resourceType, namespace, name string, writes *[
 	if resourceType == "configmaps" {
 		if data, ok := obj.Object["data"].(map[string]interface{}); ok {
 			for k, v := range data {
-				if s, ok := v.(string); ok && len(s) > 0 {
-					if looksLikeSensitiveKey(k) || looksLikeSensitiveValue(s) {
-						data[k] = "REDACTED"
-					}
+				if s, ok := v.(string); ok && configMapValueHidden(k, s) {
+					data[k] = redactedPlaceholder
 				}
 			}
 		}
@@ -4989,7 +4988,6 @@ func ownerKindToResourceType(kind string) string {
 	return ""
 }
 
-// ApplyResourceYAML updates a resource from raw YAML using the dynamic client.
 // CreateResource creates a new resource via the dynamic client. Used
 // by the apply-new-manifest endpoint (Tier 2 #10) to land any kind
 // the dynamic client can resolve without a typed-client switch.
@@ -4997,8 +4995,12 @@ func ownerKindToResourceType(kind string) string {
 // Caller is responsible for the unstructured object's shape (apiVersion,
 // kind, metadata.name, body) and for any pre-flight validation (kind/
 // type consistency, namespace consistency); this method just routes
-// the Create through the right namespaced/cluster-scoped path.
-func (c *Connector) CreateResource(ctx context.Context, resourceType, namespace string, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+// the Create through the right namespaced/cluster-scoped path. A Secret or
+// ConfigMap whose data still reads REDACTED, copied from the viewer, a value
+// that must be base64 and is not, or a Secret value that decodes to binary
+// data the person did not confirm (opts), returns an *EditRefusedError
+// (yaml_roundtrip.go).
+func (c *Connector) CreateResource(ctx context.Context, resourceType, namespace string, obj *unstructured.Unstructured, opts WriteOptions) (*unstructured.Unstructured, error) {
 	if c.dynamicClient == nil {
 		return nil, fmt.Errorf("dynamic client not available")
 	}
@@ -5006,10 +5008,17 @@ func (c *Connector) CreateResource(ctx context.Context, resourceType, namespace 
 	if !ok {
 		return nil, fmt.Errorf("unsupported resource type: %s", resourceType)
 	}
-	if isClusterScoped(resourceType) {
-		return c.dynamicClient.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{FieldManager: fieldmanager.Name})
+	var refused refusals
+	refused.add(checkNoPlaceholders(resourceType, obj.Object))
+	refused.add(checkBase64Values(resourceType, obj.Object))
+	refused.add(checkTextValues(resourceType, obj.Object, opts))
+	if err := refused.err(); err != nil {
+		return nil, err
 	}
-	return c.dynamicClient.Resource(gvr).Namespace(namespace).Create(ctx, obj, metav1.CreateOptions{FieldManager: fieldmanager.Name})
+	if isClusterScoped(resourceType) {
+		return c.dynamicClient.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{FieldManager: fieldmanager.For(ctx)})
+	}
+	return c.dynamicClient.Resource(gvr).Namespace(namespace).Create(ctx, obj, metav1.CreateOptions{FieldManager: fieldmanager.For(ctx)})
 }
 
 // IsClusterScopedType is the public wrapper around isClusterScoped so
@@ -5052,9 +5061,9 @@ func (c *Connector) PatchResourceMetadata(ctx context.Context, resourceType, nam
 		err error
 	)
 	if isClusterScoped(resourceType) {
-		obj, err = c.dynamicClient.Resource(gvr).Patch(ctx, name, types.MergePatchType, patchJSON, metav1.PatchOptions{FieldManager: fieldmanager.Name})
+		obj, err = c.dynamicClient.Resource(gvr).Patch(ctx, name, types.MergePatchType, patchJSON, metav1.PatchOptions{FieldManager: fieldmanager.For(ctx)})
 	} else {
-		obj, err = c.dynamicClient.Resource(gvr).Namespace(namespace).Patch(ctx, name, types.MergePatchType, patchJSON, metav1.PatchOptions{FieldManager: fieldmanager.Name})
+		obj, err = c.dynamicClient.Resource(gvr).Namespace(namespace).Patch(ctx, name, types.MergePatchType, patchJSON, metav1.PatchOptions{FieldManager: fieldmanager.For(ctx)})
 	}
 	if err != nil {
 		return nil, err
@@ -5062,7 +5071,12 @@ func (c *Connector) PatchResourceMetadata(ctx context.Context, resourceType, nam
 	return obj.Object, nil
 }
 
-func (c *Connector) ApplyResourceYAML(resourceType, namespace, name string, yamlData []byte) error {
+// ApplyResourceYAML updates a resource from the YAML the viewer showed and the
+// person edited. What the viewer hid comes back from the live object before
+// the Update (yaml_roundtrip.go); an edit that cannot be made safely, a value
+// that must be base64 and is not, or a Secret value that decodes to binary
+// data the person did not confirm (opts), returns an *EditRefusedError.
+func (c *Connector) ApplyResourceYAML(ctx context.Context, resourceType, namespace, name string, yamlData []byte, opts WriteOptions) error {
 	if c.dynamicClient == nil {
 		return fmt.Errorf("dynamic client not available")
 	}
@@ -5076,25 +5090,38 @@ func (c *Connector) ApplyResourceYAML(resourceType, namespace, name string, yaml
 	if err := sigsyaml.Unmarshal(yamlData, &rawObj); err != nil {
 		return fmt.Errorf("invalid YAML: %w", err)
 	}
+	if err := checkEditTarget(rawObj, name, namespace, isClusterScoped(resourceType)); err != nil {
+		return err
+	}
 
 	obj := &unstructured.Unstructured{Object: rawObj}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	// The caller's context carries the actor (fieldmanager.For) and the request's
+	// values; the write does not inherit its cancellation, as before, so a client
+	// that goes away does not abort it halfway.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
 
-	if isClusterScoped(resourceType) {
-		_, err := c.dynamicClient.Resource(gvr).Update(ctx, obj, metav1.UpdateOptions{FieldManager: fieldmanager.Name})
-		if err != nil {
-			return err
-		}
-	} else {
-		_, err := c.dynamicClient.Resource(gvr).Namespace(namespace).Update(ctx, obj, metav1.UpdateOptions{FieldManager: fieldmanager.Name})
-		if err != nil {
-			return err
-		}
+	var client dynamic.ResourceInterface = c.dynamicClient.Resource(gvr)
+	if !isClusterScoped(resourceType) {
+		client = c.dynamicClient.Resource(gvr).Namespace(namespace)
 	}
-
-	return nil
+	live, err := client.Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("reading the current object: %w", err)
+	}
+	// What the person wrote, every problem in one refusal, before the stored
+	// values come back: a stored value may be binary on purpose.
+	var refused refusals
+	refused.add(checkPlaceholdersKept(resourceType, rawObj, live.Object))
+	refused.add(checkBase64Values(resourceType, rawObj))
+	refused.add(checkTextValues(resourceType, rawObj, opts))
+	if err := refused.err(); err != nil {
+		return err
+	}
+	restoreHiddenValues(resourceType, rawObj, live.Object)
+	_, err = client.Update(ctx, obj, metav1.UpdateOptions{FieldManager: fieldmanager.For(ctx)})
+	return err
 }
 
 // --- List helpers ---
@@ -6208,8 +6235,11 @@ func (c *Connector) GetDeploymentHistory(namespace, deploymentName string) []map
 // annotations at the time of the call. Errors if the deployment has fewer
 // than 2 revisions, if the target revision can't be found, or if the
 // target equals the current (no-op).
-func (c *Connector) RollbackDeployment(namespace, name string, toRevision int, dryRun bool) (int, int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+func (c *Connector) RollbackDeployment(ctx context.Context, namespace, name string, toRevision int, dryRun bool) (int, int, error) {
+	// The caller's context carries the actor (fieldmanager.For) and the request's
+	// values; the write does not inherit its cancellation, as before, so a client
+	// that goes away does not abort it halfway.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
 
 	// Fetch live (not informer-cached) so the Update call has the latest
@@ -6286,7 +6316,7 @@ func (c *Connector) RollbackDeployment(namespace, name string, toRevision int, d
 	}
 	dep.Spec.Template = *newTemplate
 
-	upOpts := metav1.UpdateOptions{FieldManager: fieldmanager.Name}
+	upOpts := metav1.UpdateOptions{FieldManager: fieldmanager.For(ctx)}
 	if dryRun {
 		upOpts.DryRun = []string{"All"}
 	}

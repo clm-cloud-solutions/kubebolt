@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest'
-import { act, render, screen } from '@testing-library/react'
+import { act, render, screen, within } from '@testing-library/react'
 import { SetupGuide } from './SetupGuide'
 
 // The connector's manual, as the drawer shows it. What these guard: an
@@ -8,6 +8,20 @@ import { SetupGuide } from './SetupGuide'
 // every code block's button was named just "Copy" (UI-9).
 
 describe('SetupGuide', () => {
+  it('opens with what keeps the connection safe, above the numbered steps', () => {
+    render(
+      <SetupGuide
+        safety={['It is read-only.', 'Every call appears in your CloudTrail under `kubebolt-kobi`.']}
+        steps={[{ title: 'Create the permissions policy', body: '' }]}
+      />,
+    )
+    const box = screen.getByRole('region', { name: 'What keeps this connection safe' })
+    expect(within(box).getAllByRole('listitem')).toHaveLength(2)
+    expect(within(box).getByText('kubebolt-kobi').tagName).toBe('CODE')
+    const step = screen.getByText('Create the permissions policy')
+    expect(box.compareDocumentPosition(step) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
   it('numbers only the steps that follow each other; an alternative gets "Or"', () => {
     render(
       <SetupGuide

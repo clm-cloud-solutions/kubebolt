@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState } from 'react'
+import { ShieldCheck } from 'lucide-react'
 import type { McpSetupStep } from '@/services/api'
 import { CopyButton } from './ConnectorBits'
 
@@ -10,10 +11,40 @@ import { CopyButton } from './ConnectorBits'
 // Only the steps that follow each other are numbered. An alternative ("Or use
 // this machine's credentials") replaces the steps before it, so it carries an
 // "Or" instead of the next number, which would read as one more thing to do.
-export function SetupGuide({ steps }: { steps: McpSetupStep[] }) {
+//
+// `safety` opens the guide: what protects the customer's account, as facts
+// they can check (read-only, tied to their organization, in their CloudTrail).
+export function SetupGuide({ steps, safety = [] }: { steps: McpSetupStep[]; safety?: string[] }) {
   if (steps.length === 0) {
     return <p className="text-[11px] text-kb-text-tertiary">This connector needs no setup on your side.</p>
   }
+  return (
+    <div className="space-y-4">
+      {safety.length > 0 && <Safety lines={safety} />}
+      <Steps steps={steps} />
+    </div>
+  )
+}
+
+function Safety({ lines }: { lines: string[] }) {
+  return (
+    <section aria-label="What keeps this connection safe" className="rounded-lg border border-kb-border bg-kb-bg px-3 py-2.5 space-y-1.5">
+      <div className="flex items-center gap-1.5 text-xs font-semibold text-kb-text-primary">
+        <ShieldCheck className="w-3.5 h-3.5 text-kb-accent shrink-0" aria-hidden />
+        What keeps this connection safe
+      </div>
+      <ul className="space-y-1 list-disc pl-4 text-[11px] text-kb-text-secondary leading-relaxed">
+        {lines.map((line) => (
+          <li key={line}>
+            <InlineCode text={line} />
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
+function Steps({ steps }: { steps: McpSetupStep[] }) {
   let n = 0
   return (
     <ol className="space-y-4">

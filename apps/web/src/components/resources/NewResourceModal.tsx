@@ -6,7 +6,7 @@ import { yaml as yamlLang } from '@codemirror/lang-yaml'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Modal } from '@/components/shared/Modal'
-import { api, ApiError } from '@/services/api'
+import { api, ApiError, binaryValuesOf } from '@/services/api'
 import type { ResourceList } from '@/types/kubernetes'
 
 // NewResourceModal — UI for the Tier 2 #10 apply-new-manifest flow.
@@ -790,6 +790,11 @@ export function NewResourceModal({
   )
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // The keys the server refused because their value decodes to binary; the
+  // error then offers to create them as binary. Cleared on any change, so the
+  // confirmation never covers a manifest it did not see.
+  const [binaryKeys, setBinaryKeys] = useState<string[] | null>(null)
+  useEffect(() => setBinaryKeys(null), [manifest, type, namespace])
 
   const isClusterScoped = CLUSTER_SCOPED_TYPES.has(type)
   const templates = STARTERS[type] ?? []
@@ -832,12 +837,13 @@ export function NewResourceModal({
     setActiveTemplateId(t.id)
   }
 
-  async function submit() {
+  async function submit(keepBinary = false) {
     setBusy(true)
     setError(null)
+    setBinaryKeys(null)
     try {
       const urlNamespace = isClusterScoped ? '_' : namespace
-      const res = await api.createResource(type, urlNamespace, manifest, 'ui')
+      const res = await api.createResource(type, urlNamespace, manifest, 'ui', { keepBinary })
       // Navigate to the newly created resource. The detail page reads
       // the namespace + name from the URL, with `_` as the placeholder
       // for cluster-scoped kinds — same convention the rest of the
@@ -863,6 +869,7 @@ export function NewResourceModal({
     } catch (e) {
       const msg = e instanceof ApiError ? e.message : (e as Error).message
       setError(msg)
+      setBinaryKeys(binaryValuesOf(e))
     } finally {
       setBusy(false)
     }
@@ -967,7 +974,20 @@ export function NewResourceModal({
         {error && (
           <div className="flex items-start gap-2 text-xs text-status-error border border-status-error/30 bg-status-error-dim rounded p-2.5">
             <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-            <span className="break-words whitespace-pre-wrap">{error}</span>
+            <div className="min-w-0">
+              <span className="break-words whitespace-pre-wrap">{error}</span>
+              {binaryKeys && (
+                <div className="mt-2">
+                  <button
+                    onClick={() => submit(true)}
+                    disabled={busy}
+                    className="px-3 py-1.5 text-xs rounded border border-kb-border text-kb-text-secondary hover:bg-kb-elevated disabled:opacity-50"
+                  >
+                    Keep as binary
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -981,7 +1001,7 @@ export function NewResourceModal({
           Cancel
         </button>
         <button
-          onClick={submit}
+          onClick={() => submit()}
           disabled={busy || !manifest.trim()}
           className="px-3 py-1.5 text-xs rounded bg-status-info-dim text-status-info hover:bg-status-info hover:text-kb-bg border border-status-info disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
         >

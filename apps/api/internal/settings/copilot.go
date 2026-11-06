@@ -29,6 +29,12 @@ const copilotSettingsKey = "copilot"
 type StoredCopilotSettings struct {
 	Primary  *StoredProviderSettings `json:"primary,omitempty"`
 	Fallback *StoredProviderSettings `json:"fallback,omitempty"`
+	// FallbackOff turns the fallback off, env included
+	// (KUBEBOLT_AI_FALLBACK_*); nil keeps the env baseline. Turning the
+	// fallback off (an empty fallback key) sets it, and any fallback setting
+	// clears it. Without it the off was not stored at all: the stored section
+	// went away and an env fallback came straight back.
+	FallbackOff *bool `json:"fallbackOff,omitempty"`
 
 	MaxTokens            *int     `json:"maxTokens,omitempty"`
 	AutoCompact          *bool    `json:"autoCompact,omitempty"`
@@ -148,9 +154,7 @@ func applyStoredCopilot(cfg *config.CopilotConfig, stored *StoredCopilotSettings
 	if stored.Primary != nil {
 		applyStoredProvider(&cfg.Primary, stored.Primary, crypto)
 	}
-	if stored.Fallback != nil {
-		applyStoredFallback(cfg, stored.Fallback, crypto)
-	}
+	applyStoredFallbackSettings(cfg, stored, crypto)
 	applyStoredEscalation(cfg, stored.EscalationModel)
 	if stored.MaxTokens != nil {
 		cfg.MaxTokens = *stored.MaxTokens
@@ -193,6 +197,25 @@ func applyStoredCopilot(cfg *config.CopilotConfig, stored *StoredCopilotSettings
 	}
 }
 
+// fallbackOff reports whether the stored record turned the fallback off.
+func (s *StoredCopilotSettings) fallbackOff() bool {
+	return s.FallbackOff != nil && *s.FallbackOff
+}
+
+// applyStoredFallbackSettings applies the stored record's fallback: none at
+// all, env included, when it was turned off; otherwise the stored override
+// onto the env one. Shared by the per-org (BYOK) and platform-managed
+// resolvers. Callers must apply the stored primary first (applyStoredFallback).
+func applyStoredFallbackSettings(cfg *config.CopilotConfig, stored *StoredCopilotSettings, crypto *secretCrypto) {
+	if stored.fallbackOff() {
+		cfg.Fallback = nil
+		return
+	}
+	if stored.Fallback != nil {
+		applyStoredFallback(cfg, stored.Fallback, crypto)
+	}
+}
+
 // applyStoredFallback merges a stored fallback override onto cfg. Shared by the
 // per-org (BYOK) and platform-managed resolvers so the two can't drift — the
 // empty-provider bug below existed in both copies independently.
@@ -211,9 +234,14 @@ func applyStoredCopilot(cfg *config.CopilotConfig, stored *StoredCopilotSettings
 // cfg.Primary.Provider, which must already be final.
 func applyStoredFallback(cfg *config.CopilotConfig, stored *StoredProviderSettings, crypto *secretCrypto) {
 	// Initialize a fallback config if the override sets one and env didn't.
-	// If both env and override exist, override merges onto env.
+	// If both env and override exist, override merges onto a copy of env: the
+	// env baseline's fallback is shared by every resolve and must stay what env
+	// says, for the next resolve and for turning a fallback back on.
 	if cfg.Fallback == nil {
 		fb := config.ProviderConfig{Provider: cfg.Primary.Provider}
+		cfg.Fallback = &fb
+	} else {
+		fb := *cfg.Fallback
 		cfg.Fallback = &fb
 	}
 	applyStoredProvider(cfg.Fallback, stored, crypto)
@@ -462,6 +490,7 @@ type MaskedEffectiveCopilot struct {
 type MaskedStoredCopilot struct {
 	HasPrimaryOverride  bool                      `json:"hasPrimaryOverride"`
 	HasFallbackOverride bool                      `json:"hasFallbackOverride"`
+	FallbackOff         bool                      `json:"fallbackOff,omitempty"`
 	Primary             *MaskedStoredProvider     `json:"primary,omitempty"`
 	Fallback            *MaskedStoredProvider     `json:"fallback,omitempty"`
 	OtherFields         *MaskedStoredOtherCopilot `json:"otherFields,omitempty"`
@@ -525,18 +554,32 @@ func (r *Runtime) RenderMaskedCopilot(ctx context.Context) (MaskedCopilot, error
 	if effective.Escalation != nil {
 		out.Effective.EscalationModel = effective.Escalation.Model
 	}
-	if effective.Fallback != nil {
-		out.Effective.HasFallback = true
-		out.Effective.FallbackProvider = effective.Fallback.Provider
-		out.Effective.FallbackModel = effective.Fallback.Model
-		out.Effective.FallbackAPIKeyMasked = maskSecret(effective.Fallback.APIKey)
-		out.Effective.FallbackBaseURL = effective.Fallback.BaseURL
-	}
+	renderEffectiveFallback(&out.Effective, effective.Fallback, stored.fallbackOff(), r.envBase.Fallback)
 	return out, nil
 }
 
+// renderEffectiveFallback fills the fallback half of the effective view. When
+// the fallback was turned off over an env one, hasFallback stays false and the
+// fields describe the env fallback, the one turning it back on restores: the
+// form starts from it instead of a default provider that would be stored over
+// the env one's.
+func renderEffectiveFallback(out *MaskedEffectiveCopilot, effective *config.ProviderConfig, off bool, env *config.ProviderConfig) {
+	fb := effective
+	if fb == nil && off {
+		fb = env
+	}
+	if fb == nil {
+		return
+	}
+	out.HasFallback = effective != nil
+	out.FallbackProvider = fb.Provider
+	out.FallbackModel = fb.Model
+	out.FallbackAPIKeyMasked = maskSecret(fb.APIKey)
+	out.FallbackBaseURL = fb.BaseURL
+}
+
 func renderStoredMask(s StoredCopilotSettings) MaskedStoredCopilot {
-	out := MaskedStoredCopilot{}
+	out := MaskedStoredCopilot{FallbackOff: s.fallbackOff()}
 	if s.Primary != nil {
 		out.HasPrimaryOverride = true
 		out.Primary = &MaskedStoredProvider{
@@ -722,16 +765,28 @@ func mergeCopilot(base, patch StoredCopilotSettings) StoredCopilotSettings {
 		}
 		mergeProvider(out.Primary, patch.Primary)
 	}
+	if patch.FallbackOff != nil {
+		if *patch.FallbackOff {
+			out.Fallback = nil
+			out.FallbackOff = patch.FallbackOff
+		} else {
+			out.FallbackOff = nil
+		}
+	}
 	if patch.Fallback != nil {
-		// Same drop-on-empty-key semantics as Primary. This is what
-		// the UI's "Enable" toggle uses: when the operator flips
-		// fallback off, the frontend sends plaintextFallbackAPIKey=""
+		// This is what the UI's "Enable" toggle uses: when the operator
+		// flips fallback off, the frontend sends plaintextFallbackAPIKey=""
 		// → PutCopilot encodes that as APIKeyEncoded=&"" → we drop the
 		// whole Fallback section here so provider/model don't survive
-		// as ghost fields that re-enable themselves on next reload.
+		// as ghost fields that re-enable themselves on next reload, and
+		// store the off, or an env fallback would come straight back.
 		if patch.Fallback.APIKeyEncoded != nil && *patch.Fallback.APIKeyEncoded == "" {
 			out.Fallback = nil
+			off := true
+			out.FallbackOff = &off
 		} else {
+			// Any fallback setting turns it back on.
+			out.FallbackOff = nil
 			if out.Fallback == nil {
 				out.Fallback = &StoredProviderSettings{}
 			}

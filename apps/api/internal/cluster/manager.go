@@ -98,8 +98,9 @@ type Manager struct {
 	// so the pool can't grow without bound: the reaper evicts runtimes idle
 	// longer than poolIdleTimeout, and parking evicts the LRU when the pool
 	// would exceed poolMaxRuntimes. Zero disables the respective limit (the
-	// active runtime is never pooled, so it's never evicted). reaperStop stops
-	// the reaper goroutine from Stop().
+	// active runtime is never pooled, so it's never evicted; pinned runtimes,
+	// runtimeIsPinnedLocked, are exempt from both). reaperStop stops the reaper
+	// goroutine from Stop().
 	poolIdleTimeout time.Duration
 	poolMaxRuntimes int
 	reaperStop      chan struct{}
@@ -1339,10 +1340,11 @@ func (m *Manager) enforcePoolCapLocked() {
 				continue
 			}
 			built++
-			// Always-on (W2 §10): connected agent-proxy runtimes are pinned — never
-			// the LRU victim. Bounded by the per-org cluster cap, not the pool cap;
-			// if every built runtime is pinned, no victim is chosen.
-			if m.runtimeIsConnectedProxyLocked(pk) {
+			// Always-on (W2 §10): pinned runtimes (a connected agent-proxy, the
+			// platform's own cluster) are never the LRU victim. Bounded by the
+			// per-org cluster cap, not the pool cap; if every built runtime is
+			// pinned, no victim is chosen.
+			if m.runtimeIsPinnedLocked(pk) {
 				continue
 			}
 			if victim == nil || rt.lastUsed.Before(victim.lastUsed) {
@@ -1384,6 +1386,28 @@ func (m *Manager) runtimeIsConnectedProxyLocked(pk poolKey) bool {
 		return false // local-kubeconfig context — normal idle/LRU eviction applies
 	}
 	return m.agentRegistry.CountByCluster(cid) > 0
+}
+
+// runtimeIsPlatformClusterLocked reports whether the pooled runtime at key pk is
+// the cluster KubeBolt itself runs in — the in-cluster context. It reaches the
+// platform through no agent (an agent on this cluster is never registered as
+// agent-proxy, agent.IsSelfCluster), so runtimeIsConnectedProxyLocked never
+// covers it, yet it is reachable for as long as the API runs. Assumes m.mu held.
+//
+// Unpinned, it was the one cluster that stopped being monitored when nobody
+// looked at it: a switch to another cluster parks it, the reaper evicted it 30
+// minutes later, its engine stopped, and the watchdog expired its insights 15
+// minutes after that — Fleet showed the platform's own cluster as NO DATA until
+// someone opened it again.
+func (m *Manager) runtimeIsPlatformClusterLocked(pk poolKey) bool {
+	return m.inCluster && pk.cluster == "in-cluster"
+}
+
+// runtimeIsPinnedLocked reports whether the pooled runtime at key pk stays
+// resident: no idle reap, no LRU evict, so it keeps evaluating and notifying
+// while nobody views it (always-on, W2 §10). Assumes m.mu held.
+func (m *Manager) runtimeIsPinnedLocked(pk poolKey) bool {
+	return m.runtimeIsConnectedProxyLocked(pk) || m.runtimeIsPlatformClusterLocked(pk)
 }
 
 // eagerSpinPooledRuntime spins (and keeps) the pooled runtime for a freshly-
@@ -1430,10 +1454,11 @@ func (m *Manager) reapIdlePooledRuntimes() {
 		if rt.connector == nil {
 			continue // still building
 		}
-		// Always-on (W2 §10): a connected agent-proxy runtime is pinned — kept
-		// resident so it keeps evaluating + notifying even when nobody's viewing
-		// it. Reapable again the instant its agent disconnects.
-		if m.runtimeIsConnectedProxyLocked(pk) {
+		// Always-on (W2 §10): a pinned runtime is kept resident so it keeps
+		// evaluating + notifying even when nobody's viewing it. A connected
+		// agent-proxy is reapable again the instant its agent disconnects; the
+		// platform's own cluster never is.
+		if m.runtimeIsPinnedLocked(pk) {
 			continue
 		}
 		if rt.lastUsed.Before(cutoff) {

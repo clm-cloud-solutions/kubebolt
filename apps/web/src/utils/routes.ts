@@ -85,7 +85,10 @@ export function landingAfterAuth(from?: string | null): string {
   // la resuelve contra el mismo origen, así que hoy no saca a nadie de la app —
   // se rechaza igual porque el valor viene del estado del cliente y esta función
   // es la que alguien copiará el día que el destino sí se pase a `location`.
-  if (!from || !from.startsWith('/') || from.startsWith('//')) return POST_AUTH_LANDING
+  // `/\host` (or its encoded form `/%5Chost`) is the same trap: the browser
+  // reads the backslash as `/`. React Router 6 lets it through in <Link> and
+  // useNavigate (GHSA-wrjc-x8rr-h8h6, fixed only in v7).
+  if (!from || !from.startsWith('/') || /^\/(\/|\\|%5c|%2f)/i.test(from)) return POST_AUTH_LANDING
   // Compared on the path alone: `from` may carry a query (RequireAuth keeps it).
   const path = from.split(/[?#]/)[0]
   if (NOT_A_DESTINATION.some((p) => path === p || path.startsWith(p + '/'))) {

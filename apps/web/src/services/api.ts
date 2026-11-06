@@ -303,6 +303,15 @@ function actionHeaders(a?: string | ActionAudit): Record<string, string> | undef
   return Object.keys(h).length ? h : undefined
 }
 
+// binaryValuesOf names the Secret keys an edit or a create was refused for
+// only because their value decodes to binary data: plain text such as "hola"
+// is valid base64. The editor offers to send them again as binary.
+export function binaryValuesOf(e: unknown): string[] | null {
+  if (!(e instanceof ApiError)) return null
+  const keys = e.payload?.binaryValues
+  return Array.isArray(keys) && keys.length > 0 ? keys.map(String) : null
+}
+
 // DryRunResult is the uniform envelope from a ?dryRun=true action call. ok=true
 // → the apiserver would accept the mutation (message = "Would …"); ok=false →
 // it would reject (message = human reason, + quota breakdown when a
@@ -823,13 +832,25 @@ export const api = {
     return res.text()
   },
 
-  applyResourceYAML: async (type: string, namespace: string, name: string, yaml: string): Promise<{ status: string }> => {
-    const res = await fetchWithAuth(`${API_BASE}/resources/${type}/${namespace}/${name}/yaml`, {
+  // keepBinary sends Secret values that decode to binary as they are, once
+  // the person confirmed the keys a first attempt named (binaryValuesOf).
+  applyResourceYAML: async (
+    type: string,
+    namespace: string,
+    name: string,
+    yaml: string,
+    opts?: { keepBinary?: boolean },
+  ): Promise<{ status: string }> => {
+    const query = opts?.keepBinary ? '?keepBinary=true' : ''
+    const res = await fetchWithAuth(`${API_BASE}/resources/${type}/${namespace}/${name}/yaml${query}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/yaml' },
       body: yaml,
     })
-    if (!res.ok) throw new ApiError(res.status, await extractErrorMessage(res))
+    if (!res.ok) {
+      const { message, payload } = await extractErrorPayload(res)
+      throw new ApiError(res.status, message, payload)
+    }
     return res.json()
   },
 
@@ -1421,13 +1442,15 @@ export const api = {
     namespace: string,
     manifest: string,
     source?: string | ActionAudit,
+    opts?: { keepBinary?: boolean },
   ) => {
     // Send the raw manifest bytes — the backend's sigs.k8s.io/yaml
     // decoder accepts both YAML and JSON, so a single content-type
     // (application/yaml) covers both. We don't go through postJSON
     // because the body isn't JSON-serialized; it's the raw text.
     const headers: Record<string, string> = { 'Content-Type': 'application/yaml', ...actionHeaders(source) }
-    return fetchWithAuth(`${API_BASE}/resources/${type}/${namespace}`, {
+    const query = opts?.keepBinary ? '?keepBinary=true' : ''
+    return fetchWithAuth(`${API_BASE}/resources/${type}/${namespace}${query}`, {
       method: 'POST',
       headers,
       body: manifest,
@@ -1979,6 +2002,9 @@ export interface CopilotSettingsResponse {
   stored: {
     hasPrimaryOverride: boolean
     hasFallbackOverride: boolean
+    // The fallback was turned off here, env included. While off, effective's
+    // fallback fields describe the env fallback that turning it on restores.
+    fallbackOff?: boolean
     primary?: {
       provider?: string
       apiKeyMasked?: string
@@ -2767,7 +2793,9 @@ export interface McpConnector {
   // A sentence an admin can act on, set when status is 'error'.
   lastError?: string
   kobiMinRole: McpKobiMinRole
-  setupGuide: { steps: McpSetupStep[] | null }
+  // safety: a few lines on what protects the customer's side, shown above
+  // the steps. May carry `inline code` spans in backticks.
+  setupGuide: { safety?: string[] | null; steps: McpSetupStep[] | null }
 }
 
 export interface McpConnectorPut {

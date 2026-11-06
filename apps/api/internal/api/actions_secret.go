@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"crypto/sha256"
 	"encoding/hex"
@@ -21,6 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 )
 
 // Secret reveal — Tier 2 #9. Exposes a focused, audited path for
@@ -321,28 +321,10 @@ func decodeSecretValue(key string, raw []byte) secretRevealedValue {
 	}
 }
 
-// isPrintableUTF8 returns true when the byte slice is valid UTF-8
-// AND every code point is either printable or a common whitespace
-// character (space, tab, newline, CR). The "common whitespace"
-// allowance is important — single-line tokens are clearly text, but
-// so are multi-line PEMs and JSON blobs which embed newlines.
-func isPrintableUTF8(b []byte) bool {
-	if !utf8.Valid(b) {
-		return false
-	}
-	for _, r := range string(b) {
-		if r == '\n' || r == '\r' || r == '\t' || r == ' ' {
-			continue
-		}
-		// utf8.RuneError catches replacement chars; the printable
-		// check (>= 0x20 and not C1 controls) catches everything
-		// else.
-		if r < 0x20 || (r >= 0x7f && r < 0xa0) {
-			return false
-		}
-	}
-	return true
-}
+// isPrintableUTF8 is cluster.IsPrintableText: the editor refuses a Secret
+// value that decodes to binary by the same rule the reveal uses to say
+// "binary", so the two never disagree on what is text.
+func isPrintableUTF8(b []byte) bool { return cluster.IsPrintableText(b) }
 
 // auditSecretReveal emits a structured log entry to the dedicated
 // secret-reveal audit channel. The `outcome` field discriminates

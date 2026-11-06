@@ -290,7 +290,7 @@ func (h *handlers) handleDebugPod(w http.ResponseWriter, r *http.Request) {
 	// directly with a new ephemeralContainers entry fails — the
 	// subresource exists precisely for this mutation path.
 	dryRun := dryRunRequested(r)
-	_, err = clientset.CoreV1().Pods(namespace).UpdateEphemeralContainers(ctx, name, pod, metav1.UpdateOptions{FieldManager: fieldmanager.Name, DryRun: dryRunAll(dryRun)})
+	_, err = clientset.CoreV1().Pods(namespace).UpdateEphemeralContainers(ctx, name, pod, metav1.UpdateOptions{FieldManager: fieldmanager.For(ctx), DryRun: dryRunAll(dryRun)})
 	if dryRun {
 		respondDryRun(w, err, fmt.Sprintf("Would attach · debug container %q (image %s)", ephemeralName, req.Image))
 		return

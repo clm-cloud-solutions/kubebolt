@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -37,7 +38,7 @@ import (
 // that don't have great answers. v2 can revisit when there's real
 // demand for compose-style workflows from the UI.
 //
-// Validation pre-flight surfaces three classes of error before the
+// Validation pre-flight surfaces four classes of error before the
 // apiserver round-trip:
 //
 //   1. URL/body kind consistency. The URL :type and the body's
@@ -57,11 +58,20 @@ import (
 //      with an undocumented message; we strip client-side for
 //      clarity).
 //
-// Audit log captures the full manifest. Operators creating Secrets
-// via this endpoint will have the values in the audit log — that's
-// by design (audit needs the diff), but security-conscious shops
-// should gate this endpoint to Admin role for Secret kinds (see
-// the spec for the threat model + recommendation).
+//   4. Values the apiserver would refuse or misread. A Secret or
+//      ConfigMap whose data still reads REDACTED was copied from the
+//      YAML tab: there is no stored value behind it, and REDACTED is
+//      valid base64, so the apiserver would store six bytes of garbage.
+//      A value under a Secret's data (a ConfigMap's binaryData) that is
+//      not base64 is refused naming its key; the apiserver names none.
+//      Plain text that happens to be valid base64 ("hola", "password")
+//      decodes to binary: refused naming the keys, unless the person
+//      confirms it is binary on purpose (?keepBinary=true). All come
+//      back from Connector.CreateResource as one 400 that says every
+//      problem at once.
+//
+// The audit records the kind, the name and the manifest's size, never
+// its content: a Secret created here leaves no value in the trail.
 
 // createKindByType is the inverse of resourceTypeToGVR's resource
 // component, mapping the URL-segment plural ("deployments") to the
@@ -284,14 +294,25 @@ func (h *handlers) handleCreateResource(w http.ResponseWriter, r *http.Request) 
 		"name":        obj.GetName(),
 		"manifestLen": len(body),
 	}
+	opts := writeOptionsOf(r)
+	if opts.KeepBinary {
+		auditParams["keepBinary"] = true
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	created, err := conn.CreateResource(ctx, resourceType, namespace, obj)
+	created, err := conn.CreateResource(ctx, resourceType, namespace, obj, opts)
 	if err != nil {
 		auditMutation(r, "create", resourceType, namespace, obj.GetName(), auditParams, err)
+		var refused *cluster.EditRefusedError
 		switch {
+		case errors.As(err, &refused):
+			respondEditRefused(w, refused)
+			return
+		case apierrors.IsBadRequest(err):
+			respondError(w, http.StatusBadRequest, err.Error())
+			return
 		case apierrors.IsAlreadyExists(err):
 			respondError(w, http.StatusConflict, fmt.Sprintf(
 				"%s %q already exists in %s — use the YAML editor to update an existing resource", kind, obj.GetName(), describeNamespace(namespace, clusterScoped)))

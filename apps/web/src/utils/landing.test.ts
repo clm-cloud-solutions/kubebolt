@@ -17,5 +17,10 @@ describe('landingAfterAuth', () => {
     expect(landingAfterAuth(undefined)).toBe(POST_AUTH_LANDING)
     expect(landingAfterAuth('https://evil.example')).toBe(POST_AUTH_LANDING)
     expect(landingAfterAuth('//evil.example')).toBe(POST_AUTH_LANDING)
+    expect(landingAfterAuth('///evil.example')).toBe(POST_AUTH_LANDING)
+    // A backslash, raw or encoded, is the same URL (GHSA-wrjc-x8rr-h8h6).
+    expect(landingAfterAuth('/\\evil.example')).toBe(POST_AUTH_LANDING)
+    expect(landingAfterAuth('/%5Cevil.example')).toBe(POST_AUTH_LANDING)
+    expect(landingAfterAuth('/%2fevil.example')).toBe(POST_AUTH_LANDING)
   })
 })

@@ -171,3 +171,71 @@ func TestReapIdle_DisconnectedProxyStillReaped(t *testing.T) {
 		t.Fatalf("idle agent-proxy runtime with no connected agent must be reaped (no leak)")
 	}
 }
+
+// The cluster KubeBolt runs in reaches it through no agent, so the agent-proxy
+// pin never covered it: parked by a switch, reaped 30 minutes later, its insights
+// expired by the watchdog, and Fleet showed it as NO DATA until someone opened it
+// again. The in-cluster runtime now stays resident; every other idle runtime is
+// still reaped.
+func TestReapIdle_PlatformClusterStaysResident(t *testing.T) {
+	now := time.Now()
+	m := &Manager{
+		inCluster:       true,
+		tenantID:        "default",
+		poolIdleTimeout: 10 * time.Minute,
+		runtimes:        map[poolKey]*clusterRuntime{},
+	}
+	m.runtimes[poolKey{"default", "in-cluster"}] = fakePooledRuntime(now.Add(-24 * time.Hour))
+	m.runtimes[poolKey{"default", "other"}] = fakePooledRuntime(now.Add(-20 * time.Minute))
+
+	m.reapIdlePooledRuntimes()
+
+	if _, ok := m.runtimes[poolKey{"default", "in-cluster"}]; !ok {
+		t.Fatalf("the platform's own cluster must never be reaped, however long it sits parked")
+	}
+	if _, ok := m.runtimes[poolKey{"default", "other"}]; ok {
+		t.Fatalf("an idle runtime that is not pinned must still be reaped")
+	}
+}
+
+// Outside a cluster there is no in-cluster context: a kubeconfig entry that
+// happens to be NAMED "in-cluster" is an ordinary context and is reaped.
+func TestReapIdle_InClusterNameAloneIsNotPinned(t *testing.T) {
+	m := &Manager{
+		tenantID:        "default",
+		poolIdleTimeout: 10 * time.Minute,
+		runtimes:        map[poolKey]*clusterRuntime{},
+	}
+	m.runtimes[poolKey{"default", "in-cluster"}] = fakePooledRuntime(time.Now().Add(-time.Hour))
+
+	m.reapIdlePooledRuntimes()
+
+	if _, ok := m.runtimes[poolKey{"default", "in-cluster"}]; ok {
+		t.Fatalf("a kubeconfig context named in-cluster is not the platform's cluster and must be reaped")
+	}
+}
+
+// The pool cap picks the LRU as its victim; the platform's own cluster is the
+// natural LRU of an operator who works on other clusters, so it must be skipped.
+func TestEnforcePoolCap_PlatformClusterNeverVictim(t *testing.T) {
+	now := time.Now()
+	m := &Manager{
+		inCluster:       true,
+		tenantID:        "default",
+		poolMaxRuntimes: 1,
+		runtimes:        map[poolKey]*clusterRuntime{},
+	}
+	m.runtimes[poolKey{"default", "in-cluster"}] = fakePooledRuntime(now.Add(-time.Hour)) // the oldest
+	m.runtimes[poolKey{"default", "newer"}] = fakePooledRuntime(now)
+
+	m.mu.Lock()
+	m.enforcePoolCapLocked()
+	m.mu.Unlock()
+
+	if _, ok := m.runtimes[poolKey{"default", "in-cluster"}]; !ok {
+		t.Fatalf("the platform's own cluster must never be the pool cap's victim")
+	}
+	if _, ok := m.runtimes[poolKey{"default", "newer"}]; ok {
+		t.Fatalf("with the pinned runtime skipped, the cap must evict the next one")
+	}
+}

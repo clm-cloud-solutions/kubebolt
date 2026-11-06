@@ -25,10 +25,12 @@ import { CronJobTriggerModal } from '@/components/resources/CronJobTriggerModal'
 import { DrainModal } from '@/components/resources/DrainModal'
 import { NodeSchedulabilityToolbarButton } from '@/components/resources/NodeSchedulabilityToolbarButton'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, ApiError } from '@/services/api'
+import { api, ApiError, binaryValuesOf } from '@/services/api'
 import { useResources, useResourceDetail, useResourceDescribe, useResourceYAML, useResourceEvents, useTopology, usePodLogs, useDeploymentPods, useDeploymentHistory, useStatefulSetPods, useDaemonSetPods, useJobPods, useCronJobJobs, useWorkloadHistory } from '@/hooks/useResources'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
+import { NotFoundPage } from '@/pages/NotFoundPage'
+import { isResourceDetailType } from '@/utils/scope'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { MutationErrorToast, classifyMutationError, type MutationErrorVariant } from '@/components/shared/MutationErrorToast'
 import { StatusBadge } from './StatusBadge'
@@ -1890,33 +1892,50 @@ function YAMLTab({ type, namespace, name, canEdit }: { type: string; namespace: 
   const [editValue, setEditValue] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  // The keys the server refused because their value decodes to binary; the
+  // error then offers to apply them as binary. Cleared on any change to the
+  // text, so the confirmation never covers an edit it did not see.
+  const [binaryKeys, setBinaryKeys] = useState<string[] | null>(null)
   const [copied, setCopied] = useState(false)
 
   if (isLoading) return <LoadingSpinner />
   if (error) return <ErrorState message={error.message} />
 
   const lines = (yaml ?? '').split('\n')
+  // On apply the server puts back every value that still reads REDACTED
+  // (cluster/yaml_roundtrip.go); the hint says how to change one instead.
+  const hiddenHint = !(yaml ?? '').includes(': REDACTED')
+    ? null
+    : type === 'secrets'
+      ? 'Hidden values are kept when you apply. To change one, keep data as it is and add a stringData section with the new value in plain text. Values under data must be base64.'
+      : type === 'configmaps'
+        ? 'Hidden values are kept when you apply. To change one, replace REDACTED with the new value.'
+        : null
 
   function startEdit() {
     setEditValue(yaml ?? '')
     setSaveError(null)
+    setBinaryKeys(null)
     setEditing(true)
   }
 
   function cancelEdit() {
     setEditing(false)
     setSaveError(null)
+    setBinaryKeys(null)
   }
 
-  async function saveEdit() {
+  async function saveEdit(keepBinary = false) {
     setSaving(true)
     setSaveError(null)
+    setBinaryKeys(null)
     try {
-      await api.applyResourceYAML(type, namespace, name, editValue)
+      await api.applyResourceYAML(type, namespace, name, editValue, { keepBinary })
       setEditing(false)
       refetch()
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : 'Failed to apply YAML')
+      setBinaryKeys(binaryValuesOf(err))
     } finally {
       setSaving(false)
     }
@@ -1934,7 +1953,7 @@ function YAMLTab({ type, namespace, name, canEdit }: { type: string; namespace: 
               Cancel
             </button>
             <button
-              onClick={saveEdit}
+              onClick={() => saveEdit()}
               disabled={saving || !canEdit}
               title={!canEdit ? 'Editor role required' : undefined}
               className="px-3 py-1.5 text-[10px] font-mono bg-status-info text-white rounded hover:bg-status-info/90 transition-colors disabled:opacity-50 flex items-center gap-1"
@@ -1981,13 +2000,36 @@ function YAMLTab({ type, namespace, name, canEdit }: { type: string; namespace: 
       </div>
 
       {saveError && (
-        <div className="mb-2 px-3 py-2 rounded bg-status-error-dim border border-status-error/20 text-xs text-status-error font-mono">
+        <div className="mb-2 px-3 py-2 rounded bg-status-error-dim border border-status-error/20 text-xs text-status-error font-mono whitespace-pre-wrap break-words">
           {saveError}
+          {binaryKeys && (
+            <div className="mt-2">
+              <button
+                onClick={() => saveEdit(true)}
+                disabled={saving}
+                className="px-3 py-1.5 text-[10px] font-mono bg-kb-elevated text-kb-text-secondary rounded hover:bg-kb-card-hover transition-colors disabled:opacity-40"
+              >
+                Keep as binary
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {editing && hiddenHint && (
+        <div className="mb-2 px-3 py-2 rounded bg-status-info-dim border border-status-info/20 text-xs text-status-info">
+          {hiddenHint}
         </div>
       )}
 
       {editing ? (
-        <YAMLEditor value={editValue} onChange={setEditValue} />
+        <YAMLEditor
+          value={editValue}
+          onChange={(v) => {
+            setEditValue(v)
+            setBinaryKeys(null)
+          }}
+        />
       ) : (
         <YamlViewer text={lines.join('\n')} />
       )}
@@ -3952,7 +3994,11 @@ function WorkloadHistoryTab({ type, namespace, name }: { type: string; namespace
 
 export function ResourceDetailPage() {
   const { type = '', namespace = '', name = '' } = useParams<{ type: string; namespace: string; name: string }>()
-  const { data: item, isLoading, error, refetch, dataUpdatedAt, isFetching } = useResourceDetail(type, namespace, name)
+  // A first segment that is no resource type is an address that does not
+  // exist, not a resource: no request (an empty type disables the query) and
+  // the 404 page below, after the hooks.
+  const knownType = isResourceDetailType(type)
+  const { data: item, isLoading, error, refetch, dataUpdatedAt, isFetching } = useResourceDetail(knownType ? type : '', namespace, name)
   // Tab is URL-driven (?tab=pods etc.) so deep links from the Copilot's
   // ActionProposalCard land directly on the right view. Default is "overview".
   const [searchParams, setSearchParams] = useSearchParams()
@@ -4015,6 +4061,7 @@ export function ResourceDetailPage() {
   // fresh without an explicit reset. If the previous URL had ?tab=, that's
   // dropped naturally on navigation.
 
+  if (!knownType) return <NotFoundPage />
   if (isLoading) return <LoadingSpinner />
   // Only show full-screen error when we have NO data to render.
   // If we previously loaded `item` and a subsequent refetch failed

@@ -6,6 +6,55 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.5.2] — 2026-11-06
+
+Kobi gets a face, and the YAML tab keeps what it hides. Drop-in, no schema
+change; the agent moves to 1.4.7, a dependency update. Full note:
+[docs/releases/v2.5.2.md](docs/releases/v2.5.2.md).
+
+### Fixed
+
+- **Saving the YAML tab overwrote the values it hides.** A save without any
+  change wrote `REDACTED` over every Secret value (valid base64, so stored as
+  garbage), turned hidden ConfigMap values into `REDACTED` and dropped
+  `last-applied-configuration`. The save now puts back what the viewer hid,
+  and refuses a `REDACTED` with no stored value or YAML that names another
+  object. Secrets damaged before decode to exactly `REDACTED`; the release
+  note has the commands to find them.
+- **New and edited Secrets stored text as garbage.** Plain text that is also
+  valid base64 (`hola`, `password`) was stored as a few bytes of binary. Values
+  that are not base64, decode to binary, or read `REDACTED` with nothing behind
+  them are refused before they are sent, every problem in one message; **Keep
+  as binary** keeps a binary value written on purpose.
+- Turning Kobi's fallback off did not stick over an env fallback.
+- An address no route matches showed a blank screen; it shows a 404 page.
+- The cluster KubeBolt runs in showed NO DATA in Fleet about 45 minutes after
+  a switch to another cluster.
+- Sign in looked disabled over fields the browser filled in.
+
+### Added
+
+- **Kobi's face** (Sentinel) on the floating button, the panel header,
+  *Ask Kobi*, the avatars, Home and the AI administration. The eyes say the
+  state with their lids; the floating button's pill says it in words.
+- Kobi's writes carry the field manager `kubebolt-kobi`; the audit trail takes
+  the actor from who is signed in (`ui`, `api`) and keeps an unbelieved claim
+  as `claimedSource`.
+- The web runs under its own ServiceAccount (`<release>-web`);
+  `mcpConnectors.aws.webIdentity` gives the API an AWS identity outside EKS.
+- The sign-in panel tells the site's story, with Kobi working an incident.
+
+### Changed
+
+- The logo inside the app is the Split Bolt, as the favicon already was.
+- The AWS connector's setup guide opens with what keeps the connection safe.
+
+### Security
+
+- `golang.org/x/net` 0.62.0 and `golang.org/x/crypto` past GO-2026-5932 in the
+  API and the agent; `react-router` 6.30.6; the sign-in redirect refuses
+  `/\host` and `/%5Chost`.
+
 ## [2.5.1] — 2026-10-29
 
 Fixes what an escalated Kobi conversation cost. Drop-in, no schema change;
