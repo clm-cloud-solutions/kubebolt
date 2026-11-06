@@ -11,6 +11,18 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.4.7] — 2026-11-06
+
+Dependency update: the agent's code is the same as 1.4.6. Same v1.0
+metric/label schema — drop-in within 1.x.
+
+### Security
+
+- **`golang.org/x/net` v0.60.0 → v0.62.0** (CVE-2026-78661, CVE-2026-97045)
+  and **`golang.org/x/crypto`** to the commit that moves `openpgp` to its own
+  module (GO-2026-5932; the agent does not link `openpgp`). The bump clears
+  the image's reports.
+
 ## [1.4.6] — 2026-10-27
 
 Chart-only security update: the agent's code is the same as 1.4.5. Same v1.0
