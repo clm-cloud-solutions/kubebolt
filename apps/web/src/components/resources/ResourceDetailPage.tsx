@@ -3691,17 +3691,17 @@ function WorkloadLogsTab({ pods, isLoading: podsLoading, error: podsError }: { p
 }
 
 function DeploymentLogsTab({ namespace, name }: { namespace: string; name: string }) {
-  const { data, isLoading, error } = useDeploymentPods(namespace, name)
+  const { data, isLoading, error } = useDeploymentPods(namespace, name, 'picker')
   return <WorkloadLogsTab pods={data?.items ?? []} isLoading={isLoading} error={error} />
 }
 
 function StatefulSetLogsTab({ namespace, name }: { namespace: string; name: string }) {
-  const { data, isLoading, error } = useStatefulSetPods(namespace, name)
+  const { data, isLoading, error } = useStatefulSetPods(namespace, name, 'picker')
   return <WorkloadLogsTab pods={data?.items ?? []} isLoading={isLoading} error={error} />
 }
 
 function DaemonSetLogsTab({ namespace, name }: { namespace: string; name: string }) {
-  const { data, isLoading, error } = useDaemonSetPods(namespace, name)
+  const { data, isLoading, error } = useDaemonSetPods(namespace, name, 'picker')
   return <WorkloadLogsTab pods={data?.items ?? []} isLoading={isLoading} error={error} />
 }
 
