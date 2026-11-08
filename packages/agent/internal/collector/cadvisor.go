@@ -51,9 +51,10 @@ type CadvisorCollector struct {
 	// statsNetwork is what the stats collector sent in its last pass; those
 	// samples are skipped. Nil = send everything.
 	statsNetwork *PodNetworkSeen
-	// podUIDs resolves a pod's UID by namespace and name, for the families
-	// only this collector sends (cadvisorOnlyMetrics). Nil = no pod_uid.
-	podUIDs *PodsCache
+	// pods resolves a pod by namespace and name: its UID, for the families
+	// only this collector sends (cadvisorOnlyMetrics), and whether it runs
+	// with hostNetwork. Nil = no pod_uid, every pod sends its network.
+	pods *PodsCache
 }
 
 // CadvisorOption is a functional option for NewCadvisor.
@@ -66,10 +67,14 @@ func WithStatsNetwork(seen *PodNetworkSeen) CadvisorOption {
 	return func(c *CadvisorCollector) { c.statsNetwork = seen }
 }
 
-// WithPodUIDs stamps pod_uid on the families only this collector sends, so
-// PodsCache.Enrich adds their workload labels.
-func WithPodUIDs(pods *PodsCache) CadvisorOption {
-	return func(c *CadvisorCollector) { c.podUIDs = pods }
+// WithPods gives the collector the pods cache. It stamps pod_uid on the
+// families only this collector sends, so PodsCache.Enrich adds their workload
+// labels, and it sends nothing for pods with spec.hostNetwork: their
+// interfaces are the node's, which node_network_* reports
+// (WithHostNetworkPods on the stats side). Run this collector after stats,
+// whose pass refreshes the cache for pods it did not know.
+func WithPods(pods *PodsCache) CadvisorOption {
+	return func(c *CadvisorCollector) { c.pods = pods }
 }
 
 func NewCadvisor(client *kubelet.Client, clusterID, clusterName, nodeName, tenantID string, dropInterfaces *InterfaceMatcher, opts ...CadvisorOption) *CadvisorCollector {
@@ -108,7 +113,7 @@ var allowedCadvisorMetrics = map[string]struct{}{
 }
 
 // cadvisorOnlyMetrics are the families /stats/summary has no field for.
-// Only these get a pod_uid (WithPodUIDs). Bytes and errors never do: for a
+// Only these get a pod_uid (WithPods). Bytes and errors never do: for a
 // pod stats reports from its next pass on, a cAdvisor sample with the same
 // labels would land in stats' series, and two readings of one counter taken
 // at different moments read as a counter reset.
@@ -158,6 +163,10 @@ func (c *CadvisorCollector) Collect(ctx context.Context) ([]*agentv2.Sample, err
 		if c.statsNetwork.has(metric, podNs, podName, labels["interface"]) {
 			continue
 		}
+		// A hostNetwork pod's interfaces are the node's (WithPods).
+		if c.pods.IsHostNetwork(podNs, podName) {
+			continue
+		}
 		sampleLabels := map[string]string{
 			"cluster_id": c.clusterID,
 			"node":       c.nodeName,
@@ -167,7 +176,7 @@ func (c *CadvisorCollector) Collect(ctx context.Context) ([]*agentv2.Sample, err
 			"interface":  labels["interface"],
 		}
 		if _, only := cadvisorOnlyMetrics[metric]; only {
-			if uid := c.podUIDs.UIDFor(podNs, podName); uid != "" {
+			if uid := c.pods.UIDFor(podNs, podName); uid != "" {
 				sampleLabels["pod_uid"] = uid
 			}
 		}

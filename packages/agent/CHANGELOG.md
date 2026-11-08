@@ -38,6 +38,21 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `testdata/cadvisor_metrics.txt` now has the shape of a real kubelet: pod
   network only for the pause sandbox (`container=""`), and no `pod_uid`. The
   old fixture invented both, which hid the duplicate.
+- **Pods with `hostNetwork: true` no longer send pod network.**
+  - **Why:** they share the node's network namespace, so both collectors
+    reported the node's interfaces as the pod's own: `eth0`, the overlay
+    device, and every per-pod veth the drop list does not cover.
+  - **The effect:** every such pod counted the node's traffic once more, and
+    summing its interfaces counted the overlay twice. With Cilium on kind, 11
+    hostNetwork pods produced 82% of the `container_network_*` series.
+  - **Where that traffic is now:** `node_network_*`, once. This is what the
+    Datadog kubelet check and the kubernetes-mixin network dashboards already
+    do.
+  - **How the agent tells:** the pods cache reads `spec.hostNetwork` from the
+    kubelet's `/pods`. When `/stats/summary` lists a pod the cache does not
+    know, the cache is refreshed in that same pass, so a new hostNetwork pod
+    never sends the node's network as its own.
+  - **If the cache cannot be read**, every pod keeps its network.
 
 ## [1.4.7] — 2026-11-06
 
