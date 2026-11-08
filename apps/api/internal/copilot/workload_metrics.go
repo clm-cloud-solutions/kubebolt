@@ -430,8 +430,12 @@ func (b *promBuilder) podNamePattern() string {
 //     name. We don't filter by `job` so either source works.
 //   - Pod / workload kinds: uses container-level data filtered by the
 //     pod-name regex; perContainer is ignored because the metric is
-//     pod-keyed (no container label at this level). The pod_uid!="" filter
-//     excludes external Prometheus-scraped duplicates (see buildCPU).
+//     pod-keyed (no container label at this level). The agent sends each
+//     pod interface twice: its stats collector with pod_uid, its cAdvisor
+//     collector without (finding #70). The pod_uid!="" side is the one
+//     to keep; the `or on` falls back to cAdvisor's copy per interface,
+//     for pods only cAdvisor saw (short-lived ones). Its job="" keeps an
+//     external Prometheus scrape out, as pod_uid!="" does on the left.
 func (b *promBuilder) buildNetwork(direction MetricKind) string {
 	if b.isNode() {
 		metricName := "node_network_receive_bytes_total"
@@ -447,10 +451,11 @@ func (b *promBuilder) buildNetwork(direction MetricKind) string {
 	if direction == MetricNetworkTX {
 		metricName = "container_network_transmit_bytes_total"
 	}
-	selector := b.podSelector()
+	series := fmt.Sprintf(`%s{%s,namespace=%q,%s`, metricName, b.scope(), b.namespace, b.podSelector())
+	window := promDuration(b.rateWindow)
 	return fmt.Sprintf(
-		`sum(rate(%s{%s,namespace=%q,%s,pod_uid!=""}[%s]))`,
-		metricName, b.scope(), b.namespace, selector, promDuration(b.rateWindow),
+		`sum(rate(%s,pod_uid!=""}[%s]) or on (cluster_id, namespace, pod, interface) rate(%s,pod_uid="",job="",container=""}[%s]))`,
+		series, window, series, window,
 	)
 }
 
