@@ -162,15 +162,17 @@ func main() {
 	// Both collectors read each pod's network counters, with label sets that
 	// never match: the store would keep two copies and every sum would double.
 	// cadvisor sends only what stats did not send in the same pass (packets_dropped,
-	// pods and interfaces /stats/summary leaves out).
+	// pods and interfaces /stats/summary leaves out). Neither sends pod network for
+	// hostNetwork pods: their interfaces are the node's, already in node_network_*.
 	podNetSeen := collector.NewPodNetworkSeen()
 	stats := collector.NewStats(kc, clusterID, clusterName, *nodeName, tenantID,
 		collector.WithDeferNodeNetwork(deferNodeNetwork),
 		collector.WithDropInterfaces(dropNetIfaces),
-		collector.WithPodNetworkSeen(podNetSeen))
+		collector.WithPodNetworkSeen(podNetSeen),
+		collector.WithHostNetworkPods(pods))
 	cadvisor := collector.NewCadvisor(kc, clusterID, clusterName, *nodeName, tenantID, dropNetIfaces,
 		collector.WithStatsNetwork(podNetSeen),
-		collector.WithPodUIDs(pods))
+		collector.WithPods(pods))
 	// NodeStress reads /proc/loadavg + /proc/pressure/* directly.
 	// procPath defaults to "/proc" — system-wide files aren't PID-
 	// namespaced so reading from inside the container returns host

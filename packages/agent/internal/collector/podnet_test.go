@@ -110,7 +110,7 @@ func TestCadvisor_PodUIDOnlyOnFamiliesStatsCannotSend(t *testing.T) {
 		{"default", "nginx-abc123"}:    "11111111-aaaa-bbbb-cccc-111111111111",
 		{"kube-system", "coredns-xyz"}: "22222222-aaaa-bbbb-cccc-222222222222",
 	}}
-	samples := collectCadvisor(t, "cadvisor_metrics.txt", WithPodUIDs(pods))
+	samples := collectCadvisor(t, "cadvisor_metrics.txt", WithPods(pods))
 
 	var dropped int
 	for _, s := range samples {

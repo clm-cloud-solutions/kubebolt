@@ -61,7 +61,7 @@ func TestCadvisorCollector_PromCanonicalSchema(t *testing.T) {
 
 	t.Run("no pod_uid without a pods cache", func(t *testing.T) {
 		// The kubelet's cAdvisor endpoint carries no pod_uid; this collector
-		// adds one only through WithPodUIDs.
+		// adds one only through WithPods.
 		for _, s := range samples {
 			if uid, ok := s.Labels["pod_uid"]; ok {
 				t.Errorf("%s for %s carries pod_uid %q", s.MetricName, s.Labels["pod"], uid)

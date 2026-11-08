@@ -65,6 +65,9 @@ type StatsCollector struct {
 	// podNetSeen receives the pod network samples of every pass so the
 	// cAdvisor collector skips them. Nil = record nothing.
 	podNetSeen *PodNetworkSeen
+	// hostNetPods says which pods run with spec.hostNetwork; they send no
+	// pod network. Nil = every pod sends it.
+	hostNetPods *PodsCache
 }
 
 // StatsOption is a functional option for NewStats.
@@ -92,6 +95,17 @@ func WithDropInterfaces(drop *InterfaceMatcher) StatsOption {
 // set the cAdvisor collector reads (WithStatsNetwork) to send only the rest.
 func WithPodNetworkSeen(seen *PodNetworkSeen) StatsOption {
 	return func(c *StatsCollector) { c.podNetSeen = seen }
+}
+
+// WithHostNetworkPods stops pod network for pods with spec.hostNetwork. They
+// share the node's network namespace, so /stats/summary lists the node's
+// interfaces for them (eth0, the overlay device, every veth). Sent as the
+// pod's own, that counted the node's traffic once per such pod and summed
+// the overlay twice. node_network_* already reports it, once. When the
+// summary lists a pod the cache does not know, the cache is refreshed first,
+// so a pod that just started is recognised in the same pass.
+func WithHostNetworkPods(pods *PodsCache) StatsOption {
+	return func(c *StatsCollector) { c.hostNetPods = pods }
 }
 
 func NewStats(client *kubelet.Client, clusterID, clusterName, nodeName, tenantID string, opts ...StatsOption) *StatsCollector {
@@ -154,6 +168,8 @@ func (c *StatsCollector) Collect(ctx context.Context) ([]*agentv2.Sample, error)
 		return nil, fmt.Errorf("decode stats/summary: %w", err)
 	}
 
+	c.refreshPodsIfUnknown(ctx, summary.Pods)
+
 	now := timestamppb.Now()
 	var samples []*agentv2.Sample
 
@@ -164,6 +180,22 @@ func (c *StatsCollector) Collect(ctx context.Context) ([]*agentv2.Sample, error)
 
 	c.podNetSeen.record(samples)
 	return samples, nil
+}
+
+// refreshPodsIfUnknown refreshes the pods cache once when the summary lists a
+// pod it does not hold. Without it, a hostNetwork pod started since the last
+// refresh would send the node's network as its own for a pass. At most one
+// /pods call per pass; a failed refresh keeps the cache as it was.
+func (c *StatsCollector) refreshPodsIfUnknown(ctx context.Context, pods []podStats) {
+	if c.hostNetPods == nil {
+		return
+	}
+	for i := range pods {
+		if !c.hostNetPods.Knows(pods[i].PodRef.UID) {
+			_ = c.hostNetPods.Refresh(ctx)
+			return
+		}
+	}
 }
 
 // collectNode emits node-scoped metrics. Naming follows node-exporter
@@ -252,6 +284,10 @@ func (c *StatsCollector) collectPod(p *podStats, ts *timestamppb.Timestamp) []*a
 		if fb, ok := p.Network.asFallbackInterface(); ok {
 			podIfaces = []netInterface{fb}
 		}
+	}
+	// A hostNetwork pod's interfaces are the node's (WithHostNetworkPods).
+	if c.hostNetPods.IsHostNetwork(p.PodRef.Namespace, p.PodRef.Name) {
+		podIfaces = nil
 	}
 	for _, iface := range podIfaces {
 		if c.dropInterfaces.Drops(iface.Name) {
