@@ -877,7 +877,7 @@ func (h *handlers) getDeploymentPods(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
 	}
-	pods := conn.GetDeploymentPods(namespace, name)
+	pods := podListRows(conn.GetDeploymentPods(namespace, name))
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"kind":  "pods",
 		"items": pods,
@@ -927,7 +927,7 @@ func (h *handlers) getStatefulSetPods(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
 	}
-	pods := conn.GetStatefulSetPods(namespace, name)
+	pods := podListRows(conn.GetStatefulSetPods(namespace, name))
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"kind":  "pods",
 		"items": pods,
@@ -946,7 +946,7 @@ func (h *handlers) getDaemonSetPods(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
 	}
-	pods := conn.GetDaemonSetPods(namespace, name)
+	pods := podListRows(conn.GetDaemonSetPods(namespace, name))
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"kind":  "pods",
 		"items": pods,
@@ -965,7 +965,7 @@ func (h *handlers) getJobPods(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
 	}
-	pods := conn.GetJobPods(namespace, name)
+	pods := podListRows(conn.GetJobPods(namespace, name))
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"kind":  "pods",
 		"items": pods,
