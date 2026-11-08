@@ -2439,6 +2439,18 @@ function MonitorTab({ type, item }: { type: string; item: ResourceItem }) {
 
 const MONITOR_BANNER_DISMISSED_KEY = 'kb-monitor-banner-dismissed'
 
+// The agent sends a pod's network twice: its stats collector with pod_uid
+// and the workload labels, its cAdvisor collector without them. The label
+// sets never match, so VictoriaMetrics keeps both and a plain sum doubles
+// every interface (finding #70). Take the enriched copy and fall back to
+// cAdvisor's per interface, for the pods only cAdvisor saw (short-lived
+// ones) and for agents that send only that copy. The key keeps the
+// interface: a second interface is real traffic, never a duplicate.
+function podNetworkRate(metric: string, selector: string): string {
+  const series = `${metric}{${selector},job="",container="",interface=~"eth.*|en.*|cilium_.*"`
+  return `sum by (interface) (rate(${series},pod_uid!=""}[1m]) or on (cluster_id, namespace, pod, interface) rate(${series},pod_uid=""}[1m]))`
+}
+
 function PodMonitorCharts({ item }: { item: ResourceItem }) {
   const ns = String(item.namespace)
   const name = String(item.name)
@@ -2537,12 +2549,11 @@ function PodMonitorCharts({ item }: { item: ResourceItem }) {
           // /metrics/cadvisor surfaces every interface the kernel reports.
           //
           // `job=""` keeps the agent-first convention from CPU/Memory
-          // above. Network is less duplicative than CPU/Memory (Prom and
-          // agent agree on the labels), but using the same filter keeps
-          // the chart consistent and yields the workload_* enrichment for
-          // the Pod Monitor's secondary indicators.
-          { query: `sum by (interface) (rate(container_network_receive_bytes_total{${selector},job="",container="",interface=~"eth.*|en.*|cilium_.*"}[1m]))`, prefix: 'RX' },
-          { query: `sum by (interface) (rate(container_network_transmit_bytes_total{${selector},job="",container="",interface=~"eth.*|en.*|cilium_.*"}[1m]))`, prefix: 'TX', negate: true },
+          // above: a customer Prometheus forwarding its own cAdvisor scrape
+          // carries `job` and stays out. podNetworkRate picks one of the
+          // agent's two copies of each interface (finding #70).
+          { query: podNetworkRate('container_network_receive_bytes_total', selector), prefix: 'RX' },
+          { query: podNetworkRate('container_network_transmit_bytes_total', selector), prefix: 'TX', negate: true },
         ]}
         accents={METRIC_ACCENTS.networkRxTx}
         chartType="area"

@@ -180,12 +180,12 @@ func TestPromBuilder_Network_Workload(t *testing.T) {
 		rateWindow: 1 * time.Minute,
 	}
 	gotRX := b.buildNetwork(MetricNetworkRX)
-	wantRX := `sum(rate(container_network_receive_bytes_total{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",pod_uid!=""}[1m]))`
+	wantRX := `sum(rate(container_network_receive_bytes_total{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",pod_uid!=""}[1m]) or on (cluster_id, namespace, pod, interface) rate(container_network_receive_bytes_total{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",pod_uid="",job="",container=""}[1m]))`
 	if gotRX != wantRX {
 		t.Errorf("network RX PromQL mismatch:\n  want: %s\n  got:  %s", wantRX, gotRX)
 	}
 	gotTX := b.buildNetwork(MetricNetworkTX)
-	wantTX := `sum(rate(container_network_transmit_bytes_total{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",pod_uid!=""}[1m]))`
+	wantTX := `sum(rate(container_network_transmit_bytes_total{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",pod_uid!=""}[1m]) or on (cluster_id, namespace, pod, interface) rate(container_network_transmit_bytes_total{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",pod_uid="",job="",container=""}[1m]))`
 	if gotTX != wantTX {
 		t.Errorf("network TX PromQL mismatch:\n  want: %s\n  got:  %s", wantTX, gotTX)
 	}
@@ -200,7 +200,7 @@ func TestPromBuilder_Network_Pod(t *testing.T) {
 		rateWindow: 1 * time.Minute,
 	}
 	got := b.buildNetwork(MetricNetworkRX)
-	want := `sum(rate(container_network_receive_bytes_total{cluster_id="uid-abc",namespace="default",pod="single-pod",pod_uid!=""}[1m]))`
+	want := `sum(rate(container_network_receive_bytes_total{cluster_id="uid-abc",namespace="default",pod="single-pod",pod_uid!=""}[1m]) or on (cluster_id, namespace, pod, interface) rate(container_network_receive_bytes_total{cluster_id="uid-abc",namespace="default",pod="single-pod",pod_uid="",job="",container=""}[1m]))`
 	if got != want {
 		t.Errorf("network pod PromQL mismatch:\n  want: %s\n  got:  %s", want, got)
 	}
