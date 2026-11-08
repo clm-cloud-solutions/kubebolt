@@ -1,41 +1,49 @@
+# Shaped like a real kubelet's /metrics/cadvisor (kind, Kubernetes 1.35,
+# containerd 2.2), trimmed to the rows the collector cares about:
+#   - pod network is reported ONLY for the pause sandbox (container="",
+#     image=pause): there are no per-container network rows;
+#   - there is NO pod_uid label anywhere;
+#   - every network namespace lists the kernel's pseudo-devices (gre0, sit0, ...)
+#     next to the real interfaces;
+#   - the node's own rows have id="/" and empty namespace/pod.
+# nginx-abc123 is also in stats_summary.json (eth0 only); its net1 is a second
+# interface stats does not list. coredns-xyz has no network in
+# stats_summary.json, so cAdvisor is its only source.
 # HELP container_cpu_usage_seconds_total Cumulative cpu time consumed in seconds.
 # TYPE container_cpu_usage_seconds_total counter
-container_cpu_usage_seconds_total{container="",id="/kubepods/pod111",image="",name="",namespace="default",pod="nginx-abc123",pod_uid="11111111-aaaa-bbbb-cccc-111111111111"} 12345.67 1714999999000
-container_cpu_usage_seconds_total{container="nginx",id="/kubepods/pod111/nginx",image="nginx:1.25",name="k8s_nginx",namespace="default",pod="nginx-abc123",pod_uid="11111111-aaaa-bbbb-cccc-111111111111"} 1234.56 1714999999000
+container_cpu_usage_seconds_total{container="nginx",cpu="total",id="/kubelet.slice/kubelet-kubepods.slice/kubelet-kubepods-besteffort.slice/kubelet-kubepods-besteffort-pod11111111_aaaa_bbbb_cccc_111111111111.slice/cri-containerd-a1a1a1a1.scope",image="docker.io/library/nginx:1.25",name="a1a1a1a1",namespace="default",pod="nginx-abc123"} 1234.56 1714999999000
 
 # HELP container_network_receive_bytes_total Cumulative count of bytes received
 # TYPE container_network_receive_bytes_total counter
-container_network_receive_bytes_total{container="",id="/kubepods/pod111",image="",interface="eth0",name="",namespace="default",pod="nginx-abc123",pod_uid="11111111-aaaa-bbbb-cccc-111111111111"} 1500000 1714999999000
-container_network_receive_bytes_total{container="nginx",id="/kubepods/pod111/nginx",image="nginx:1.25",interface="eth0",name="k8s_nginx",namespace="default",pod="nginx-abc123",pod_uid="11111111-aaaa-bbbb-cccc-111111111111"} 1500000 1714999999000
+container_network_receive_bytes_total{container="",id="/",image="",interface="eth0",name="",namespace="",pod=""} 99999999 1714999999000
+container_network_receive_bytes_total{container="",id="/kubelet.slice/kubelet-kubepods.slice/kubelet-kubepods-besteffort.slice/kubelet-kubepods-besteffort-pod11111111_aaaa_bbbb_cccc_111111111111.slice/cri-containerd-p1p1p1p1.scope",image="registry.k8s.io/pause:3.10",interface="eth0",name="p1p1p1p1",namespace="default",pod="nginx-abc123"} 1500000 1714999999000
+container_network_receive_bytes_total{container="",id="/kubelet.slice/kubelet-kubepods.slice/kubelet-kubepods-besteffort.slice/kubelet-kubepods-besteffort-pod11111111_aaaa_bbbb_cccc_111111111111.slice/cri-containerd-p1p1p1p1.scope",image="registry.k8s.io/pause:3.10",interface="gre0",name="p1p1p1p1",namespace="default",pod="nginx-abc123"} 0 1714999999000
+container_network_receive_bytes_total{container="",id="/kubelet.slice/kubelet-kubepods.slice/kubelet-kubepods-besteffort.slice/kubelet-kubepods-besteffort-pod11111111_aaaa_bbbb_cccc_111111111111.slice/cri-containerd-p1p1p1p1.scope",image="registry.k8s.io/pause:3.10",interface="net1",name="p1p1p1p1",namespace="default",pod="nginx-abc123"} 320000 1714999999000
+container_network_receive_bytes_total{container="",id="/kubelet.slice/kubelet-kubepods.slice/kubelet-kubepods-burstable.slice/kubelet-kubepods-burstable-pod22222222_aaaa_bbbb_cccc_222222222222.slice/cri-containerd-p2p2p2p2.scope",image="registry.k8s.io/pause:3.10",interface="eth0",name="p2p2p2p2",namespace="kube-system",pod="coredns-xyz"} 5000000 1714999999000
 
 # HELP container_network_transmit_bytes_total Cumulative count of bytes transmitted
 # TYPE container_network_transmit_bytes_total counter
-container_network_transmit_bytes_total{container="",id="/kubepods/pod111",image="",interface="eth0",name="",namespace="default",pod="nginx-abc123",pod_uid="11111111-aaaa-bbbb-cccc-111111111111"} 750000 1714999999000
+container_network_transmit_bytes_total{container="",id="/kubelet.slice/kubelet-kubepods.slice/kubelet-kubepods-besteffort.slice/kubelet-kubepods-besteffort-pod11111111_aaaa_bbbb_cccc_111111111111.slice/cri-containerd-p1p1p1p1.scope",image="registry.k8s.io/pause:3.10",interface="eth0",name="p1p1p1p1",namespace="default",pod="nginx-abc123"} 750000 1714999999000
+container_network_transmit_bytes_total{container="",id="/kubelet.slice/kubelet-kubepods.slice/kubelet-kubepods-besteffort.slice/kubelet-kubepods-besteffort-pod11111111_aaaa_bbbb_cccc_111111111111.slice/cri-containerd-p1p1p1p1.scope",image="registry.k8s.io/pause:3.10",interface="net1",name="p1p1p1p1",namespace="default",pod="nginx-abc123"} 210000 1714999999000
+container_network_transmit_bytes_total{container="",id="/kubelet.slice/kubelet-kubepods.slice/kubelet-kubepods-burstable.slice/kubelet-kubepods-burstable-pod22222222_aaaa_bbbb_cccc_222222222222.slice/cri-containerd-p2p2p2p2.scope",image="registry.k8s.io/pause:3.10",interface="eth0",name="p2p2p2p2",namespace="kube-system",pod="coredns-xyz"} 4000000 1714999999000
 
 # HELP container_network_receive_errors_total Cumulative count of errors encountered while receiving
 # TYPE container_network_receive_errors_total counter
-container_network_receive_errors_total{container="",id="/kubepods/pod111",image="",interface="eth0",name="",namespace="default",pod="nginx-abc123",pod_uid="11111111-aaaa-bbbb-cccc-111111111111"} 0 1714999999000
+container_network_receive_errors_total{container="",id="/kubelet.slice/kubelet-kubepods.slice/kubelet-kubepods-besteffort.slice/kubelet-kubepods-besteffort-pod11111111_aaaa_bbbb_cccc_111111111111.slice/cri-containerd-p1p1p1p1.scope",image="registry.k8s.io/pause:3.10",interface="eth0",name="p1p1p1p1",namespace="default",pod="nginx-abc123"} 0 1714999999000
 
 # HELP container_network_transmit_errors_total Cumulative count of errors encountered while transmitting
 # TYPE container_network_transmit_errors_total counter
-container_network_transmit_errors_total{container="",id="/kubepods/pod111",image="",interface="eth0",name="",namespace="default",pod="nginx-abc123",pod_uid="11111111-aaaa-bbbb-cccc-111111111111"} 0 1714999999000
+container_network_transmit_errors_total{container="",id="/kubelet.slice/kubelet-kubepods.slice/kubelet-kubepods-besteffort.slice/kubelet-kubepods-besteffort-pod11111111_aaaa_bbbb_cccc_111111111111.slice/cri-containerd-p1p1p1p1.scope",image="registry.k8s.io/pause:3.10",interface="eth0",name="p1p1p1p1",namespace="default",pod="nginx-abc123"} 0 1714999999000
 
 # HELP container_network_receive_packets_dropped_total Cumulative count of packets dropped while receiving
 # TYPE container_network_receive_packets_dropped_total counter
-container_network_receive_packets_dropped_total{container="",id="/kubepods/pod111",image="",interface="eth0",name="",namespace="default",pod="nginx-abc123",pod_uid="11111111-aaaa-bbbb-cccc-111111111111"} 17 1714999999000
+container_network_receive_packets_dropped_total{container="",id="/kubelet.slice/kubelet-kubepods.slice/kubelet-kubepods-besteffort.slice/kubelet-kubepods-besteffort-pod11111111_aaaa_bbbb_cccc_111111111111.slice/cri-containerd-p1p1p1p1.scope",image="registry.k8s.io/pause:3.10",interface="eth0",name="p1p1p1p1",namespace="default",pod="nginx-abc123"} 17 1714999999000
 
 # HELP container_network_transmit_packets_dropped_total Cumulative count of packets dropped while transmitting
 # TYPE container_network_transmit_packets_dropped_total counter
-container_network_transmit_packets_dropped_total{container="",id="/kubepods/pod111",image="",interface="eth0",name="",namespace="default",pod="nginx-abc123",pod_uid="11111111-aaaa-bbbb-cccc-111111111111"} 4 1714999999000
+container_network_transmit_packets_dropped_total{container="",id="/kubelet.slice/kubelet-kubepods.slice/kubelet-kubepods-besteffort.slice/kubelet-kubepods-besteffort-pod11111111_aaaa_bbbb_cccc_111111111111.slice/cri-containerd-p1p1p1p1.scope",image="registry.k8s.io/pause:3.10",interface="eth0",name="p1p1p1p1",namespace="default",pod="nginx-abc123"} 4 1714999999000
 
-# Pod-level row for a pod with NO pod label set (cAdvisor non-pod row, e.g. kubepods cgroup root)
-container_network_receive_bytes_total{container="",id="/kubepods",image="",interface="cali0",name=""} 99999999 1714999999000
-
-# Another pod, kube-system namespace
-container_network_receive_bytes_total{container="",id="/kubepods/pod222",image="",interface="eth0",name="",namespace="kube-system",pod="coredns-xyz",pod_uid="22222222-aaaa-bbbb-cccc-222222222222"} 5000000 1714999999000
-container_network_transmit_bytes_total{container="",id="/kubepods/pod222",image="",interface="eth0",name="",namespace="kube-system",pod="coredns-xyz",pod_uid="22222222-aaaa-bbbb-cccc-222222222222"} 4000000 1714999999000
-
-# A metric we DON'T emit (should be filtered)
+# A family the collector does not emit (memory comes from /stats/summary)
 # HELP container_memory_working_set_bytes Current working set in bytes
 # TYPE container_memory_working_set_bytes gauge
-container_memory_working_set_bytes{container="nginx",namespace="default",pod="nginx-abc123"} 100663296 1714999999000
+container_memory_working_set_bytes{container="nginx",id="/kubelet.slice/kubelet-kubepods.slice/kubelet-kubepods-besteffort.slice/kubelet-kubepods-besteffort-pod11111111_aaaa_bbbb_cccc_111111111111.slice/cri-containerd-a1a1a1a1.scope",image="docker.io/library/nginx:1.25",name="a1a1a1a1",namespace="default",pod="nginx-abc123"} 100663296 1714999999000

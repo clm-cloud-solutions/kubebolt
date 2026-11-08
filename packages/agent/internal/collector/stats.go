@@ -9,10 +9,10 @@
 // Schema: as of v1.0 (Universal Data Plane Plan, Phase 1) this collector
 // emits Prometheus-canonical metric names and labels — cAdvisor convention
 // for container metrics, kubelet_volume_stats_* for volumes, node-exporter
-// convention for node network. The dual-source pattern (stats.go + cadvisor.go
-// both emit container_network_*) relies on VM collapsing duplicate samples
-// when the label set matches; cadvisor.go is the authoritative source on
-// kubelets where the /stats/summary network block is empty.
+// convention for node network. stats.go and cadvisor.go can both emit
+// container_network_*; their label sets differ, so VictoriaMetrics would keep
+// both copies. PodNetworkSeen makes cadvisor.go send only what this collector
+// did not (packets_dropped, pods and interfaces /stats/summary left out).
 package collector
 
 import (
@@ -58,10 +58,13 @@ type StatsCollector struct {
 	// (azv*/veth*/eni*/cali*) from per-interface network metrics — the
 	// SAME matcher CadvisorCollector filters with. /stats/summary and
 	// cadvisor both emit container_network_* per interface, so the filter
-	// MUST live in both or the unfiltered source re-introduces the
-	// dropped names (VM collapses the duplicate series). Populated from
+	// MUST live in both: cadvisor sends what stats did not, and a name
+	// only stats dropped would come back from cadvisor. Populated from
 	// the helm value collectors.dropNetworkInterfaces. Nil = keep all.
 	dropInterfaces *InterfaceMatcher
+	// podNetSeen receives the pod network samples of every pass so the
+	// cAdvisor collector skips them. Nil = record nothing.
+	podNetSeen *PodNetworkSeen
 }
 
 // StatsOption is a functional option for NewStats.
@@ -79,10 +82,16 @@ func WithDeferNodeNetwork(defer_ bool) StatsOption {
 // container_network_* (pod loop) and node_network_* (node loop)
 // emission. Mirrors the CadvisorCollector filter so both network
 // sources drop the same always-zero kernel tunnel devices — otherwise
-// the unfiltered source re-introduces them via VM's duplicate-series
-// merge. Wired by the helm chart from collectors.dropNetworkInterfaces.
+// the unfiltered source re-introduces them. Wired by the helm chart from
+// collectors.dropNetworkInterfaces.
 func WithDropInterfaces(drop *InterfaceMatcher) StatsOption {
 	return func(c *StatsCollector) { c.dropInterfaces = drop }
+}
+
+// WithPodNetworkSeen records each pass's pod network samples in seen, the
+// set the cAdvisor collector reads (WithStatsNetwork) to send only the rest.
+func WithPodNetworkSeen(seen *PodNetworkSeen) StatsOption {
+	return func(c *StatsCollector) { c.podNetSeen = seen }
 }
 
 func NewStats(client *kubelet.Client, clusterID, clusterName, nodeName, tenantID string, opts ...StatsOption) *StatsCollector {
@@ -136,10 +145,12 @@ func (c *StatsCollector) podLabels(ns, name, uid string) map[string]string {
 func (c *StatsCollector) Collect(ctx context.Context) ([]*agentv2.Sample, error) {
 	body, err := c.client.Get(ctx, "/stats/summary")
 	if err != nil {
+		c.podNetSeen.record(nil)
 		return nil, err
 	}
 	var summary statsSummary
 	if err := json.Unmarshal(body, &summary); err != nil {
+		c.podNetSeen.record(nil)
 		return nil, fmt.Errorf("decode stats/summary: %w", err)
 	}
 
@@ -151,6 +162,7 @@ func (c *StatsCollector) Collect(ctx context.Context) ([]*agentv2.Sample, error)
 		samples = append(samples, c.collectPod(&summary.Pods[i], now)...)
 	}
 
+	c.podNetSeen.record(samples)
 	return samples, nil
 }
 
@@ -232,8 +244,8 @@ func (c *StatsCollector) collectPod(p *podStats, ts *timestamppb.Timestamp) []*a
 	// Pod-level network. cAdvisor convention emits these as
 	// container_network_* with container="" (the pod's network namespace
 	// is owned by the pause container, which cAdvisor reports with empty
-	// container label). Same convention here so VM aggregates duplicates
-	// from stats.go and cadvisor.go cleanly when both fire.
+	// container label). Same convention here, so a query reads either
+	// source the same way.
 	netLabels := mergeLabels(podBase, map[string]string{"container": ""})
 	podIfaces := p.Network.Interfaces
 	if len(podIfaces) == 0 {

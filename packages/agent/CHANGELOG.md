@@ -11,6 +11,34 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Every pod's network was stored twice.** The stats collector
+  (`/stats/summary`) and the cAdvisor collector (`/metrics/cadvisor`) both sent
+  `container_network_{receive,transmit}_{bytes,errors}_total` for each pod
+  interface. Their label sets never matched: stats carries `pod_uid` and the
+  workload labels, and the kubelet's cAdvisor endpoint carries neither. So
+  VictoriaMetrics kept two series, every sum by pod or namespace came out
+  doubled, and both copies counted as active series. Present since 0.0.5.
+  - cAdvisor now runs right after stats, in the same loop, and skips what that
+    pass sent.
+  - It still sends what `/stats/summary` leaves out:
+    - `*_packets_dropped_total`;
+    - pods stats did not report, such as short-lived ones or those on kubelets
+      with an empty network block;
+    - interfaces stats did not list. A second interface (e.g. Multus `net1`)
+      is real traffic, so the key is per interface, never per pod.
+  - After the upgrade the copies without `pod_uid` stop. Queries that select
+    `pod_uid!=""` or the workload labels read the same. A plain `sum` falls to
+    the real value. Stored history keeps both copies until retention drops
+    them.
+- **`*_packets_dropped_total` gets the workload labels.** cAdvisor stamps the
+  pod's UID from the pods cache, so enrichment adds `workload_kind`,
+  `workload_name` and `label_*`. Its series change labels once, at the upgrade.
+- `testdata/cadvisor_metrics.txt` now has the shape of a real kubelet: pod
+  network only for the pause sandbox (`container=""`), and no `pod_uid`. The
+  old fixture invented both, which hid the duplicate.
+
 ## [1.4.7] — 2026-11-06
 
 Dependency update: the agent's code is the same as 1.4.6. Same v1.0
