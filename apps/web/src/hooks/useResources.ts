@@ -55,33 +55,46 @@ export function useTopology() {
   })
 }
 
-export function useDeploymentPods(namespace: string, name: string) {
+// Logs and Terminal read a workload's pod list only to fill their pod and
+// container pickers, so they refresh it at most once a minute (or at the page
+// interval when that is slower). The Pods tab, a live table, keeps the page
+// interval. Both share one cache key: whichever tab fetched it, the other
+// reuses it. A DaemonSet's list carries one full pod per node.
+const POD_PICKER_MIN_INTERVAL = 60_000
+
+export type PodListUse = 'table' | 'picker'
+
+export function podListInterval(interval: number, use: PodListUse): number {
+  return use === 'picker' ? Math.max(interval, POD_PICKER_MIN_INTERVAL) : interval
+}
+
+export function useDeploymentPods(namespace: string, name: string, use: PodListUse = 'table') {
   const { interval } = useRefreshInterval()
   return useQuery({
     queryKey: ['deployment-pods', namespace, name],
     queryFn: () => api.getDeploymentPods(namespace, name),
     enabled: !!namespace && !!name,
-    refetchInterval: interval,
+    refetchInterval: podListInterval(interval, use),
   })
 }
 
-export function useStatefulSetPods(namespace: string, name: string) {
+export function useStatefulSetPods(namespace: string, name: string, use: PodListUse = 'table') {
   const { interval } = useRefreshInterval()
   return useQuery({
     queryKey: ['statefulset-pods', namespace, name],
     queryFn: () => api.getStatefulSetPods(namespace, name),
     enabled: !!namespace && !!name,
-    refetchInterval: interval,
+    refetchInterval: podListInterval(interval, use),
   })
 }
 
-export function useDaemonSetPods(namespace: string, name: string) {
+export function useDaemonSetPods(namespace: string, name: string, use: PodListUse = 'table') {
   const { interval } = useRefreshInterval()
   return useQuery({
     queryKey: ['daemonset-pods', namespace, name],
     queryFn: () => api.getDaemonSetPods(namespace, name),
     enabled: !!namespace && !!name,
-    refetchInterval: interval,
+    refetchInterval: podListInterval(interval, use),
   })
 }
 

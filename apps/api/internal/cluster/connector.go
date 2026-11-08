@@ -2704,7 +2704,7 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 		// instant a delete is issued, NOT when pods are actually gone.
 		// Clients that need a true "all pods gone" signal (e.g. the
 		// Copilot's scale-to-0 progress polling) should use this field.
-		m["livePodCount"] = len(c.GetDeploymentPods(namespace, name))
+		m["livePodCount"] = len(c.deploymentPodObjects(namespace, name))
 		// Recent-writes overlay covers the ~hundreds-of-ms gap between
 		// a Patch landing and the informer cache catching up. Without
 		// this, a manual Refresh after Pause/Resume reads stale state
@@ -2756,7 +2756,7 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 			return nil, err
 		}
 		m := statefulSetToMap(ss)
-		m["livePodCount"] = len(c.GetStatefulSetPods(namespace, name))
+		m["livePodCount"] = len(c.ownedPodObjects(namespace, "StatefulSet", name))
 		return m, nil
 	case "daemonsets":
 		ds, err := c.daemonSetLister.DaemonSets(namespace).Get(name)
@@ -2764,7 +2764,7 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 			return nil, err
 		}
 		m := daemonSetToMap(ds)
-		m["livePodCount"] = len(c.GetDaemonSetPods(namespace, name))
+		m["livePodCount"] = len(c.ownedPodObjects(namespace, "DaemonSet", name))
 		return m, nil
 	case "jobs":
 		job, err := c.jobLister.Jobs(namespace).Get(name)
@@ -6129,51 +6129,75 @@ func (c *Connector) listClusterRoleBindings() []map[string]interface{} {
 	return items
 }
 
-// GetDeploymentPods returns all pods owned by a deployment (via ReplicaSets).
-func (c *Connector) GetDeploymentPods(namespace, deploymentName string) []map[string]interface{} {
-	// 1. Get all ReplicaSets in the namespace
-	replicaSets, _ := c.replicaSetLister.List(everythingSelector())
-	// 2. Find which ReplicaSets are owned by this deployment
+// The pods a workload owns are read from the informer's namespace index. Each
+// call used to list every pod in the cluster (and, for a Deployment, every
+// ReplicaSet) and filter here: the Pods, Logs and Terminal tabs of a workload,
+// its detail (livePodCount), Kobi and the blast radius all paid O(pods in the
+// cluster) per request.
+
+// deploymentPodObjects returns the pods of the ReplicaSets a Deployment owns.
+func (c *Connector) deploymentPodObjects(namespace, deploymentName string) []*corev1.Pod {
+	if c.replicaSetLister == nil || c.podLister == nil {
+		return nil
+	}
+	replicaSets, _ := c.replicaSetLister.ReplicaSets(namespace).List(everythingSelector())
 	rsNames := make(map[string]bool)
 	for _, rs := range replicaSets {
-		if rs.Namespace != namespace {
-			continue
-		}
 		for _, ref := range rs.OwnerReferences {
 			if ref.Kind == "Deployment" && ref.Name == deploymentName {
 				rsNames[rs.Name] = true
 			}
 		}
 	}
+	if len(rsNames) == 0 {
+		return nil
+	}
+	pods, _ := c.podLister.Pods(namespace).List(everythingSelector())
+	var owned []*corev1.Pod
+	for _, pod := range pods {
+		for _, ref := range pod.OwnerReferences {
+			if ref.Kind == "ReplicaSet" && rsNames[ref.Name] {
+				owned = append(owned, pod)
+				break
+			}
+		}
+	}
+	return owned
+}
 
-	// 3. Get all pods in the namespace
-	pods, _ := c.podLister.List(everythingSelector())
+// ownedPodObjects returns the pods a StatefulSet, DaemonSet or Job owns
+// directly (kind is the owner reference's Kind).
+func (c *Connector) ownedPodObjects(namespace, kind, name string) []*corev1.Pod {
+	if c.podLister == nil {
+		return nil
+	}
+	pods, _ := c.podLister.Pods(namespace).List(everythingSelector())
+	var owned []*corev1.Pod
+	for _, pod := range pods {
+		for _, ref := range pod.OwnerReferences {
+			if ref.Kind == kind && ref.Name == name {
+				owned = append(owned, pod)
+				break
+			}
+		}
+	}
+	return owned
+}
+
+// podItemsWithMetrics turns a workload's pods into the rows its Pods tab reads:
+// podToMap plus the summed requests and limits and, when the metrics
+// collector has the pod, its usage and the percent of limit (else of request).
+func (c *Connector) podItemsWithMetrics(pods []*corev1.Pod) []map[string]interface{} {
+	if len(pods) == 0 {
+		return nil
+	}
 	var podMetrics map[string]*models.MetricPoint
 	if c.collector != nil {
 		podMetrics = c.collector.GetAllPodMetrics()
 	}
-
-	var items []map[string]interface{}
+	items := make([]map[string]interface{}, 0, len(pods))
 	for _, pod := range pods {
-		if pod.Namespace != namespace {
-			continue
-		}
-		// 4. Find which pods are owned by those ReplicaSets
-		owned := false
-		for _, ref := range pod.OwnerReferences {
-			if ref.Kind == "ReplicaSet" && rsNames[ref.Name] {
-				owned = true
-				break
-			}
-		}
-		if !owned {
-			continue
-		}
-
-		// 5. Convert pod using podToMap
 		m := podToMap(pod)
-
-		// 6. Inject pod metrics (same pattern as listPods)
 		var cpuReq, cpuLim, memReq, memLim int64
 		for _, cont := range pod.Spec.Containers {
 			cpuReq += cont.Resources.Requests.Cpu().MilliValue()
@@ -6205,6 +6229,11 @@ func (c *Connector) GetDeploymentPods(namespace, deploymentName string) []map[st
 		items = append(items, m)
 	}
 	return items
+}
+
+// GetDeploymentPods returns all pods owned by a deployment (via ReplicaSets).
+func (c *Connector) GetDeploymentPods(namespace, deploymentName string) []map[string]interface{} {
+	return c.podItemsWithMetrics(c.deploymentPodObjects(namespace, deploymentName))
 }
 
 // GetDeploymentHistory returns the revision history of a deployment via its ReplicaSets.
@@ -6328,176 +6357,17 @@ func (c *Connector) RollbackDeployment(ctx context.Context, namespace, name stri
 
 // GetStatefulSetPods returns all pods owned by a statefulset (direct ownership).
 func (c *Connector) GetStatefulSetPods(namespace, stsName string) []map[string]interface{} {
-	pods, _ := c.podLister.List(everythingSelector())
-	var podMetrics map[string]*models.MetricPoint
-	if c.collector != nil {
-		podMetrics = c.collector.GetAllPodMetrics()
-	}
-
-	var items []map[string]interface{}
-	for _, pod := range pods {
-		if pod.Namespace != namespace {
-			continue
-		}
-		owned := false
-		for _, ref := range pod.OwnerReferences {
-			if ref.Kind == "StatefulSet" && ref.Name == stsName {
-				owned = true
-				break
-			}
-		}
-		if !owned {
-			continue
-		}
-
-		m := podToMap(pod)
-		var cpuReq, cpuLim, memReq, memLim int64
-		for _, cont := range pod.Spec.Containers {
-			cpuReq += cont.Resources.Requests.Cpu().MilliValue()
-			cpuLim += cont.Resources.Limits.Cpu().MilliValue()
-			memReq += cont.Resources.Requests.Memory().Value()
-			memLim += cont.Resources.Limits.Memory().Value()
-		}
-		m["cpuRequest"] = cpuReq
-		m["cpuLimit"] = cpuLim
-		m["memoryRequest"] = memReq
-		m["memoryLimit"] = memLim
-		if podMetrics != nil {
-			key := pod.Namespace + "/" + pod.Name
-			if pm, ok := podMetrics[key]; ok {
-				m["cpuUsage"] = pm.CPUUsage
-				m["memoryUsage"] = pm.MemUsage
-				if cpuLim > 0 {
-					m["cpuPercent"] = float64(pm.CPUUsage) / float64(cpuLim) * 100
-				} else if cpuReq > 0 {
-					m["cpuPercent"] = float64(pm.CPUUsage) / float64(cpuReq) * 100
-				}
-				if memLim > 0 {
-					m["memoryPercent"] = float64(pm.MemUsage) / float64(memLim) * 100
-				} else if memReq > 0 {
-					m["memoryPercent"] = float64(pm.MemUsage) / float64(memReq) * 100
-				}
-			}
-		}
-		items = append(items, m)
-	}
-	return items
+	return c.podItemsWithMetrics(c.ownedPodObjects(namespace, "StatefulSet", stsName))
 }
 
 // GetDaemonSetPods returns all pods owned by a daemonset (direct ownership).
 func (c *Connector) GetDaemonSetPods(namespace, dsName string) []map[string]interface{} {
-	pods, _ := c.podLister.List(everythingSelector())
-	var podMetrics map[string]*models.MetricPoint
-	if c.collector != nil {
-		podMetrics = c.collector.GetAllPodMetrics()
-	}
-
-	var items []map[string]interface{}
-	for _, pod := range pods {
-		if pod.Namespace != namespace {
-			continue
-		}
-		owned := false
-		for _, ref := range pod.OwnerReferences {
-			if ref.Kind == "DaemonSet" && ref.Name == dsName {
-				owned = true
-				break
-			}
-		}
-		if !owned {
-			continue
-		}
-
-		m := podToMap(pod)
-		var cpuReq, cpuLim, memReq, memLim int64
-		for _, cont := range pod.Spec.Containers {
-			cpuReq += cont.Resources.Requests.Cpu().MilliValue()
-			cpuLim += cont.Resources.Limits.Cpu().MilliValue()
-			memReq += cont.Resources.Requests.Memory().Value()
-			memLim += cont.Resources.Limits.Memory().Value()
-		}
-		m["cpuRequest"] = cpuReq
-		m["cpuLimit"] = cpuLim
-		m["memoryRequest"] = memReq
-		m["memoryLimit"] = memLim
-		if podMetrics != nil {
-			key := pod.Namespace + "/" + pod.Name
-			if pm, ok := podMetrics[key]; ok {
-				m["cpuUsage"] = pm.CPUUsage
-				m["memoryUsage"] = pm.MemUsage
-				if cpuLim > 0 {
-					m["cpuPercent"] = float64(pm.CPUUsage) / float64(cpuLim) * 100
-				} else if cpuReq > 0 {
-					m["cpuPercent"] = float64(pm.CPUUsage) / float64(cpuReq) * 100
-				}
-				if memLim > 0 {
-					m["memoryPercent"] = float64(pm.MemUsage) / float64(memLim) * 100
-				} else if memReq > 0 {
-					m["memoryPercent"] = float64(pm.MemUsage) / float64(memReq) * 100
-				}
-			}
-		}
-		items = append(items, m)
-	}
-	return items
+	return c.podItemsWithMetrics(c.ownedPodObjects(namespace, "DaemonSet", dsName))
 }
 
 // GetJobPods returns all pods owned by a job (direct ownership).
 func (c *Connector) GetJobPods(namespace, jobName string) []map[string]interface{} {
-	pods, _ := c.podLister.List(everythingSelector())
-	var podMetrics map[string]*models.MetricPoint
-	if c.collector != nil {
-		podMetrics = c.collector.GetAllPodMetrics()
-	}
-
-	var items []map[string]interface{}
-	for _, pod := range pods {
-		if pod.Namespace != namespace {
-			continue
-		}
-		owned := false
-		for _, ref := range pod.OwnerReferences {
-			if ref.Kind == "Job" && ref.Name == jobName {
-				owned = true
-				break
-			}
-		}
-		if !owned {
-			continue
-		}
-
-		m := podToMap(pod)
-		var cpuReq, cpuLim, memReq, memLim int64
-		for _, cont := range pod.Spec.Containers {
-			cpuReq += cont.Resources.Requests.Cpu().MilliValue()
-			cpuLim += cont.Resources.Limits.Cpu().MilliValue()
-			memReq += cont.Resources.Requests.Memory().Value()
-			memLim += cont.Resources.Limits.Memory().Value()
-		}
-		m["cpuRequest"] = cpuReq
-		m["cpuLimit"] = cpuLim
-		m["memoryRequest"] = memReq
-		m["memoryLimit"] = memLim
-		if podMetrics != nil {
-			key := pod.Namespace + "/" + pod.Name
-			if pm, ok := podMetrics[key]; ok {
-				m["cpuUsage"] = pm.CPUUsage
-				m["memoryUsage"] = pm.MemUsage
-				if cpuLim > 0 {
-					m["cpuPercent"] = float64(pm.CPUUsage) / float64(cpuLim) * 100
-				} else if cpuReq > 0 {
-					m["cpuPercent"] = float64(pm.CPUUsage) / float64(cpuReq) * 100
-				}
-				if memLim > 0 {
-					m["memoryPercent"] = float64(pm.MemUsage) / float64(memLim) * 100
-				} else if memReq > 0 {
-					m["memoryPercent"] = float64(pm.MemUsage) / float64(memReq) * 100
-				}
-			}
-		}
-		items = append(items, m)
-	}
-	return items
+	return c.podItemsWithMetrics(c.ownedPodObjects(namespace, "Job", jobName))
 }
 
 // GetWorkloadHistory returns the revision history of a StatefulSet or DaemonSet via ControllerRevisions.
