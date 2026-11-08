@@ -49,48 +49,24 @@ func TestCadvisorCollector_PromCanonicalSchema(t *testing.T) {
 		}
 	})
 
-	t.Run("preserves container label including empty string for pod-level rows", func(t *testing.T) {
-		// Fixture has both pod-level (container="") and per-container
-		// (container="nginx") rows for receive_bytes. Both must appear
-		// distinctly so dashboards can filter on container="" for
-		// pod-aggregated views.
-		rxBytes := samplesByName(samples, "container_network_receive_bytes_total")
-		var seenPodLevel, seenContainerLevel bool
-		for _, s := range rxBytes {
-			if s.Labels["pod"] != "nginx-abc123" {
-				continue
+	t.Run("pod rows keep the pause sandbox's empty container label", func(t *testing.T) {
+		// The kubelet reports pod network only for the pause sandbox, with
+		// container="". Readers select on container="" for the pod view.
+		for _, s := range samples {
+			if c, ok := s.Labels["container"]; !ok || c != "" {
+				t.Errorf("%s for %s: container = %q (present %v), want \"\"", s.MetricName, s.Labels["pod"], c, ok)
 			}
-			switch s.Labels["container"] {
-			case "":
-				seenPodLevel = true
-			case "nginx":
-				seenContainerLevel = true
-			}
-		}
-		if !seenPodLevel {
-			t.Error("expected pod-level row with container=\"\" for nginx-abc123")
-		}
-		if !seenContainerLevel {
-			t.Error("expected per-container row with container=\"nginx\" for nginx-abc123")
 		}
 	})
 
-	t.Run("propagates pod_uid when cAdvisor emits it", func(t *testing.T) {
-		s := mustHaveMetric(t, samples, "container_network_receive_bytes_total")
-		// At least one of the matched samples must have pod_uid set
-		// (cAdvisor on real kubelets always emits it for pod rows).
-		any := samplesByName(samples, "container_network_receive_bytes_total")
-		var seen bool
-		for _, sample := range any {
-			if sample.Labels["pod_uid"] != "" {
-				seen = true
-				break
+	t.Run("no pod_uid without a pods cache", func(t *testing.T) {
+		// The kubelet's cAdvisor endpoint carries no pod_uid; this collector
+		// adds one only through WithPodUIDs.
+		for _, s := range samples {
+			if uid, ok := s.Labels["pod_uid"]; ok {
+				t.Errorf("%s for %s carries pod_uid %q", s.MetricName, s.Labels["pod"], uid)
 			}
 		}
-		if !seen {
-			t.Error("expected at least one sample with pod_uid label set")
-		}
-		_ = s
 	})
 
 	t.Run("rows without pod or namespace labels are dropped", func(t *testing.T) {

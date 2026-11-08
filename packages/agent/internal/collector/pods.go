@@ -22,7 +22,12 @@ type PodsCache struct {
 
 	mu      sync.RWMutex
 	entries map[string]podMeta
+	// uids maps namespace/name to the pod's UID, for samples that know the
+	// pod only by name (cAdvisor's).
+	uids map[podKey]string
 }
+
+type podKey struct{ namespace, name string }
 
 type podMeta struct {
 	Namespace    string
@@ -63,6 +68,7 @@ func (c *PodsCache) Refresh(ctx context.Context) error {
 	}
 
 	next := make(map[string]podMeta, len(list.Items))
+	uids := make(map[podKey]string, len(list.Items))
 	for _, p := range list.Items {
 		uid := p.Metadata.UID
 		if uid == "" {
@@ -82,12 +88,25 @@ func (c *PodsCache) Refresh(ctx context.Context) error {
 			}
 		}
 		next[uid] = meta
+		uids[podKey{meta.Namespace, meta.Name}] = uid
 	}
 
 	c.mu.Lock()
 	c.entries = next
+	c.uids = uids
 	c.mu.Unlock()
 	return nil
+}
+
+// UIDFor returns the UID of the pod with this namespace and name, or "" when
+// the cache has not seen it. Safe on a nil cache.
+func (c *PodsCache) UIDFor(namespace, name string) string {
+	if c == nil {
+		return ""
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.uids[podKey{namespace, name}]
 }
 
 // Size returns the number of cached pods. Useful for health logging.
