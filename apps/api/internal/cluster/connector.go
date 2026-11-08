@@ -3195,6 +3195,7 @@ func podToMap(pod *corev1.Pod) map[string]interface{} {
 		"age":             formatAge(pod.CreationTimestamp.Time),
 		"ip":              pod.Status.PodIP,
 		"hostIP":          pod.Status.HostIP,
+		"hostNetwork":     pod.Spec.HostNetwork,
 		"startTime":       startTime,
 		"ownerReferences": ownerRefsToSlice(pod.OwnerReferences),
 		"conditions":      podConditionsToSlice(pod.Status.Conditions),
@@ -3288,6 +3289,7 @@ func deploymentToMap(d *appsv1.Deployment) map[string]interface{} {
 		"annotations":        safeAnnotations(d.Annotations),
 		"selector":           d.Spec.Selector,
 		"strategy":           string(d.Spec.Strategy.Type),
+		"hostNetwork":        d.Spec.Template.Spec.HostNetwork,
 		// paused mirrors Deployment.Spec.Paused so the UI can show
 		// the rollout-paused badge and toggle Pause/Resume rollout
 		// buttons (Tier 2 #5). Same shape as cronjobs' "suspend" field.
@@ -3485,6 +3487,7 @@ func statefulSetToMap(ss *appsv1.StatefulSet) map[string]interface{} {
 		"age":                formatAge(ss.CreationTimestamp.Time),
 		"ownerReferences":    ownerRefsToSlice(ss.OwnerReferences),
 		"containers":         templateContainerSpecs(ss.Spec.Template.Spec.Containers),
+		"hostNetwork":        ss.Spec.Template.Spec.HostNetwork,
 	}
 }
 
@@ -3506,6 +3509,7 @@ func daemonSetToMap(ds *appsv1.DaemonSet) map[string]interface{} {
 		"age":                formatAge(ds.CreationTimestamp.Time),
 		"ownerReferences":    ownerRefsToSlice(ds.OwnerReferences),
 		"containers":         templateContainerSpecs(ds.Spec.Template.Spec.Containers),
+		"hostNetwork":        ds.Spec.Template.Spec.HostNetwork,
 	}
 }
 

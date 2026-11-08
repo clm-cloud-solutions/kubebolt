@@ -46,6 +46,7 @@ import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
 import { useAuth } from '@/contexts/AuthContext'
 import { formatAge, formatCPU, formatMemory } from '@/utils/formatters'
 import type { ResourceItem } from '@/types/kubernetes'
+import { NodeNetworkNote, WorkloadNodeNetworkNote } from './NodeNetworkNote'
 
 // ─── Keys Display ───────────────────────────────────────────────
 
@@ -2531,6 +2532,9 @@ function PodMonitorCharts({ item }: { item: ResourceItem }) {
         />
       </div>
 
+      {item.hostNetwork === true ? (
+        <NodeNetworkNote title="Network traffic" scope="pod" nodeNames={item.nodeName ? [String(item.nodeName)] : []} />
+      ) : (
       <MonitorChart
         title="Network traffic (RX up / TX down)"
         unit="bytes/s"
@@ -2559,6 +2563,7 @@ function PodMonitorCharts({ item }: { item: ResourceItem }) {
         chartType="area"
         height={200}
       />
+      )}
     </div>
   )
 }
@@ -2686,6 +2691,9 @@ function WorkloadMonitorCharts({ item, selector, replicas, kindLabel }: Workload
         />
       </div>
 
+      {item.hostNetwork === true ? (
+        <WorkloadNodeNetworkNote item={item} kindLabel={kindLabel} title={`Network traffic — total across ${replicaLabel}`} />
+      ) : (
       <MonitorChart
         title={`Network traffic — total across ${replicaLabel} (RX up / TX down)`}
         unit="bytes/s"
@@ -2698,6 +2706,7 @@ function WorkloadMonitorCharts({ item, selector, replicas, kindLabel }: Workload
         chartType="area"
         height={200}
       />
+      )}
     </div>
   )
 }
