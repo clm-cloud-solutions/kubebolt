@@ -291,23 +291,29 @@ func (b *promBuilder) cpuRateWindow() time.Duration {
 // pod label but no pod_uid (only the agent's enrichment sets it). Without
 // this filter a cluster running both sources sees doubled rate values.
 func (b *promBuilder) buildCPU() string {
+	// Peak AFTER the sum: the workload's worst moment, not the sum of each
+	// pod's worst moment (which no instant ever produced).
+	return b.peakOverBucket(b.cpuExpr(), peakResolution)
+}
+
+// cpuExpr is the CPU expression buildCPU takes its peaks of: the aggregated
+// rate, before any bucket.
+func (b *promBuilder) cpuExpr() string {
 	if b.isNode() {
 		// Agent's node_cpu_usage_seconds_total has labels {cluster_id, node,
 		// tenant_id} — no pod_uid, no namespace, no container. Different
 		// metric name from node-exporter's `node_cpu_seconds_total` (with
 		// mode=user|system|idle), so no name collision.
-		return b.peakOverBucket(fmt.Sprintf(
+		return fmt.Sprintf(
 			`sum(rate(node_cpu_usage_seconds_total{%s,node=%q}[%s]))`,
 			b.scope(), b.name, promDuration(b.cpuRateWindow()),
-		), peakResolution)
+		)
 	}
 	inner := fmt.Sprintf(
 		`rate(container_cpu_usage_seconds_total{%s,namespace=%q,%s,pod_uid!=""}[%s])`,
 		b.scope(), b.namespace, b.podSelector(), promDuration(b.cpuRateWindow()),
 	)
-	// Peak AFTER the sum: the workload's worst moment, not the sum of each
-	// pod's worst moment (which no instant ever produced).
-	return b.peakOverBucket(b.wrapAggregation(inner), peakResolution)
+	return b.wrapAggregation(inner)
 }
 
 // buildMemory returns the PromQL for working-set memory. Memory is a gauge —
@@ -315,17 +321,48 @@ func (b *promBuilder) buildCPU() string {
 // Node kind drops to a node-level selector — node_memory_working_set_bytes
 // has no equivalent at the container level for nodes themselves.
 func (b *promBuilder) buildMemory() string {
+	return b.peakOverBucket(b.memoryExpr(), peakResolution)
+}
+
+// memoryExpr is the memory expression buildMemory takes its peaks of: the
+// aggregated working set, before any bucket.
+func (b *promBuilder) memoryExpr() string {
 	if b.isNode() {
-		return b.peakOverBucket(fmt.Sprintf(
+		return fmt.Sprintf(
 			`sum(%s)`,
 			b.gaugeSample(fmt.Sprintf(`node_memory_working_set_bytes{%s,node=%q}`, b.scope(), b.name)),
-		), peakResolution)
+		)
 	}
 	inner := b.gaugeSample(fmt.Sprintf(
 		`container_memory_working_set_bytes{%s,namespace=%q,%s,pod_uid!=""}`,
 		b.scope(), b.namespace, b.podSelector(),
 	))
-	return b.peakOverBucket(b.wrapAggregation(inner), peakResolution)
+	return b.wrapAggregation(inner)
+}
+
+// peakAtQuery is the instant query, evaluated at the range's end, for the
+// minute the range's max happened: tmax_over_time over the same per-minute
+// expression the buckets take their peaks of, across `span`.
+//
+// A bucketed point is stamped at the END of its bucket; its peak happened
+// anywhere in the bucket before. Kobi read the stamp as the peak's time and
+// put a 7-day CPU peak at 6 Nov 05:25 when it happened on 5 Nov at 18:14,
+// eleven hours earlier (2026-11-09). False for metrics this does not cover
+// and for unbucketed ranges, whose points carry their own sample's time.
+func (b *promBuilder) peakAtQuery(m MetricKind, span time.Duration) (string, bool) {
+	if b.bucket <= 0 {
+		return "", false
+	}
+	var expr string
+	switch m {
+	case MetricCPU:
+		expr = b.cpuExpr()
+	case MetricMemory:
+		expr = b.memoryExpr()
+	default:
+		return "", false
+	}
+	return fmt.Sprintf(`tmax_over_time(%s[%s:%s])`, expr, promDuration(span), promDuration(peakResolution)), true
 }
 
 // buildFilesystem returns the PromQL for node disk usage as a percentage,
@@ -556,7 +593,11 @@ type metricSummary struct {
 	Min float64 `json:"min"`
 	Avg float64 `json:"avg"`
 	Max float64 `json:"max"`
-	P95 float64 `json:"p95"`
+	// MaxAt is when Max happened, to the minute on a bucketed range, where a
+	// trend point's time is its bucket's end (runMetric). Absent where it is
+	// not known: per-container splits and the node's disk.
+	MaxAt *time.Time `json:"maxAt,omitempty"`
+	P95   float64    `json:"p95"`
 }
 
 // summarize computes min/avg/max/p95 from a point series. Empty input
