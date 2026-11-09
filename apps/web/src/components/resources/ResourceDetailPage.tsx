@@ -47,6 +47,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { formatAge, formatCPU, formatMemory } from '@/utils/formatters'
 import type { ResourceItem } from '@/types/kubernetes'
 import { NodeNetworkNote, WorkloadNodeNetworkNote } from './NodeNetworkNote'
+import { PodsPager, usePodPages } from './WorkloadPodsPages'
 
 // ─── Keys Display ───────────────────────────────────────────────
 
@@ -3296,11 +3297,12 @@ function AgentLockedTile({
 
 function DeploymentPodsTab({ namespace, name }: { namespace: string; name: string }) {
   const { data, isLoading, error } = useDeploymentPods(namespace, name)
+  const pods = data?.items ?? []
+  const pages = usePodPages(pods)
 
   if (isLoading) return <LoadingSpinner />
   if (error) return <ErrorState message={error.message} />
 
-  const pods = data?.items ?? []
   if (pods.length === 0) return <div className="text-sm text-kb-text-tertiary text-center py-12">No pods found</div>
 
   return (
@@ -3320,8 +3322,8 @@ function DeploymentPodsTab({ namespace, name }: { namespace: string; name: strin
           </tr>
         </thead>
         <tbody className="text-kb-text-secondary">
-          {pods.map((pod, i) => (
-            <tr key={i} className="border-t border-kb-border">
+          {pages.pageItems.map((pod, i) => (
+            <tr key={String(pod.name ?? i)} className="border-t border-kb-border">
               <td className="py-2"><ResourceLink name={pod.name} namespace={pod.namespace} resourceType="pods" /></td>
               <td className="py-2">{(() => { const val = String(pod.ready ?? '0/0'); const [r, t] = val.split('/'); return <StatusBadge status={r === t && t !== '0' ? 'Running' : 'Warning'} label={val} /> })()}</td>
               <td className="py-2"><StatusBadge status={pod.status} /></td>
@@ -3346,17 +3348,19 @@ function DeploymentPodsTab({ namespace, name }: { namespace: string; name: strin
           ))}
         </tbody>
       </table>
+      <PodsPager {...pages} />
     </Section>
   )
 }
 
 function StatefulSetPodsTab({ namespace, name }: { namespace: string; name: string }) {
   const { data, isLoading, error } = useStatefulSetPods(namespace, name)
+  const pods = data?.items ?? []
+  const pages = usePodPages(pods)
 
   if (isLoading) return <LoadingSpinner />
   if (error) return <ErrorState message={error.message} />
 
-  const pods = data?.items ?? []
   if (pods.length === 0) return <div className="text-sm text-kb-text-tertiary text-center py-12">No pods found</div>
 
   return (
@@ -3376,8 +3380,8 @@ function StatefulSetPodsTab({ namespace, name }: { namespace: string; name: stri
           </tr>
         </thead>
         <tbody className="text-kb-text-secondary">
-          {pods.map((pod, i) => (
-            <tr key={i} className="border-t border-kb-border">
+          {pages.pageItems.map((pod, i) => (
+            <tr key={String(pod.name ?? i)} className="border-t border-kb-border">
               <td className="py-2"><ResourceLink name={pod.name} namespace={pod.namespace} resourceType="pods" /></td>
               <td className="py-2">{(() => { const val = String(pod.ready ?? '0/0'); const [r, t] = val.split('/'); return <StatusBadge status={r === t && t !== '0' ? 'Running' : 'Warning'} label={val} /> })()}</td>
               <td className="py-2"><StatusBadge status={pod.status} /></td>
@@ -3402,17 +3406,19 @@ function StatefulSetPodsTab({ namespace, name }: { namespace: string; name: stri
           ))}
         </tbody>
       </table>
+      <PodsPager {...pages} />
     </Section>
   )
 }
 
 function DaemonSetPodsTab({ namespace, name }: { namespace: string; name: string }) {
   const { data, isLoading, error } = useDaemonSetPods(namespace, name)
+  const pods = data?.items ?? []
+  const pages = usePodPages(pods)
 
   if (isLoading) return <LoadingSpinner />
   if (error) return <ErrorState message={error.message} />
 
-  const pods = data?.items ?? []
   if (pods.length === 0) return <div className="text-sm text-kb-text-tertiary text-center py-12">No pods found</div>
 
   return (
@@ -3432,8 +3438,8 @@ function DaemonSetPodsTab({ namespace, name }: { namespace: string; name: string
           </tr>
         </thead>
         <tbody className="text-kb-text-secondary">
-          {pods.map((pod, i) => (
-            <tr key={i} className="border-t border-kb-border">
+          {pages.pageItems.map((pod, i) => (
+            <tr key={String(pod.name ?? i)} className="border-t border-kb-border">
               <td className="py-2"><ResourceLink name={pod.name} namespace={pod.namespace} resourceType="pods" /></td>
               <td className="py-2">{(() => { const val = String(pod.ready ?? '0/0'); const [r, t] = val.split('/'); return <StatusBadge status={r === t && t !== '0' ? 'Running' : 'Warning'} label={val} /> })()}</td>
               <td className="py-2"><StatusBadge status={pod.status} /></td>
@@ -3458,17 +3464,19 @@ function DaemonSetPodsTab({ namespace, name }: { namespace: string; name: string
           ))}
         </tbody>
       </table>
+      <PodsPager {...pages} />
     </Section>
   )
 }
 
 function JobPodsTab({ namespace, name }: { namespace: string; name: string }) {
   const { data, isLoading, error } = useJobPods(namespace, name)
+  const pods = data?.items ?? []
+  const pages = usePodPages(pods)
 
   if (isLoading) return <LoadingSpinner />
   if (error) return <ErrorState message={error.message} />
 
-  const pods = data?.items ?? []
   if (pods.length === 0) return <div className="text-sm text-kb-text-tertiary text-center py-12">No pods found</div>
 
   return (
@@ -3486,8 +3494,8 @@ function JobPodsTab({ namespace, name }: { namespace: string; name: string }) {
           </tr>
         </thead>
         <tbody className="text-kb-text-secondary">
-          {pods.map((pod, i) => (
-            <tr key={i} className="border-t border-kb-border">
+          {pages.pageItems.map((pod, i) => (
+            <tr key={String(pod.name ?? i)} className="border-t border-kb-border">
               <td className="py-2"><ResourceLink name={pod.name} namespace={pod.namespace} resourceType="pods" /></td>
               <td className="py-2">
                 {pod.nodeName ? <ResourceLink name={String(pod.nodeName)} resourceType="nodes" /> : '-'}
@@ -3512,6 +3520,7 @@ function JobPodsTab({ namespace, name }: { namespace: string; name: string }) {
           ))}
         </tbody>
       </table>
+      <PodsPager {...pages} />
     </Section>
   )
 }
