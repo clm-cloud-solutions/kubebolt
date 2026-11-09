@@ -185,7 +185,9 @@ const components: Components = {
   em: ({ children }) => <em className="italic text-kobi-text-secondary">{children}</em>,
   del: ({ children }) => <del className="line-through text-kobi-text-tertiary">{children}</del>,
 
-  // Links — open in new tab, accent color
+  // Links — open in new tab, accent color. react-markdown's default
+  // urlTransform already blanks dangerous schemes (javascript:, data:…) on
+  // href, so only http(s)/mailto/tel/relative survive here.
   a: ({ href, children }) => (
     <a
       href={href}
@@ -196,6 +198,23 @@ const components: Components = {
       {children}
     </a>
   ),
+
+  // Images are rendered as text, never fetched. Kobi's answer is text, and an
+  // image in its Markdown comes from content the model read back (a log line, an
+  // annotation, a label, a connector reply), not from a source we control. The
+  // browser would load an <img src> on its own — no interaction, to whatever host
+  // the URL names — so the renderer keeps hold of what it fetches by showing the
+  // reference as inert text: the alt and the URL, never a link and never an
+  // element that loads. The img-src rule in index.html is the backstop.
+  img: ({ src, alt }: any) => {
+    const url = typeof src === 'string' ? src : ''
+    const label = [alt, url].filter(Boolean).join(' — ')
+    return (
+      <span className="text-kobi-text-tertiary text-[13px] italic [overflow-wrap:anywhere]">
+        [image: {label || 'no source'}]
+      </span>
+    )
+  },
 
   // Lists
   ul: ({ children }) => (
