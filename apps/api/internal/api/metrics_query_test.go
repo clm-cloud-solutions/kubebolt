@@ -39,6 +39,19 @@ func TestScopeQueryByCluster(t *testing.T) {
 			in:   `rate(node_network_receive_bytes_total{node="n1"}[1m])`,
 			want: `rate(node_network_receive_bytes_total{` + inj + `,node="n1"}[1m])`,
 		},
+		{
+			// The Monitor tab's long ranges draw each step's peak through a
+			// subquery (peakPerStep in the web's utils/promql.ts): the
+			// [1h:1m] after the closing paren is no selector and stays put.
+			name: "peak per step subquery over a gauge",
+			in:   `max_over_time((sum by (container) (max_over_time(container_memory_working_set_bytes{namespace="ns",pod="p",job="",container!=""}[1m])))[1h:1m])`,
+			want: `max_over_time((sum by (container) (max_over_time(container_memory_working_set_bytes{` + inj + `,namespace="ns",pod="p",job="",container!=""}[1m])))[1h:1m])`,
+		},
+		{
+			name: "peak per step subquery over a rate",
+			in:   `max_over_time((sum(rate(node_cpu_usage_seconds_total{node="n1"}[1m])))[6h:1m])`,
+			want: `max_over_time((sum(rate(node_cpu_usage_seconds_total{` + inj + `,node="n1"}[1m])))[6h:1m])`,
+		},
 
 		// --- pass 2: bare metric references ---------------------------
 		// These are the OverviewPage / NodesPage shapes that previously

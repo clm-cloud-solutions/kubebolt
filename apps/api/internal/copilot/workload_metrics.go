@@ -94,18 +94,21 @@ type metricsRangeSpec struct {
 // a range the product offers but the tool rejects is a dead end the operator
 // reaches through Kobi, which is how 7d surfaced.
 //
-// Every entry is sized so Duration/Step == 12 points. Bucket is set only where
-// it adds information: below 1h the step is at or under the rate window, so a
-// bucket would cover the same samples the rate already smooths.
+// Every entry is sized so Duration/Step == 12 points. Every step longer than
+// a minute is bucketed (Bucket == Step), the rule the Monitor charts follow
+// (PEAK_MIN_STEP_SECONDS in MetricChart.tsx): an hour's 5-minute step read
+// memory at one instant every five minutes, and a burst between two of them
+// was missing from a max the chart showed. Only 5m, whose 25-second step is
+// already near the raw samples, reads its instants.
 var metricsRangeTable = map[string]metricsRangeSpec{
 	"5m":  {Step: 25 * time.Second, RateWindow: 1 * time.Minute, Duration: 5 * time.Minute},
-	"15m": {Step: 75 * time.Second, RateWindow: 1 * time.Minute, Duration: 15 * time.Minute},
-	"1h":  {Step: 5 * time.Minute, RateWindow: 5 * time.Minute, Duration: 1 * time.Hour},
+	"15m": {Step: 75 * time.Second, RateWindow: 1 * time.Minute, Duration: 15 * time.Minute, Bucket: 75 * time.Second},
+	"1h":  {Step: 5 * time.Minute, RateWindow: 5 * time.Minute, Duration: 1 * time.Hour, Bucket: 5 * time.Minute},
 	"6h":  {Step: 30 * time.Minute, RateWindow: 5 * time.Minute, Duration: 6 * time.Hour, Bucket: 30 * time.Minute},
 	"24h": {Step: 2 * time.Hour, RateWindow: 15 * time.Minute, Duration: 24 * time.Hour, Bucket: 2 * time.Hour},
-	// History ranges. The rate window grows with the bucket so the CPU subquery
-	// stays around 60 inner evaluations per point — bounded work regardless of
-	// how wide the window gets.
+	// History ranges. The rate window grows with the bucket: it is what network
+	// rates average over and how often the disk's peak is sampled. CPU and
+	// memory search their peak every minute instead (peakResolution).
 	"7d":  {Step: 14 * time.Hour, RateWindow: 15 * time.Minute, Duration: 7 * 24 * time.Hour, Bucket: 14 * time.Hour},
 	"14d": {Step: 28 * time.Hour, RateWindow: 30 * time.Minute, Duration: 14 * 24 * time.Hour, Bucket: 28 * time.Hour},
 	"30d": {Step: 60 * time.Hour, RateWindow: 1 * time.Hour, Duration: 30 * 24 * time.Hour, Bucket: 60 * time.Hour},
@@ -219,27 +222,53 @@ func (b *promBuilder) scope() string {
 // noClusterUIDSentinel mirrors api.noClusterUIDSentinel: never a real UID.
 const noClusterUIDSentinel = "__kubebolt_no_uid__"
 
+// peakResolution is how finely CPU and memory peaks are searched inside each
+// bucket: once a minute, over the CPU rate of that minute (cpuRateWindow) or
+// each memory series' highest sample of that minute (gaugeSample), so every
+// raw sample counts. The Monitor charts search the same way (peakPerStep in
+// the web's utils/promql.ts), so Kobi and the chart report the same max.
+// 30 days are 43,200 inner evaluations per series, under VictoriaMetrics'
+// 100,000 per-series subquery limit.
+const peakResolution = time.Minute
+
 // peakOverBucket makes a point the maximum its step saw, rather than the value
-// at the step's timestamp.
+// at the step's timestamp: a subquery evaluated every `resolution` inside the
+// bucket, keeping the highest value.
 //
-// Two shapes, because PromQL needs them:
-//   - a gauge (memory) takes a plain range: max_over_time(expr[bucket])
-//   - anything already carrying a range selector (rate(...)) needs a SUBQUERY,
-//     max_over_time(rate(...)[bucket:resolution]), because a range vector
-//     cannot be nested directly.
-//
-// The subquery resolution is the rate window, which the range table grows
-// alongside the bucket — that is what keeps the inner evaluation count near 60
-// per point instead of scaling with the window. A 30d CPU query is ~720 inner
-// evaluations over one already-summed series, not a walk of the raw month.
-func (b *promBuilder) peakOverBucket(expr string, isRange bool) string {
+// The resolution is always explicit. Memory used to take
+// max_over_time(sum(x)[bucket]), read as a plain range. It is not one: over
+// an aggregation, MetricsQL makes it a subquery whose resolution defaults to
+// the query STEP, which here is the bucket — one sample per bucket, not its
+// peak. On 2026-11-09 Kobi answered 85 MiB as the 7-day max of
+// kyverno-cleanup-controller while the Monitor chart showed 127 MiB, a MiB
+// under its limit (VictoriaMetrics v1.155: 85.0 with the old query, 126.7
+// with this one). CPU searched its peak among 15-minute averages at 7 days
+// and read lower than the chart for the same reason in a milder form.
+func (b *promBuilder) peakOverBucket(expr string, resolution time.Duration) string {
 	if b.bucket <= 0 {
 		return expr
 	}
-	if isRange {
-		return fmt.Sprintf(`max_over_time(%s[%s:%s])`, expr, promDuration(b.bucket), promDuration(b.rateWindow))
+	return fmt.Sprintf(`max_over_time(%s[%s:%s])`, expr, promDuration(b.bucket), promDuration(resolution))
+}
+
+// gaugeSample reads a gauge selector for peakOverBucket: on a bucketed range,
+// each series' highest sample of the minute, so a spike between two of the
+// subquery's evaluations still counts. Unbucketed ranges keep the selector.
+func (b *promBuilder) gaugeSample(selector string) string {
+	if b.bucket <= 0 {
+		return selector
 	}
-	return fmt.Sprintf(`max_over_time(%s[%s])`, expr, promDuration(b.bucket))
+	return fmt.Sprintf(`max_over_time(%s[%s])`, selector, promDuration(peakResolution))
+}
+
+// cpuRateWindow is the window of the CPU rate: on a bucketed range, the rate
+// of each minute, so the peak is the busiest minute (as on the Monitor
+// chart); unbucketed ranges keep the table's window.
+func (b *promBuilder) cpuRateWindow() time.Duration {
+	if b.bucket > 0 {
+		return peakResolution
+	}
+	return b.rateWindow
 }
 
 // buildCPU returns the PromQL for the CPU range query. Uses the regex
@@ -262,23 +291,29 @@ func (b *promBuilder) peakOverBucket(expr string, isRange bool) string {
 // pod label but no pod_uid (only the agent's enrichment sets it). Without
 // this filter a cluster running both sources sees doubled rate values.
 func (b *promBuilder) buildCPU() string {
+	// Peak AFTER the sum: the workload's worst moment, not the sum of each
+	// pod's worst moment (which no instant ever produced).
+	return b.peakOverBucket(b.cpuExpr(), peakResolution)
+}
+
+// cpuExpr is the CPU expression buildCPU takes its peaks of: the aggregated
+// rate, before any bucket.
+func (b *promBuilder) cpuExpr() string {
 	if b.isNode() {
 		// Agent's node_cpu_usage_seconds_total has labels {cluster_id, node,
 		// tenant_id} — no pod_uid, no namespace, no container. Different
 		// metric name from node-exporter's `node_cpu_seconds_total` (with
 		// mode=user|system|idle), so no name collision.
-		return b.peakOverBucket(fmt.Sprintf(
+		return fmt.Sprintf(
 			`sum(rate(node_cpu_usage_seconds_total{%s,node=%q}[%s]))`,
-			b.scope(), b.name, promDuration(b.rateWindow),
-		), true)
+			b.scope(), b.name, promDuration(b.cpuRateWindow()),
+		)
 	}
 	inner := fmt.Sprintf(
 		`rate(container_cpu_usage_seconds_total{%s,namespace=%q,%s,pod_uid!=""}[%s])`,
-		b.scope(), b.namespace, b.podSelector(), promDuration(b.rateWindow),
+		b.scope(), b.namespace, b.podSelector(), promDuration(b.cpuRateWindow()),
 	)
-	// Peak AFTER the sum: the workload's worst moment, not the sum of each
-	// pod's worst moment (which no instant ever produced).
-	return b.peakOverBucket(b.wrapAggregation(inner), true)
+	return b.wrapAggregation(inner)
 }
 
 // buildMemory returns the PromQL for working-set memory. Memory is a gauge —
@@ -286,17 +321,48 @@ func (b *promBuilder) buildCPU() string {
 // Node kind drops to a node-level selector — node_memory_working_set_bytes
 // has no equivalent at the container level for nodes themselves.
 func (b *promBuilder) buildMemory() string {
+	return b.peakOverBucket(b.memoryExpr(), peakResolution)
+}
+
+// memoryExpr is the memory expression buildMemory takes its peaks of: the
+// aggregated working set, before any bucket.
+func (b *promBuilder) memoryExpr() string {
 	if b.isNode() {
-		return b.peakOverBucket(fmt.Sprintf(
-			`sum(node_memory_working_set_bytes{%s,node=%q})`,
-			b.scope(), b.name,
-		), false)
+		return fmt.Sprintf(
+			`sum(%s)`,
+			b.gaugeSample(fmt.Sprintf(`node_memory_working_set_bytes{%s,node=%q}`, b.scope(), b.name)),
+		)
 	}
-	inner := fmt.Sprintf(
+	inner := b.gaugeSample(fmt.Sprintf(
 		`container_memory_working_set_bytes{%s,namespace=%q,%s,pod_uid!=""}`,
 		b.scope(), b.namespace, b.podSelector(),
-	)
-	return b.peakOverBucket(b.wrapAggregation(inner), false)
+	))
+	return b.wrapAggregation(inner)
+}
+
+// peakAtQuery is the instant query, evaluated at the range's end, for the
+// minute the range's max happened: tmax_over_time over the same per-minute
+// expression the buckets take their peaks of, across `span`.
+//
+// A bucketed point is stamped at the END of its bucket; its peak happened
+// anywhere in the bucket before. Kobi read the stamp as the peak's time and
+// put a 7-day CPU peak at 6 Nov 05:25 when it happened on 5 Nov at 18:14,
+// eleven hours earlier (2026-11-09). False for metrics this does not cover
+// and for unbucketed ranges, whose points carry their own sample's time.
+func (b *promBuilder) peakAtQuery(m MetricKind, span time.Duration) (string, bool) {
+	if b.bucket <= 0 {
+		return "", false
+	}
+	var expr string
+	switch m {
+	case MetricCPU:
+		expr = b.cpuExpr()
+	case MetricMemory:
+		expr = b.memoryExpr()
+	default:
+		return "", false
+	}
+	return fmt.Sprintf(`tmax_over_time(%s[%s:%s])`, expr, promDuration(span), promDuration(peakResolution)), true
 }
 
 // buildFilesystem returns the PromQL for node disk usage as a percentage,
@@ -332,7 +398,7 @@ func (b *promBuilder) buildFilesystem() string {
 	// fill that made kubelet evict falls between two points and the trend reads
 	// calm — while the response tells the model each point is a peak.
 	// max_over_time keeps the mountpoint label, so the split survives.
-	return b.peakOverBucket("("+primary+" or "+fallback+")", true)
+	return b.peakOverBucket("("+primary+" or "+fallback+")", b.rateWindow)
 }
 
 // isNode is a small helper to keep the kind check terse where it appears
@@ -527,7 +593,11 @@ type metricSummary struct {
 	Min float64 `json:"min"`
 	Avg float64 `json:"avg"`
 	Max float64 `json:"max"`
-	P95 float64 `json:"p95"`
+	// MaxAt is when Max happened, to the minute on a bucketed range, where a
+	// trend point's time is its bucket's end (runMetric). Absent where it is
+	// not known: per-container splits and the node's disk.
+	MaxAt *time.Time `json:"maxAt,omitempty"`
+	P95   float64    `json:"p95"`
 }
 
 // summarize computes min/avg/max/p95 from a point series. Empty input

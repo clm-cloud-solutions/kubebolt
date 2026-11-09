@@ -388,6 +388,13 @@ const readyGrace = 2 * time.Minute
 // crash loop — each kill resets StartedAt, so the run never accumulates the
 // grace while the loop is running.
 func containerRecovered(cs *corev1.ContainerStatus, since time.Time) bool {
+	return containerRecoveredAfter(cs, since, readyGrace)
+}
+
+// containerRecoveredAfter is containerRecovered with the run's required length
+// spelled out, for a failure whose own recurrence says two minutes prove
+// nothing (oomRecurrence).
+func containerRecoveredAfter(cs *corev1.ContainerStatus, since time.Time, grace time.Duration) bool {
 	if cs == nil || cs.State.Running == nil || !cs.Ready {
 		return false
 	}
@@ -395,7 +402,7 @@ func containerRecovered(cs *corev1.ContainerStatus, since time.Time) bool {
 	if started.IsZero() || started.Before(since) {
 		return false
 	}
-	return time.Since(started) >= readyGrace
+	return time.Since(started) >= grace
 }
 
 // eventLastOccurrence returns the most recent moment an Event was observed.
@@ -565,35 +572,120 @@ func evictionByNodePressure(message string) bool {
 
 // 2. OOMKilled
 func oomKilledRule() Rule {
+	recurrence := newOOMRecurrence()
 	return Rule{
 		ID:       "oom-killed",
 		Name:     "OOMKilled Detection",
 		Severity: "critical",
 		Evaluate: func(state *ClusterState) []models.Insight {
 			var insights []models.Insight
+			present := map[string]bool{}
 			for _, pod := range state.Pods {
 				for i := range pod.Status.ContainerStatuses {
 					cs := &pod.Status.ContainerStatuses[i]
+					key := pod.Namespace + "/" + pod.Name + "/" + cs.Name
+					present[key] = true
 					// LastTerminationState is sticky — it survives a healthy restart —
 					// so it can only ARM this rule, never keep it alive. What clears it
-					// is evidence: the replacement run holding Ready for readyGrace.
-					// (Previously a 30-min clock, which asserted a broken workload for
-					// half an hour after it recovered.)
+					// is evidence: the replacement run holding Ready for long enough —
+					// readyGrace, or longer than the container used to survive between
+					// two OOM kills (oomRecurrence). (Previously a 30-min clock, which
+					// asserted a broken workload for half an hour after it recovered.)
 					term := cs.LastTerminationState.Terminated
-					if term != nil && term.Reason == "OOMKilled" &&
-						!containerRecovered(cs, term.FinishedAt.Time) {
-						message, suggestion, ev := oomText(pod, cs, term)
-						insights = append(insights, newInsight(
-							"critical",
-							fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
-							"Container OOMKilled",
-							message, suggestion, ev...,
-						))
+					if term == nil || term.Reason != "OOMKilled" {
+						continue
 					}
+					grace, previous := recurrence.observe(key, term.FinishedAt.Time)
+					if containerRecoveredAfter(cs, term.FinishedAt.Time, grace) {
+						continue
+					}
+					message, suggestion, ev := oomText(pod, cs, term)
+					if !previous.IsZero() {
+						interval := term.FinishedAt.Time.Sub(previous)
+						message += fmt.Sprintf(" It was also OOMKilled %s before that, so this stays open until the new run lasts longer than %s (at most %s).",
+							humanAge(interval), humanAge(interval), humanAge(maxOOMRecurrenceGrace))
+						at := previous
+						ev = append(ev, models.Evidence{
+							Kind: models.EvidenceEvent, Label: "Previous OOM kill", Detail: humanAge(interval) + " before the last one",
+							Source: "kubebolt: an earlier lastState.terminated of this container", At: &at,
+						})
+					}
+					insights = append(insights, newInsight(
+						"critical",
+						fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
+						"Container OOMKilled",
+						message, suggestion, ev...,
+					))
 				}
 			}
+			recurrence.forget(present)
 			return insights
 		},
+	}
+}
+
+// maxOOMRecurrenceGrace bounds how long a recurring OOM keeps its insight open
+// once the container runs again: past a day of health the next kill is a new
+// episode, whatever the interval before.
+const maxOOMRecurrenceGrace = 24 * time.Hour
+
+// oomRecurrence remembers the last two OOM kills this engine has seen in each
+// container, so a recurring OOM is not declared over between kills.
+//
+// readyGrace is sized for loops that kill every few seconds, a liveness probe's:
+// two minutes of health outlast their period, so a live loop never clears. An
+// OOM recurs on another scale: the memory grows for hours, or a daily or
+// monthly batch pushes it over. A container that dies every six hours holds
+// Ready for two minutes after each kill and cleared every time, so the insight
+// lived two minutes per kill and the History filled with "recovered" episodes
+// of one ongoing problem (two services of a production cluster, 2026-11). The
+// evidence that it recovered is the same as for every rule, a healthy run, but
+// measured against its own recurrence: longer than the interval between its
+// last two kills, at least readyGrace, at most maxOOMRecurrenceGrace.
+//
+// Memory, not the pod: Kubernetes keeps only the last termination. An API
+// restart forgets the earlier kill and the container falls back to readyGrace
+// until it is killed again. Keyed by pod and container: a replaced pod starts
+// with no termination on record, so a fix rolled out clears at once.
+type oomRecurrence struct {
+	mu    sync.Mutex
+	kills map[string][2]time.Time // previous, last
+}
+
+func newOOMRecurrence() *oomRecurrence { return &oomRecurrence{kills: map[string][2]time.Time{}} }
+
+// observe records an OOM kill of the container and answers how long its next
+// run has to hold Ready to supersede it, and the kill before it (zero if none
+// was seen).
+func (r *oomRecurrence) observe(key string, killed time.Time) (time.Duration, time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	k := r.kills[key]
+	if killed.After(k[1]) {
+		k = [2]time.Time{k[1], killed}
+		r.kills[key] = k
+	}
+	if k[0].IsZero() || !k[1].Equal(killed) {
+		return readyGrace, time.Time{}
+	}
+	grace := k[1].Sub(k[0])
+	if grace < readyGrace {
+		grace = readyGrace
+	}
+	if grace > maxOOMRecurrenceGrace {
+		grace = maxOOMRecurrenceGrace
+	}
+	return grace, k[0]
+}
+
+// forget drops the containers that are gone from the cluster.
+func (r *oomRecurrence) forget(present map[string]bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for k := range r.kills {
+		if !present[k] {
+			delete(r.kills, k)
+		}
 	}
 }
 
@@ -836,7 +928,8 @@ func zeroReplicasRule() Rule {
 		Evaluate: func(state *ClusterState) []models.Insight {
 			var insights []models.Insight
 			for _, d := range state.Deployments {
-				if d.Spec.Replicas != nil && *d.Spec.Replicas > 0 && d.Status.AvailableReplicas == 0 {
+				if d.Spec.Replicas != nil && *d.Spec.Replicas > 0 && d.Status.AvailableReplicas == 0 &&
+					!firstRolloutInProgress(d) {
 					insights = append(insights, newInsight(
 						"critical",
 						fmt.Sprintf("Deployment/%s/%s", d.Namespace, d.Name),
@@ -850,6 +943,71 @@ func zeroReplicasRule() Rule {
 			return insights
 		},
 	}
+}
+
+// bornTolerance is how far after a Deployment's creation the controller's
+// first write of its Available condition may land and still count as that
+// first write: the creation stamp comes from the API server and the condition
+// from the controller manager, a sync and a clock apart.
+const bornTolerance = time.Minute
+
+// newReplicaSetAvailableReason is the Progressing reason the Deployment
+// controller writes when a rollout completes (NewRSAvailableReason in
+// k8s.io/kubernetes/pkg/controller/deployment/util, not importable here).
+const newReplicaSetAvailableReason = "NewReplicaSetAvailable"
+
+// firstRolloutInProgress reports a Deployment that has never been available
+// and whose controller still reports it progressing: its first pods are
+// starting. Zero available replicas is its normal state for the seconds that
+// takes, not an outage. KubeBolt's own install opened a critical insight on
+// its OpenCost Deployment this way, resolved by itself a minute later.
+//
+// The controller bounds the wait, not a clock of ours: past
+// spec.progressDeadlineSeconds (600 s by default) it sets Progressing to False
+// (ProgressDeadlineExceeded) and the insight fires, next to
+// progress-deadline-exceeded. Until then the pods' own rules (crash-loop,
+// image-pull-backoff, pending) speak for a first rollout that is failing, and
+// a ReplicaFailure (a quota refusing the pods) fires at once: that is no
+// rollout in progress.
+//
+// "Never been available" takes two readings of the controller's conditions,
+// verified on a kind cluster. Progressing carries NewReplicaSetAvailable once
+// a rollout has completed, and keeps it when the pods are lost afterwards. And
+// Available, written False on the first sync in the Deployment's creation
+// second, moves its lastTransitionTime only on a change: a False that last
+// changed at birth has never been True. A Deployment that was available and
+// lost every pod (its only replica deleted, an eviction) fails one reading or
+// the other and still fires: that is an outage.
+func firstRolloutInProgress(d *appsv1.Deployment) bool {
+	if d.Spec.Paused || d.CreationTimestamp.IsZero() {
+		return false
+	}
+	var available *appsv1.DeploymentCondition
+	for i := range d.Status.Conditions {
+		c := &d.Status.Conditions[i]
+		switch c.Type {
+		case appsv1.DeploymentReplicaFailure:
+			if c.Status == corev1.ConditionTrue {
+				return false
+			}
+		case appsv1.DeploymentProgressing:
+			if c.Status == corev1.ConditionFalse || c.Reason == newReplicaSetAvailableReason {
+				return false
+			}
+		case appsv1.DeploymentAvailable:
+			available = c
+		}
+	}
+	if available == nil {
+		// Not synced yet: the object is seconds old. One that stays unsynced
+		// past bornTolerance has no controller working on it, and its zero
+		// stands.
+		return time.Since(d.CreationTimestamp.Time) < bornTolerance
+	}
+	if available.Status == corev1.ConditionTrue {
+		return false
+	}
+	return !available.LastTransitionTime.After(d.CreationTimestamp.Add(bornTolerance))
 }
 
 // progressDeadlineExceededRule — a Deployment stopped making progress. The

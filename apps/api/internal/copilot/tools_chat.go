@@ -41,7 +41,7 @@ var chatDescriptions = map[string]string{
 		"get_insight_episodes or the insight the operator opened.",
 
 	"get_workload_metrics": "Get CPU, memory, network or node-disk usage of a workload, pod or node over " +
-		"a time range: {min, avg, max, p95} and a ~12-point sparkline per metric. With cpu or memory it " +
+		"a time range: {min, avg, max, p95, and maxAt — when the max happened} and a ~12-point sparkline per metric. With cpu or memory it " +
 		"also returns the current bounds and utilizationPercent — of requests/limits for a pod or " +
 		"workload, of allocatable/capacity for a node. metric=filesystem is node-only (% of the node's " +
 		"disk per mountpoint) and refused for a pod or workload. Pod disk IO and PVC fill are not here: " +

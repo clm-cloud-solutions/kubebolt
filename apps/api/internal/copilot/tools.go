@@ -710,7 +710,7 @@ func ToolDefinitions() []ToolDefinition {
 		{
 			Name: "get_workload_metrics",
 			Description: "Query CPU, memory, and network metrics for a workload, pod, OR node — and a node's disk fill — over a time " +
-				"range. Returns a compact summary {min, avg, max, p95} plus a downsampled sparkline " +
+				"range. Returns a compact summary {min, avg, max, p95, and maxAt — when the max happened} plus a downsampled sparkline " +
 				"(~12 points) per requested metric. When CPU or memory is requested, also returns the " +
 				"target's current resource bounds and a derived utilizationPercent — for workloads/pods " +
 				"that's requests/limits from KSM; for nodes it's allocatable (\"request\") and capacity " +

@@ -120,6 +120,16 @@ each author applied it or not.
   Ready, and has held that for `readyGrace` (2 min). Anchored on `State.Running.StartedAt`,
   which every kubelet kill resets, so a live loop can never accumulate the grace. No false
   negatives.
+- **`oomRecurrence`** (2026-11-09) — `oom-killed` measures the healthy run against the
+  container's own recurrence: once this engine has seen two OOM kills in a container, the run
+  after the last one must outlast the interval between them (at least `readyGrace`, at most
+  24 h) before the insight clears. `readyGrace` is sized for loops that kill every few
+  seconds; an OOM recurs over hours or days (memory that grows, a daily or monthly batch), so
+  two minutes of health proved nothing and a container that died every six hours showed up as
+  a string of two-minute "recovered" episodes of one ongoing problem (two services of a
+  production cluster). It is still evidence, a healthy run, just a long enough one. The earlier
+  kill lives in memory (Kubernetes keeps only the last termination): an API restart forgets it
+  and the container falls back to `readyGrace` until its next kill.
 - **`eventLastOccurrence(ev)`** — `Series.LastObservedTime` → `LastTimestamp` → `EventTime`
   → `FirstTimestamp`. Distributions differ on which they populate; reading the wrong one
   yields a zero time and would make every event look ancient.
