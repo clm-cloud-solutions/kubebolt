@@ -3,6 +3,15 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <!-- Content-Security-Policy: images load only from our own origin, data: and
+       blob:. The chat renders Markdown that can include text the assistant read
+       back from the cluster; images are rendered as text, and this header keeps
+       the browser from fetching an external image if one ever reaches the DOM.
+       Scoped to img-src on purpose: no default-src, so scripts, styles, fonts,
+       the API and WebSockets are untouched and Vite HMR keeps working in dev. -->
+  <meta http-equiv="Content-Security-Policy" content="img-src 'self' data: blob:" />
+
   <title>KubeBolt - Open-source Kubernetes operations</title>
   <meta name="description" content="KubeBolt is the open-source Kubernetes operations platform: health, topology, operations, cost and security in one place, with Kobi, an AI SRE that acts only when you approve." />
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
