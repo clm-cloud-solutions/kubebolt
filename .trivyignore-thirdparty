@@ -17,7 +17,7 @@
 # Format:
 #   CVE-YYYY-NNNNN  # YYYY-MM-DD <owner> — justification + remove-by date
 
-# No entries. The Go stdlib waivers for victoria-metrics / vmagent
+# VictoriaMetrics / vmagent — no active entries. The Go stdlib waivers for victoria-metrics / vmagent
 # v1.148.0-scratch (8 CVEs, remove-by 2026-09-15) were closed on 2026-09-28 by
 # moving the pin to v1.153.0-scratch, built on Go 1.27.1: Trivy reports 0
 # CRITICAL/HIGH on both images. The pin lives in deploy/helm/kubebolt/values.yaml,
@@ -49,3 +49,20 @@
 # 2026-10-27: 2.5.0 moves the three pins to the v1.155.0-scratch final (released
 # 2026-10-26, Go 1.27.3): 0 CRITICAL/HIGH on both images with the Trivy DB of
 # 2026-10-27. The CVE-2026-111943 waiver is removed.
+
+# 2026-11-09: the Azure MCP Server sidecar is a third-party image too — this file
+# and the release preflight also gate it. The pin in deploy/helm/kubebolt/values.yaml,
+# azure-mcp 3.0.0-beta.46, is built on Alpine 3.24.2, which the Trivy DB refresh of
+# 2026-11-09 flagged for two HIGH OS-package CVEs: CVE-2026-107891 (musl, fixed in
+# 1.2.6-r3) and CVE-2026-85091 (zlib, fixed in 1.3.2-r1). This is Microsoft's
+# published image; we do not build it, so the binary can only be waited out or the
+# pin moved. The whole 3.0.0 line is still on Alpine 3.24.2 (beta.50 included); the
+# fix landed only on the new 4.0.0 line (Alpine 3.24.3, 0 CRITICAL/HIGH), a
+# major-version jump that renames the sidecar's command surface and so needs
+# azureSidecarNamespaces() and azmcpVersion re-reviewed before the pin can move.
+# Until then the sidecar runs loopback-only, with a read-only root filesystem and no
+# ServiceAccount token, so neither the musl regcomp overflow nor the zlib gz_vacate
+# overflow is reachable in its use. Move the pin to the reviewed 4.0.0 image and
+# delete both entries.
+CVE-2026-107891  # 2026-11-09 lmaina — azure-mcp 3.0.0-beta.46 Alpine musl; see note above. Remove-by 2026-11-23
+CVE-2026-85091   # 2026-11-09 lmaina — azure-mcp 3.0.0-beta.46 Alpine zlib; see note above. Remove-by 2026-11-23

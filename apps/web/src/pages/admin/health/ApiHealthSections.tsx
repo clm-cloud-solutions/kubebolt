@@ -351,6 +351,58 @@ export function JobsTable({ rangeMinutes }: { rangeMinutes: number }) {
 
 // ─── Calls to VictoriaMetrics ───────────────────────────────────────────
 
+// What VictoriaMetrics does with the rows it receives, measured by itself
+// (-selfScrapeInterval). Each panel shows a failure the API's calls cannot:
+// every write that carried those rows still succeeded.
+const VM_SELF = 'job="victoria-metrics"'
+// VictoriaMetrics' own alert rules flag slow inserts above this share.
+const SLOW_INSERTS_ALERT_PCT = 5
+
+export function VMWritePathCharts({ charts, perInterval }: Omit<SectionCharts, 'perPoint'>) {
+  return (
+    <>
+      <MetricChart
+        {...charts}
+        title="Slow inserts"
+        unit="percent"
+        chartType="line"
+        accents={['#06b6d4']}
+        query={`100 * sum(rate(vm_slow_row_inserts_total{${VM_SELF}}[5m])) / sum(rate(vm_rows_added_to_storage_total{${VM_SELF}}[5m]))`}
+        seriesLabel={() => 'slow inserts'}
+        referenceLines={[{ y: SLOW_INSERTS_ALERT_PCT, label: `alert ${SLOW_INSERTS_ALERT_PCT}%`, shortLabel: 'alert', color: '#f59e0b' }]}
+        emptyMessage="VictoriaMetrics is not reporting on itself."
+        emptyHint="Rows whose series was not in its cache and had to be looked up in the index. Near 0 when healthy, and a burst of new series lifts it for a minute. Above 5% for long, the cache is too small or the same series arrives in changing forms."
+        footnote={'vm_slow_row_inserts_total / vm_rows_added_to_storage_total{job="victoria-metrics"}'}
+      />
+      <MetricChart
+        {...charts}
+        title="New series per minute"
+        unit="count"
+        chartType="line"
+        accents={['#3b82f6']}
+        query={`sum(rate(vm_new_timeseries_created_total{${VM_SELF}}[5m])) * 60`}
+        seriesLabel={() => 'new series/min'}
+        emptyMessage="VictoriaMetrics is not reporting on itself."
+        emptyHint="Each new series costs index and memory. Rollouts, restarting pods and labels whose values keep changing push it up; a rise that does not come back down is churn worth finding."
+        footnote={'vm_new_timeseries_created_total{job="victoria-metrics"}'}
+      />
+      <MetricChart
+        {...charts}
+        sparse
+        title="Rows dropped by VictoriaMetrics"
+        unit="count"
+        chartType="bar"
+        query={`${inInterval(`vm_rows_ignored_total{${VM_SELF}}`, 'reason')} > 0`}
+        seriesLabel={(l) => human(l.reason ?? 'dropped')}
+        accents={FAILURE_PALETTE}
+        emptyMessage="VictoriaMetrics dropped no rows in this window."
+        emptyHint="Rows it refuses to store: more labels than -maxLabelsPerTimeseries (60 in the bundled chart and compose file), a label value longer than -maxLabelValueLen, a timestamp outside the retention. The write that carried them still succeeds, so no failed call shows the loss."
+        footnote={`vm_rows_ignored_total by (reason) · ${perInterval}`}
+      />
+    </>
+  )
+}
+
 export function VMCallsCharts({ charts, perInterval, perPoint }: SectionCharts) {
   return (
     <>
