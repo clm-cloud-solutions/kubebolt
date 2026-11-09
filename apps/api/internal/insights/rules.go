@@ -836,7 +836,8 @@ func zeroReplicasRule() Rule {
 		Evaluate: func(state *ClusterState) []models.Insight {
 			var insights []models.Insight
 			for _, d := range state.Deployments {
-				if d.Spec.Replicas != nil && *d.Spec.Replicas > 0 && d.Status.AvailableReplicas == 0 {
+				if d.Spec.Replicas != nil && *d.Spec.Replicas > 0 && d.Status.AvailableReplicas == 0 &&
+					!firstRolloutInProgress(d) {
 					insights = append(insights, newInsight(
 						"critical",
 						fmt.Sprintf("Deployment/%s/%s", d.Namespace, d.Name),
@@ -850,6 +851,71 @@ func zeroReplicasRule() Rule {
 			return insights
 		},
 	}
+}
+
+// bornTolerance is how far after a Deployment's creation the controller's
+// first write of its Available condition may land and still count as that
+// first write: the creation stamp comes from the API server and the condition
+// from the controller manager, a sync and a clock apart.
+const bornTolerance = time.Minute
+
+// newReplicaSetAvailableReason is the Progressing reason the Deployment
+// controller writes when a rollout completes (NewRSAvailableReason in
+// k8s.io/kubernetes/pkg/controller/deployment/util, not importable here).
+const newReplicaSetAvailableReason = "NewReplicaSetAvailable"
+
+// firstRolloutInProgress reports a Deployment that has never been available
+// and whose controller still reports it progressing: its first pods are
+// starting. Zero available replicas is its normal state for the seconds that
+// takes, not an outage. KubeBolt's own install opened a critical insight on
+// its OpenCost Deployment this way, resolved by itself a minute later.
+//
+// The controller bounds the wait, not a clock of ours: past
+// spec.progressDeadlineSeconds (600 s by default) it sets Progressing to False
+// (ProgressDeadlineExceeded) and the insight fires, next to
+// progress-deadline-exceeded. Until then the pods' own rules (crash-loop,
+// image-pull-backoff, pending) speak for a first rollout that is failing, and
+// a ReplicaFailure (a quota refusing the pods) fires at once: that is no
+// rollout in progress.
+//
+// "Never been available" takes two readings of the controller's conditions,
+// verified on a kind cluster. Progressing carries NewReplicaSetAvailable once
+// a rollout has completed, and keeps it when the pods are lost afterwards. And
+// Available, written False on the first sync in the Deployment's creation
+// second, moves its lastTransitionTime only on a change: a False that last
+// changed at birth has never been True. A Deployment that was available and
+// lost every pod (its only replica deleted, an eviction) fails one reading or
+// the other and still fires: that is an outage.
+func firstRolloutInProgress(d *appsv1.Deployment) bool {
+	if d.Spec.Paused || d.CreationTimestamp.IsZero() {
+		return false
+	}
+	var available *appsv1.DeploymentCondition
+	for i := range d.Status.Conditions {
+		c := &d.Status.Conditions[i]
+		switch c.Type {
+		case appsv1.DeploymentReplicaFailure:
+			if c.Status == corev1.ConditionTrue {
+				return false
+			}
+		case appsv1.DeploymentProgressing:
+			if c.Status == corev1.ConditionFalse || c.Reason == newReplicaSetAvailableReason {
+				return false
+			}
+		case appsv1.DeploymentAvailable:
+			available = c
+		}
+	}
+	if available == nil {
+		// Not synced yet: the object is seconds old. One that stays unsynced
+		// past bornTolerance has no controller working on it, and its zero
+		// stands.
+		return time.Since(d.CreationTimestamp.Time) < bornTolerance
+	}
+	if available.Status == corev1.ConditionTrue {
+		return false
+	}
+	return !available.LastTransitionTime.After(d.CreationTimestamp.Add(bornTolerance))
 }
 
 // progressDeadlineExceededRule — a Deployment stopped making progress. The
