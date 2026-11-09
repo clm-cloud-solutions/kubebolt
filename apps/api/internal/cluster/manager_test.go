@@ -95,6 +95,27 @@ func TestManager_IsAgentProxyCluster(t *testing.T) {
 	}
 }
 
+// Finding #72: switching to a metrics-only cluster must succeed. switchCluster
+// had no metrics-only branch, so it fell through to the connector-spin path,
+// which reports "connecting failed" (a metrics-only cluster has no connector) —
+// even though it had already set the active context. The API then answered 503
+// on a switch that actually took effect, and the UI did not navigate to the
+// Overview when switching from a global page.
+func TestManager_SwitchCluster_MetricsOnlyReturnsNoError(t *testing.T) {
+	m := newBareManager()
+	m.SetAgentRegistry(channel.NewAgentRegistry())
+	ctxName, err := m.AddMetricsOnlyCluster("uid-metrics", "metrics-cluster")
+	if err != nil {
+		t.Fatalf("AddMetricsOnlyCluster err = %v", err)
+	}
+	if err := m.SwitchCluster(ctxName); err != nil {
+		t.Fatalf("SwitchCluster(metrics-only) = %v, want nil", err)
+	}
+	if m.activeContext != ctxName {
+		t.Errorf("active context = %q, want %q", m.activeContext, ctxName)
+	}
+}
+
 func TestManager_AddAgentProxyCluster_RejectsEmptyID(t *testing.T) {
 	m := newBareManager()
 	m.SetAgentRegistry(channel.NewAgentRegistry())

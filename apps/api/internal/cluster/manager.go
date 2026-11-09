@@ -1239,6 +1239,26 @@ func (m *Manager) switchCluster(contextName string, onlyIfUnselected bool) error
 	m.parkActiveLocked()
 	m.rememberSelectionLocked(contextName)
 
+	// Metrics-only cluster: there is no connector to spin. Mirror
+	// connectToContextLocked's metrics-only branch — mark it active with a nil
+	// runtime and return success. Without this the switch falls through to the
+	// connector-spin path below, where getOrSpinPooled returns no connector (a
+	// metrics-only cluster has none) and the switch reports "connecting failed"
+	// even though the active context was already set. The API then answered 503
+	// on a switch that actually took effect, so the UI did not navigate to the
+	// Overview when switching from a global page (finding #72).
+	if _, ok := m.metricsOnlyContexts[contextName]; ok {
+		m.connector = nil
+		m.collector = nil
+		m.engine = nil
+		m.cancelFn = nil
+		m.activeGate = nil
+		m.activeContext = contextName
+		m.connErr = nil
+		slog.Info("switched cluster context (metrics-only, no connector)", slog.String("context", contextName))
+		return nil
+	}
+
 	// If the target is already pooled (previously connected, informers still
 	// live), promote it — an INSTANT switch with no WaitForCacheSync. This is
 	// the whole point: re-selecting a cluster you've already connected to
