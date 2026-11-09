@@ -20,13 +20,20 @@ import { ErrorState } from './ErrorState'
 import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
 import { RangeSelector } from './RangeSelector'
 import { TOOLTIP_SURFACE } from './Tooltip'
+import { PEAK_STEP_TOKEN } from '@/utils/promql'
 
 // ─── Public types ───────────────────────────────────────────────────────────
 
 export type UnitKind = 'bytes' | 'bytes/s' | 'cores' | 'count' | 'percent' | 'usd' | 'seconds' | 'times'
 
-interface QuerySpec {
+export interface QuerySpec {
   query: string
+  // The same series built to keep the highest value inside each step
+  // (peakPerStep in utils/promql.ts), sent instead of `query` once a step
+  // spans more than a minute. For a gauge whose spikes matter (memory, CPU):
+  // a plain range query reads one sample per step and a spike between two
+  // hourly points never shows.
+  peak?: string
   // Multiply each value by -1 (used to draw TX traffic below the zero axis
   // in combined RX/TX charts). Display/tooltip still shows absolute value.
   negate?: boolean
@@ -273,6 +280,20 @@ export function windowSteps(minutes: number, options: RangeOption[] = DEFAULT_RA
     .sort((a, b) => a - b)
     .find((m) => m >= minutes)
   return { line, bar: barKey != null ? BAR_STEPS[barKey] : '1d' }
+}
+
+// A step this short holds a couple of samples: the plain query is already
+// exact, and a peak window this narrow can miss its only sample and leave a
+// gap in the line (verified on VictoriaMetrics: 32 of 61 points at 15s).
+const PEAK_MIN_STEP_SECONDS = 60
+
+// queryForStep — the PromQL a spec sends at a step: its peak variant once the
+// step spans more than a minute, the plain query otherwise.
+export function queryForStep(spec: QuerySpec, step: string): string {
+  if (spec.peak && stepSeconds(step) > PEAK_MIN_STEP_SECONDS) {
+    return spec.peak.split(PEAK_STEP_TOKEN).join(step)
+  }
+  return spec.query
 }
 
 // ─── Defaults ───────────────────────────────────────────────────────────────
@@ -561,7 +582,14 @@ export function MetricChart({
     return { start: controlledWindow?.start ?? end - rangeMinutes * 60, end }
   }
 
-  const allQueries: QuerySpec[] = queries ?? (query ? [{ query }] : [])
+  // What each spec sends at this step: its peak variant on long steps.
+  const allQueries: QuerySpec[] = (queries ?? (query ? [{ query }] : [])).map((spec) => ({
+    ...spec,
+    query: queryForStep(spec, step),
+  }))
+  // Every point is the highest value of its step, so the panel's newest value
+  // is "last" (the top of the last interval), not "now".
+  const peakStep = stepSeconds(step) > PEAK_MIN_STEP_SECONDS && allQueries.some((q) => q.peak) ? step : null
 
   const results = useQueries({
     queries: allQueries.map((spec, idx) => ({
@@ -1142,6 +1170,9 @@ export function MetricChart({
               scale={scale}
               onToggle={toggleSeries}
               hidden={hidden}
+              // A peak point covers its whole step: the newest one is the
+              // highest value of the last interval, not the value now.
+              lastLabel={peakStep ? 'last' : 'now'}
             />
           )}
         </div>
@@ -1164,12 +1195,14 @@ function StatsPanel({
   scale,
   onToggle,
   hidden,
+  lastLabel,
 }: {
   series: SeriesInfo[]
   visibleSeries: SeriesInfo[]
   scale: UnitScale
   onToggle: (name: string) => void
   hidden: Set<string>
+  lastLabel: string
 }) {
   const singleSeries = series.length === 1
   return (
@@ -1200,7 +1233,7 @@ function StatsPanel({
               </div>
             )}
             <div className="space-y-0.5">
-              <StatRow label="now" value={formatValue(s.current, scale, true)} emphasize />
+              <StatRow label={lastLabel} value={formatValue(s.current, scale, true)} emphasize />
               <StatRow label="avg" value={formatValue(s.avg, scale, true)} />
               <StatRow label="max" value={formatValue(s.max, scale, true)} />
               <StatRow label="min" value={formatValue(s.min, scale, true)} />

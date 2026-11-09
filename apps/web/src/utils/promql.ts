@@ -24,6 +24,31 @@ export function liveProcess(gauge: string): string {
   return `sum without (run_id) (${gauge} and (tlast_over_time(${gauge}[5m]) == ignoring (run_id) group_left max without (run_id) (tlast_over_time(${gauge}[5m]))))`
 }
 
+// ─── The peak of each step ───────────────────────────────────────────
+//
+// A range query returns one value per step, read at the step's end: an
+// instant selector gives the last sample, rate(x[1m]) the last minute. At
+// 7 days the step is an hour, so a spike that lasts a few minutes inside an
+// hour never reaches the chart: a pod at 2.9 GiB for six minutes drew
+// 0.29 GiB, and the panel's "max" repeated it.
+//
+// peakPerStep evaluates `expr` once a minute inside each step and keeps the
+// highest value. `expr` has to see every sample of its minute: a gauge goes
+// through gaugeMax1m, a rate over [1m] already does. MetricChart writes the
+// step in place of PEAK_STEP_TOKEN, and only sends the peak query when the
+// step is longer than a minute (see queryForStep).
+export const PEAK_STEP_TOKEN = '$__step'
+
+export function peakPerStep(expr: string): string {
+  return `max_over_time((${expr})[${PEAK_STEP_TOKEN}:1m])`
+}
+
+// gaugeMax1m — a gauge's highest sample in the minute before each point, so
+// peakPerStep reads every sample instead of one a minute.
+export function gaugeMax1m(selector: string): string {
+  return `max_over_time(${selector}[1m])`
+}
+
 // collapsePodToWorkload wraps a metric expression in nested
 // label_replace calls that derive a "workload" label from a pod
 // name. Hubble flow metrics (pod_flow_*) carry destination_pod /

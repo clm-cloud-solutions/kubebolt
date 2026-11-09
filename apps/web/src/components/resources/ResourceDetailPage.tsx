@@ -37,6 +37,7 @@ import { StatusBadge } from './StatusBadge'
 import { ResourceUsageCell } from '@/components/shared/ResourceUsageCell'
 import { HoverTooltip } from '@/components/shared/Tooltip'
 import { MetricChart, METRIC_ACCENTS } from '@/components/shared/MetricChart'
+import { gaugeMax1m, peakPerStep } from '@/utils/promql'
 import { RangeSelector } from '@/components/shared/RangeSelector'
 import { useMonitorRange } from '@/hooks/useDashboardRange'
 import { TerminalTab, DeploymentTerminalTab, StatefulSetTerminalTab, DaemonSetTerminalTab } from './TerminalTab'
@@ -2516,7 +2517,13 @@ function PodMonitorCharts({ item }: { item: ResourceItem }) {
           // (PodsCache enrichment) that the chart's parent Workload
           // Monitor depends on, so the agent stays the primary source
           // and this filter excludes Prom's overlap entirely.
-          query={`sum by (container) (rate(container_cpu_usage_seconds_total{${selector},job="",container!=""}[1m]))`}
+          //
+          // On ranges whose step is over a minute every point is the step's
+          // peak (peakPerStep), so a burst between two points still shows.
+          queries={[{
+            query: `sum by (container) (rate(container_cpu_usage_seconds_total{${selector},job="",container!=""}[1m]))`,
+            peak: peakPerStep(`sum by (container) (rate(container_cpu_usage_seconds_total{${selector},job="",container!=""}[1m]))`),
+          }]}
           referenceLines={cpuRefs}
           accents={METRIC_ACCENTS.cpu}
           chartType="area"
@@ -2525,8 +2532,13 @@ function PodMonitorCharts({ item }: { item: ResourceItem }) {
           title="Memory working set by container"
           unit="bytes"
           // Same job=""/container!="" filter pattern as CPU above —
-          // agent-only, excludes Prom kubelet scrape's overlap.
-          query={`sum by (container) (container_memory_working_set_bytes{${selector},job="",container!=""})`}
+          // agent-only, excludes Prom kubelet scrape's overlap. Peaks on
+          // long ranges as well: a spike of a few minutes is what an OOM
+          // kill looks like, and an hourly sample skipped it.
+          queries={[{
+            query: `sum by (container) (container_memory_working_set_bytes{${selector},job="",container!=""})`,
+            peak: peakPerStep(`sum by (container) (${gaugeMax1m(`container_memory_working_set_bytes{${selector},job="",container!=""}`)})`),
+          }]}
           referenceLines={memRefs}
           accents={METRIC_ACCENTS.memory}
           chartType="area"
@@ -2677,7 +2689,13 @@ function WorkloadMonitorCharts({ item, selector, replicas, kindLabel }: Workload
         <MonitorChart
           title={`CPU by container (sum across ${replicaLabel})`}
           unit="cores"
-          query={`sum by (container) (rate(container_cpu_usage_seconds_total{${selector}}[1m]))`}
+          // Peak per step on long ranges, as in the pod's Monitor tab. The
+          // sum runs every minute, so it is the busiest minute of the
+          // replicas together, not each replica's own peak added up.
+          queries={[{
+            query: `sum by (container) (rate(container_cpu_usage_seconds_total{${selector}}[1m]))`,
+            peak: peakPerStep(`sum by (container) (rate(container_cpu_usage_seconds_total{${selector}}[1m]))`),
+          }]}
           referenceLines={cpuRefs}
           accents={METRIC_ACCENTS.cpu}
           chartType="area"
@@ -2685,7 +2703,10 @@ function WorkloadMonitorCharts({ item, selector, replicas, kindLabel }: Workload
         <MonitorChart
           title={`Memory working set by container (sum across ${replicaLabel})`}
           unit="bytes"
-          query={`sum by (container) (container_memory_working_set_bytes{${selector}})`}
+          queries={[{
+            query: `sum by (container) (container_memory_working_set_bytes{${selector}})`,
+            peak: peakPerStep(`sum by (container) (${gaugeMax1m(`container_memory_working_set_bytes{${selector}}`)})`),
+          }]}
           referenceLines={memRefs}
           accents={METRIC_ACCENTS.memory}
           chartType="area"
@@ -2764,7 +2785,10 @@ function NodeMonitorCharts({ item }: { item: ResourceItem }) {
         <MonitorChart
           title="CPU usage"
           unit="cores"
-          query={`sum(rate(node_cpu_usage_seconds_total{${selector}}[1m]))`}
+          queries={[{
+            query: `sum(rate(node_cpu_usage_seconds_total{${selector}}[1m]))`,
+            peak: peakPerStep(`sum(rate(node_cpu_usage_seconds_total{${selector}}[1m]))`),
+          }]}
           referenceLines={cpuRefs}
           accents={METRIC_ACCENTS.cpu}
           chartType="area"
@@ -2772,7 +2796,10 @@ function NodeMonitorCharts({ item }: { item: ResourceItem }) {
         <MonitorChart
           title="Memory working set"
           unit="bytes"
-          query={`node_memory_working_set_bytes{${selector}}`}
+          queries={[{
+            query: `node_memory_working_set_bytes{${selector}}`,
+            peak: peakPerStep(gaugeMax1m(`node_memory_working_set_bytes{${selector}}`)),
+          }]}
           referenceLines={memRefs}
           accents={METRIC_ACCENTS.memory}
           chartType="area"
