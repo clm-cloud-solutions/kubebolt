@@ -3,21 +3,32 @@ package agent
 import (
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
 
+// swapScheduleAfter replaces the package timer seam for the duration of a test
+// (finding #71) and returns a restore func. Lets a test capture or short-circuit
+// the deferred re-check instead of waiting out demotionGraceWindow.
+func swapScheduleAfter(fn func(time.Duration, func())) func() {
+	old := scheduleAfter
+	scheduleAfter = fn
+	return func() { scheduleAfter = old }
+}
+
 // fakeRegistrar captures calls so tests can assert on them. Methods
 // are concurrency-safe in case the helper later runs from multiple
 // goroutines.
 type fakeRegistrar struct {
-	mu           sync.Mutex
-	added        []addCall
-	metricsAdded []addCall
-	removed      []string
-	addErr       error
+	mu            sync.Mutex
+	added         []addCall
+	metricsAdded  []addCall
+	removed       []string
+	addErr        error
+	proxyClusters map[string]bool // clusterID -> currently agent-proxy (IsAgentProxyCluster)
 }
 
 type addCall struct {
@@ -48,6 +59,12 @@ func (r *fakeRegistrar) RemoveAgentProxyCluster(clusterID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.removed = append(r.removed, clusterID)
+}
+
+func (r *fakeRegistrar) IsAgentProxyCluster(clusterID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.proxyClusters[clusterID]
 }
 
 func TestMaybeAutoRegister_RegistersWhenAllConditionsMet(t *testing.T) {
@@ -310,3 +327,89 @@ func TestMaybeAutoRegister_DemotesWhenNoProxyCapableAgentExists(t *testing.T) {
 // same cluster_id must not keep this org's cluster out of metrics-only. OSS is
 // single-tenant — HasProxyCapableAgent is called with an empty tenant and the
 // union spans every live agent of the cluster — so that case does not exist.)
+
+// finding #71: after an API restart every agent of a cluster reconnects at once.
+// A capability-less (promread) agent sees no proxy-capable agent in the registry
+// — the DaemonSet agents are mid-handshake, not Registered yet
+// (maybeAutoRegisterCluster runs BEFORE registry.Register) — but the cluster IS
+// agent-proxy at this instant (boot restore registered it). It must NOT demote
+// now; it defers and re-checks after the burst settles, so a proxy-capable agent
+// that registers during the window cancels the demotion.
+func TestMaybeAutoRegister_DefersDemotionWhileClusterIsAgentProxy(t *testing.T) {
+	var captured func()
+	restore := swapScheduleAfter(func(_ time.Duration, fn func()) { captured = fn })
+	defer restore()
+
+	reg := &fakeRegistrar{proxyClusters: map[string]bool{"c-eks": true}}
+	registry := channel.NewAgentRegistry() // empty: no proxy-capable agent live yet
+
+	got := maybeAutoRegisterCluster(reg, registry, true, "c-eks", "yagan-eks-prod",
+		[]string{"metrics"}, "")
+
+	if got {
+		t.Error("deferring a demotion must report false (no synchronous metrics-only registration)")
+	}
+	if len(reg.metricsAdded) != 0 {
+		t.Fatalf("cluster must NOT be demoted synchronously while it is agent-proxy: %+v", reg.metricsAdded)
+	}
+	if captured == nil {
+		t.Fatal("a deferred re-check must have been scheduled")
+	}
+	// The DaemonSet agents finish their handshake during the grace window.
+	registry.Register(channel.NewAgent(
+		"c-eks", "ds-node-1", "ip-10-0-36-79",
+		&auth.AgentIdentity{TenantID: "org-1", Mode: auth.ModeIngestToken},
+		[]string{"metrics", "kube-proxy"}, nil,
+	))
+	captured() // grace fires
+	if len(reg.metricsAdded) != 0 {
+		t.Errorf("demotion must be cancelled once a proxy-capable agent registered during the grace window: %+v", reg.metricsAdded)
+	}
+}
+
+// finding #71: if the grace window passes with still no proxy-capable agent, the
+// cluster genuinely has none — demote it then.
+func TestMaybeAutoRegister_DemotesAfterGraceWhenStillNoProxy(t *testing.T) {
+	var captured func()
+	restore := swapScheduleAfter(func(_ time.Duration, fn func()) { captured = fn })
+	defer restore()
+
+	reg := &fakeRegistrar{proxyClusters: map[string]bool{"c-eks": true}}
+	registry := channel.NewAgentRegistry()
+
+	maybeAutoRegisterCluster(reg, registry, true, "c-eks", "eks", []string{"metrics"}, "")
+	if len(reg.metricsAdded) != 0 {
+		t.Fatalf("must not demote synchronously: %+v", reg.metricsAdded)
+	}
+	if captured == nil {
+		t.Fatal("a deferred re-check must have been scheduled")
+	}
+	captured() // grace fires, still no proxy-capable agent
+	if len(reg.metricsAdded) != 1 || reg.metricsAdded[0].clusterID != "c-eks" {
+		t.Errorf("expected a metrics-only registration after the grace window, got %+v", reg.metricsAdded)
+	}
+}
+
+// A cluster that was never agent-proxy (a genuine metrics-only install, or a
+// promread-only cluster) must surface at once — no grace. A later proxy-capable
+// agent still promotes it (AddAgentProxyCluster clears the metrics-only entry).
+// The grace only protects a cluster that is agent-proxy right now (finding #71).
+func TestMaybeAutoRegister_NewMetricsOnlyInstallRegistersImmediately(t *testing.T) {
+	scheduled := false
+	restore := swapScheduleAfter(func(_ time.Duration, _ func()) { scheduled = true })
+	defer restore()
+
+	reg := &fakeRegistrar{} // proxyClusters nil: cluster is NOT agent-proxy
+	got := maybeAutoRegisterCluster(reg, channel.NewAgentRegistry(), true, "c-new", "new",
+		[]string{"metrics"}, "")
+
+	if !got {
+		t.Error("a brand-new metrics-only cluster must register immediately (report true)")
+	}
+	if scheduled {
+		t.Error("a never-agent-proxy cluster must not defer — no grace window")
+	}
+	if len(reg.metricsAdded) != 1 {
+		t.Errorf("expected one immediate AddMetricsOnlyCluster, got %+v", reg.metricsAdded)
+	}
+}

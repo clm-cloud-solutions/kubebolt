@@ -497,10 +497,13 @@ export function Sidebar({ overview, collapsed: collapsedProp }: SidebarProps) {
                 const isRestricted = item.permissionKey != null
                   && overview?.permissions != null
                   && overview.permissions[item.permissionKey] === false
-                // Metrics-only: every resource view needs a live API (connector), so dim +
-                // disable them — except /clusters, the platform escape hatch. The metrics
-                // dashboards stay reachable via the Overview link above.
-                const metricsBlocked = isMetricsOnly && item.path !== '/clusters'
+                // Metrics-only: every CLUSTER-scope resource view needs a live API
+                // (connector), so dim + disable those — except /clusters, the platform
+                // escape hatch. Global-scope items (Home, Fleet, Security) never touch a
+                // connector and must stay clickable even when the active cluster is
+                // monitored-only (finding #71 §4); the metrics dashboards stay reachable
+                // via the Overview link above.
+                const metricsBlocked = isMetricsOnly && routeScope(item.path) === 'cluster' && item.path !== '/clusters'
 
                 // Not-yet-enabled feature (visible as a teaser, non-clickable, "Soon"
                 // badge). Inert in OSS today — kept in sync with the EE sidebar.

@@ -83,4 +83,15 @@ describe('split del sidebar — cada menú sólo lleva rutas de su altitud', () 
     expect(globalPaths).toContain('/fleet')
     expect(clusterPaths).toContain('/clusters')
   })
+
+  it('metrics-only sólo apaga ítems de cluster, nunca el menú global (finding #71 §4)', () => {
+    // El segundo defecto de #71: metricsBlocked corría sobre TODA sección —la
+    // global incluida—, así que un cluster activo monitored-only apagaba Home,
+    // Fleet y Security pese a ser rutas globales que no tocan connector. La
+    // invariante se lee de la fuente (montar el componente arrastra el registry):
+    // la expresión exige scope 'cluster', así que un ítem global nunca se bloquea.
+    const m = SIDEBAR_SRC.match(/const metricsBlocked = [^\n]*/)
+    expect(m, 'no encuentro la expresión metricsBlocked en Sidebar.tsx').not.toBeNull()
+    expect(m![0]).toContain("routeScope(item.path) === 'cluster'")
+  })
 })

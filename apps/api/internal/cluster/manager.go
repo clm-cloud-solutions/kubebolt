@@ -466,6 +466,28 @@ func (m *Manager) AddAgentProxyCluster(clusterID, displayName string) (string, e
 	return contextName, nil
 }
 
+// IsAgentProxyCluster reports whether clusterID is agent-proxy RIGHT NOW: the
+// identity context exists (registered agent-proxy by boot restore or a live
+// kube-proxy agent — agentProxyContexts is NOT cleared on a metrics-only
+// downgrade, see finding #46) AND it is not flagged metrics-only. The
+// agent-channel handler consults it before a capability-less agent demotes a
+// cluster, to tell a genuine first registration of a metrics-only cluster from a
+// demotion of a cluster that is agent-proxy at this instant — the finding #71
+// reconnect race. Satisfies agent.ClusterRegistrar.
+func (m *Manager) IsAgentProxyCluster(clusterID string) bool {
+	if clusterID == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	contextName := AgentProxyContextName(clusterID)
+	if _, ok := m.agentProxyContexts[contextName]; !ok {
+		return false
+	}
+	_, metricsOnly := m.metricsOnlyContexts[contextName]
+	return !metricsOnly
+}
+
 // AddMetricsOnlyCluster registers a cluster whose agent ships metrics but does NOT
 // advertise kube-proxy — so it has no live-resource connector. It surfaces the cluster
 // in ListClusters (switchable, flagged Mode="metrics-only") via the same synthetic-
