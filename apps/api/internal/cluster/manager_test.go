@@ -64,6 +64,37 @@ func TestManager_AddAgentProxyCluster_RegistersAndLists(t *testing.T) {
 	}
 }
 
+// IsAgentProxyCluster backs the finding #71 guard: a capability-less agent must
+// tell a cluster that is agent-proxy RIGHT NOW (defer the demotion) from one that
+// was never agent-proxy (demote at once).
+func TestManager_IsAgentProxyCluster(t *testing.T) {
+	m := newBareManager()
+	m.SetAgentRegistry(channel.NewAgentRegistry())
+
+	if m.IsAgentProxyCluster("c-unknown") {
+		t.Error("an unregistered cluster must not be reported agent-proxy")
+	}
+	if m.IsAgentProxyCluster("") {
+		t.Error("empty clusterID must be false")
+	}
+
+	if _, err := m.AddAgentProxyCluster("c-prod", "Production"); err != nil {
+		t.Fatalf("AddAgentProxyCluster err = %v", err)
+	}
+	if !m.IsAgentProxyCluster("c-prod") {
+		t.Error("an agent-proxy cluster must be reported agent-proxy")
+	}
+
+	// Downgraded to metrics-only → false, even though the identity context
+	// survives (finding #46 keeps agentProxyContexts).
+	if _, err := m.AddMetricsOnlyCluster("c-prod", "Production"); err != nil {
+		t.Fatalf("AddMetricsOnlyCluster err = %v", err)
+	}
+	if m.IsAgentProxyCluster("c-prod") {
+		t.Error("a cluster flagged metrics-only must not be reported agent-proxy")
+	}
+}
+
 func TestManager_AddAgentProxyCluster_RejectsEmptyID(t *testing.T) {
 	m := newBareManager()
 	m.SetAgentRegistry(channel.NewAgentRegistry())

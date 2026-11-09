@@ -2,9 +2,24 @@ package agent
 
 import (
 	"log/slog"
+	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
 )
+
+// demotionGraceWindow is how long a capability-less agent waits before it
+// demotes a cluster that is agent-proxy right now (finding #71). After an API
+// restart every agent of a cluster reconnects in the same instant; the
+// proxy-capable ones are mid-handshake (maybeAutoRegisterCluster runs BEFORE
+// registry.Register, server.go), so a promread pod can see "no proxy-capable
+// agent" and demote the cluster the DaemonSet agents just registered. Waiting
+// out the burst, then re-checking, keeps the last word with the settled state
+// instead of with whichever agent happened to write last.
+var demotionGraceWindow = 30 * time.Second
+
+// scheduleAfter runs fn after d. A package seam so the finding #71 tests can
+// drive the deferred re-check deterministically instead of sleeping on a timer.
+var scheduleAfter = func(d time.Duration, fn func()) { time.AfterFunc(d, fn) }
 
 // ClusterRegistrar is the subset of cluster.Manager that the Channel
 // handler needs to expose agent-proxy clusters. Defined here, not in
@@ -28,6 +43,13 @@ type ClusterRegistrar interface {
 	// RemoveAgentProxyCluster removes the agent-proxy registration.
 	// Idempotent — a no-op if cluster_id wasn't registered.
 	RemoveAgentProxyCluster(clusterID string)
+	// IsAgentProxyCluster reports whether clusterID is agent-proxy RIGHT NOW —
+	// the identity context exists (registered agent-proxy by boot restore or a
+	// live kube-proxy agent) and it is not flagged metrics-only. A capability-less
+	// agent consults it to tell a genuine first registration of a metrics-only
+	// cluster (demote at once) from a demotion of a cluster that is agent-proxy at
+	// this instant (defer and re-check — finding #71's reconnect race).
+	IsAgentProxyCluster(clusterID string) bool
 }
 
 // IsSelfCluster reports whether clusterID is the same cluster the
@@ -125,10 +147,55 @@ func maybeAutoRegisterCluster(reg ClusterRegistrar, registry *channel.AgentRegis
 			)
 			return false
 		}
-		// Metrics-only agent (no kube-proxy): surface the cluster as monitored-only
-		// instead of leaving it invisible. Its metrics reach VM independently of the
-		// proxy, so it gets a switchable, connector-less entry in the selector — the UI
-		// shows the metrics dashboards and degrades the resource views.
+		// No proxy-capable agent is LIVE in the registry right now — but that read is
+		// not the whole truth on a reconnect burst. Finding #71 (production,
+		// 2026-11-06): after an API restart every agent of a cluster reconnects in the
+		// same instant. maybeAutoRegisterCluster runs BEFORE registry.Register
+		// (server.go), so the DaemonSet agents are between those two steps — already
+		// calling AddAgentProxyCluster, not yet in the registry bucket. A promread pod
+		// asking HasProxyCapableAgent here gets "no", then its AddMetricsOnlyCluster
+		// lands AFTER the DaemonSet's registrations and wins. #41's promise that "the
+		// next proxy-capable agent promotes it back" never comes, because the demotion
+		// was last and no proxy-capable agent is left to register — the cluster stays
+		// monitored-only until a DaemonSet agent reconnects for some other reason.
+		//
+		// So tell the two cases apart by the cluster's state right now, not by the racy
+		// registry read:
+		if reg.IsAgentProxyCluster(clusterID) {
+			// The cluster is agent-proxy at this instant (boot restore, or a DaemonSet
+			// agent that registered earlier in this same burst). Demoting now would be
+			// the check-then-act race. Defer: let the burst settle, then re-check and
+			// demote only if there is STILL no proxy-capable agent. A proxy-capable
+			// agent arriving during the window cancels it.
+			scheduleAfter(demotionGraceWindow, func() {
+				if registry.HasProxyCapableAgent("", clusterID) {
+					slog.Info("auto-register: demotion cancelled — a proxy-capable agent registered during the grace window",
+						slog.String("cluster_id", clusterID),
+						slog.String("display_name", displayName),
+					)
+					return
+				}
+				if _, err := reg.AddMetricsOnlyCluster(clusterID, displayName); err != nil {
+					slog.Warn("auto-register metrics-only cluster failed (after grace)",
+						slog.String("cluster_id", clusterID),
+						slog.String("error", err.Error()),
+					)
+					return
+				}
+				slog.Warn("cluster registered as metrics-only after grace — no live agent advertises kube-proxy; resource views are unavailable",
+					slog.String("cluster_id", clusterID),
+					slog.String("display_name", displayName),
+				)
+			})
+			return false
+		}
+		// The cluster was never agent-proxy (a genuine metrics-only install, or a
+		// promread-only cluster). Surface it monitored-only at once so it is visible
+		// immediately — there is no agent-proxy view to lose, and a later proxy-capable
+		// agent promotes it (AddAgentProxyCluster clears the metrics-only entry). Its
+		// metrics reach VM independently of the proxy, so it gets a switchable,
+		// connector-less entry in the selector — the UI shows the metrics dashboards and
+		// degrades the resource views.
 		if _, err := reg.AddMetricsOnlyCluster(clusterID, displayName); err != nil {
 			slog.Warn("auto-register metrics-only cluster failed",
 				slog.String("cluster_id", clusterID),
