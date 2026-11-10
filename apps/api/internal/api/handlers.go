@@ -275,7 +275,7 @@ func (h *handlers) requireClusterAccess(next http.Handler) http.Handler {
 		// failure, not an authorization one: 503 "waiting for agent", which the
 		// frontend renders and retries, instead of a permissions dead end.
 		//
-		// Finding #72: a metrics-only cluster is the exception. Its agent:<uid>
+		// Finding #73: a metrics-only cluster is the exception. Its agent:<uid>
 		// context lives in metricsOnlyContexts, not agentProxyContexts, so
 		// ClusterIDForContext returns "" for it too — but it IS a valid,
 		// connector-less cluster whose Overview getClusterOverview serves from VM.

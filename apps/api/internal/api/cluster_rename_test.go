@@ -12,7 +12,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
 )
 
-// Finding #72: handleRenameCluster must URL-decode the {context} path param. The
+// Finding #73: handleRenameCluster must URL-decode the {context} path param. The
 // browser sends an agent:<uid> context as agent%3A<uid> (encodeURIComponent on
 // the ':'), and chi does not unescape path params — so without the decode,
 // SetClusterDisplayName is handed "agent%3A..." and reports "not found". (EE
@@ -41,8 +41,8 @@ func TestHandleRenameCluster_DecodesEncodedAgentContext(t *testing.T) {
 	// handler gets PAST the "context not found" check (this bare manager then
 	// fails only because it has no storage wired). Without the decode the lookup
 	// uses the still-encoded name and returns "context ... not found" — the exact
-	// error finding #72 reproduced.
+	// error finding #73 reproduced.
 	if strings.Contains(rec.Body.String(), "not found") {
-		t.Fatalf("rename did not decode the agent context (body: %q) — finding #72", rec.Body.String())
+		t.Fatalf("rename did not decode the agent context (body: %q) — finding #73", rec.Body.String())
 	}
 }

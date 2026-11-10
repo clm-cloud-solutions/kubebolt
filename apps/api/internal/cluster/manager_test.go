@@ -95,7 +95,7 @@ func TestManager_IsAgentProxyCluster(t *testing.T) {
 	}
 }
 
-// Finding #72: switching to a metrics-only cluster must succeed. switchCluster
+// Finding #73: switching to a metrics-only cluster must succeed. switchCluster
 // had no metrics-only branch, so it fell through to the connector-spin path,
 // which reports "connecting failed" (a metrics-only cluster has no connector) —
 // even though it had already set the active context. The API then answered 503

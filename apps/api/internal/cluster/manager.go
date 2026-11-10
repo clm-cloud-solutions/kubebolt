@@ -699,7 +699,7 @@ func (m *Manager) ClusterIDForContext(contextName string) string {
 // an unresolved agent-proxy context. requireClusterAccess uses it so a
 // metrics-only cluster that was NEVER agent-proxy (its agent:<uid> context lives
 // in metricsOnlyContexts, not agentProxyContexts, so ClusterIDForContext returns
-// "") is not mistaken for "no agent connected yet" (finding #72).
+// "") is not mistaken for "no agent connected yet" (finding #73).
 func (m *Manager) IsMetricsOnlyContext(contextName string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -1246,7 +1246,7 @@ func (m *Manager) switchCluster(contextName string, onlyIfUnselected bool) error
 	// metrics-only cluster has none) and the switch reports "connecting failed"
 	// even though the active context was already set. The API then answered 503
 	// on a switch that actually took effect, so the UI did not navigate to the
-	// Overview when switching from a global page (finding #72).
+	// Overview when switching from a global page (finding #73).
 	if _, ok := m.metricsOnlyContexts[contextName]; ok {
 		m.connector = nil
 		m.collector = nil

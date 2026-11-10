@@ -9,7 +9,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 )
 
-// Finding #72: a metrics-only cluster that was NEVER agent-proxy must be
+// Finding #73: a metrics-only cluster that was NEVER agent-proxy must be
 // reachable. Its agent:<uid> context lives in metricsOnlyContexts, not
 // agentProxyContexts, so ClusterIDForContext returns "". requireClusterAccess
 // must NOT read that as "no agent connected yet" and 503 — the cluster is a
@@ -45,7 +45,7 @@ func TestRequireClusterAccess_MetricsOnlyClusterIsReachable(t *testing.T) {
 	// The metrics-only cluster must pass the middleware (no 503).
 	rec := serve(cluster.AgentProxyContextName("uid-metrics")) // "agent:uid-metrics"
 	if rec.Code == http.StatusServiceUnavailable {
-		t.Fatalf("requireClusterAccess 503'd a metrics-only cluster (finding #72): %s", rec.Body.String())
+		t.Fatalf("requireClusterAccess 503'd a metrics-only cluster (finding #73): %s", rec.Body.String())
 	}
 	if !passed {
 		t.Fatalf("requireClusterAccess did not pass a metrics-only cluster through: %d %s", rec.Code, rec.Body.String())
