@@ -23,6 +23,15 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `rate()` reads as a reset. Nothing already sent is lost. Until now, restarting
   the agent DaemonSet was the only way to clear them.
 
+### Changed
+
+- **The node-exporter discovery finds kube-prometheus-stack's node-exporter by
+  default.** `scrape.discovery.nodeExporter.labelSelector` now defaults to
+  `app.kubernetes.io/name=node-exporter|prometheus-node-exporter` (the value is a
+  regular expression matched in full). The old default matched only the
+  standalone chart, so a kube-prometheus-stack cluster got no node-exporter target
+  and a grey coverage chip, with no error.
+
 ## [1.4.8] — 2026-11-10
 
 Metric correctness: each pod's network is stored once, and `hostNetwork` pods no

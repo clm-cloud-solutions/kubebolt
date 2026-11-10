@@ -526,17 +526,17 @@ scrape:
     # not every cluster runs node-exporter; enable when you do.
     nodeExporter:
       enabled: false
-      # Label selector to find node-exporter pods. Default works
-      # with the standalone prometheus-community/prometheus-node
-      # -exporter chart, which labels its pods
-      # `app.kubernetes.io/name=node-exporter`.
-      #
-      # IMPORTANT — kube-prometheus-stack uses the SAME node-
-      # exporter subchart but ships it under a different label.
-      # If you installed Prometheus via kube-prometheus-stack
-      # (which is the most common production path), override to:
-      #
-      #   labelSelector: "app.kubernetes.io/name=prometheus-node-exporter"
+      # Label selector to find node-exporter pods, `key=value`, where
+      # the value is a regular expression matched in full. The default
+      # finds both shapes of the same prometheus-community chart: the
+      # standalone install labels its pods
+      # `app.kubernetes.io/name=node-exporter`, kube-prometheus-stack
+      # (the most common production path) ships it as
+      # `prometheus-node-exporter`. Before agent 1.4.9 the default was
+      # the first one only, and a kube-prometheus-stack cluster got no
+      # node-exporter target and a grey coverage chip, with no error.
+      # Narrow it if both run in the same cluster (they would both be
+      # scraped).
       #
       # To check what label your cluster uses, run:
       #
@@ -548,7 +548,7 @@ scrape:
       # with NO error logged anywhere. If host CPU / memory /
       # disk panels are empty in the Capacity dashboard, this is
       # the first thing to check.
-      labelSelector: "app.kubernetes.io/name=node-exporter"
+      labelSelector: "app.kubernetes.io/name=node-exporter|prometheus-node-exporter"
       port: 9100
       path: /metrics
     # kube-state-metrics — cluster-scoped (one Deployment, not

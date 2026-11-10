@@ -59,7 +59,7 @@ The chart wires three independent scrape jobs, each toggleable:
 | Job | Toggle (default) | Discovery method | What it gives you |
 |---|---|---|---|
 | `kubernetes-pods` | `scrape.discovery.pods.enabled: true` | Annotation: `prometheus.io/scrape: "true"` on any pod | App-level metrics. The official kube-state-metrics chart and most production exporters carry the annotation by default. |
-| `node-exporter` | `scrape.discovery.nodeExporter.enabled: false` | Label: `app.kubernetes.io/name=node-exporter` | Per-node OS metrics (CPU, memory, filesystem at the kernel level). |
+| `node-exporter` | `scrape.discovery.nodeExporter.enabled: false` | Label: `app.kubernetes.io/name` = `node-exporter` or `prometheus-node-exporter` (kube-prometheus-stack) | Per-node OS metrics (CPU, memory, filesystem at the kernel level). |
 | `kube-state-metrics` | `scrape.discovery.kubeStateMetrics.enabled: false` | Label: `app.kubernetes.io/name=kube-state-metrics` | Cluster-state metrics (`kube_pod_*`, `kube_deployment_*`, etc.). |
 
 **Most operators only need `pods` enabled** — kube-state-metrics
@@ -114,11 +114,12 @@ point KubeBolt at an **external** TSDB (`metrics.storage.externalUrl`) you shoul
 keep dedup enabled there for other sources.
 
 If you can't modify the customer's `kube-prometheus-stack` install
-(common in audited environments), override the agent-side selector
-to whatever name the upstream chart used:
+(common in audited environments), the default selector already finds its
+node-exporter (`prometheus-node-exporter`, from agent 1.4.9). For any other
+name, override the agent-side selector (the value is a regular expression):
 
 ```bash
---set scrape.discovery.nodeExporter.labelSelector="app.kubernetes.io/name=prometheus-node-exporter"
+--set scrape.discovery.nodeExporter.labelSelector="app.kubernetes.io/name=my-node-exporter"
 ```
 
 ### Why a per-pod sidecar (not a cluster-wide deployment)
@@ -192,7 +193,7 @@ scrape:
       enabled: true               # Annotation-driven pod scraping.
     nodeExporter:
       enabled: false
-      labelSelector: "app.kubernetes.io/name=node-exporter"
+      labelSelector: "app.kubernetes.io/name=node-exporter|prometheus-node-exporter"
       port: 9100
       path: /metrics
     kubeStateMetrics:
