@@ -180,12 +180,12 @@ func TestPromBuilder_Network_Workload(t *testing.T) {
 		rateWindow: 1 * time.Minute,
 	}
 	gotRX := b.buildNetwork(MetricNetworkRX)
-	wantRX := `sum(rate(container_network_receive_bytes_total{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",pod_uid!=""}[1m]))`
+	wantRX := `sum(rate(container_network_receive_bytes_total{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",pod_uid!=""}[1m]) or on (cluster_id, namespace, pod, interface) rate(container_network_receive_bytes_total{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",pod_uid="",job="",container=""}[1m]))`
 	if gotRX != wantRX {
 		t.Errorf("network RX PromQL mismatch:\n  want: %s\n  got:  %s", wantRX, gotRX)
 	}
 	gotTX := b.buildNetwork(MetricNetworkTX)
-	wantTX := `sum(rate(container_network_transmit_bytes_total{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",pod_uid!=""}[1m]))`
+	wantTX := `sum(rate(container_network_transmit_bytes_total{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",pod_uid!=""}[1m]) or on (cluster_id, namespace, pod, interface) rate(container_network_transmit_bytes_total{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",pod_uid="",job="",container=""}[1m]))`
 	if gotTX != wantTX {
 		t.Errorf("network TX PromQL mismatch:\n  want: %s\n  got:  %s", wantTX, gotTX)
 	}
@@ -200,7 +200,7 @@ func TestPromBuilder_Network_Pod(t *testing.T) {
 		rateWindow: 1 * time.Minute,
 	}
 	got := b.buildNetwork(MetricNetworkRX)
-	want := `sum(rate(container_network_receive_bytes_total{cluster_id="uid-abc",namespace="default",pod="single-pod",pod_uid!=""}[1m]))`
+	want := `sum(rate(container_network_receive_bytes_total{cluster_id="uid-abc",namespace="default",pod="single-pod",pod_uid!=""}[1m]) or on (cluster_id, namespace, pod, interface) rate(container_network_receive_bytes_total{cluster_id="uid-abc",namespace="default",pod="single-pod",pod_uid="",job="",container=""}[1m]))`
 	if got != want {
 		t.Errorf("network pod PromQL mismatch:\n  want: %s\n  got:  %s", want, got)
 	}
@@ -564,47 +564,59 @@ func TestMetricsRangeTable_TwelvePointsEverywhere(t *testing.T) {
 // description makes it mandatory before proposing resource limits, so an
 // under-reported peak here becomes an under-sized limit there.
 func TestMetricsRangeTable_LongRangesSummariseTheirStep(t *testing.T) {
-	for _, name := range []string{"6h", "24h", "7d", "14d", "30d"} {
-		if metricsRangeTable[name].Bucket <= 0 {
-			t.Errorf("range %s samples an instant per point instead of its step's peak", name)
+	// The Monitor charts' rule: every step longer than a minute is a peak, so
+	// Kobi's max and the chart's agree at every range. An hour's 5-minute step
+	// used to read memory at one instant every five minutes.
+	for name, spec := range metricsRangeTable {
+		if spec.Step > peakResolution && spec.Bucket != spec.Step {
+			t.Errorf("range %s (step %s) samples an instant per point instead of its step's peak", name, spec.Step)
 		}
-	}
-	// Below an hour the step is at or under the rate window, so a bucket would
-	// re-smooth what rate() already smoothed — noise, not information.
-	for _, name := range []string{"5m", "15m", "1h"} {
-		if metricsRangeTable[name].Bucket != 0 {
-			t.Errorf("range %s buckets a step no wider than its rate window", name)
+		if spec.Step <= peakResolution && spec.Bucket != 0 {
+			t.Errorf("range %s buckets a step (%s) no longer than the peak resolution", name, spec.Step)
 		}
 	}
 }
 
 // The CPU peak has to be taken AFTER the sum: the workload's worst moment, not
-// the sum of each pod's worst moment — a number no instant ever produced.
+// the sum of each pod's worst moment — a number no instant ever produced. It is
+// the busiest MINUTE, as on the Monitor chart, not the busiest rate window:
+// the 7d window is 15m, and a 15-minute average flattens a 3-minute burst.
 func TestPromBuilder_CPU_BucketedTakesThePeakOfTheSum(t *testing.T) {
 	b := promBuilder{
 		kind: "Deployment", namespace: "default", name: "api", clusterUID: "uid-abc",
 		rateWindow: 15 * time.Minute, bucket: 14 * time.Hour,
 	}
-	want := `max_over_time(sum(rate(container_cpu_usage_seconds_total{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",pod_uid!=""}[15m]))[14h:15m])`
+	want := `max_over_time(sum(rate(container_cpu_usage_seconds_total{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",pod_uid!=""}[1m]))[14h:1m])`
 	if got := b.buildCPU(); got != want {
 		t.Errorf("bucketed CPU mismatch:\n  want: %s\n  got:  %s", want, got)
 	}
 }
 
-// Memory is a gauge, so it takes a plain range — no subquery, and therefore no
-// inner-evaluation cost at all.
-func TestPromBuilder_Memory_BucketedUsesAPlainRange(t *testing.T) {
+// Memory is a gauge, but over an aggregation `max_over_time(sum(x)[60h])` is
+// no plain range: MetricsQL reads it as a subquery at the query step, one
+// sample per bucket. Kobi reported 85 MiB as a 7-day max the chart showed at
+// 127 MiB (2026-11-09). The peak is searched every minute, over each series'
+// highest sample of that minute, after the sum.
+func TestPromBuilder_Memory_BucketedSearchesThePeakEveryMinute(t *testing.T) {
 	b := promBuilder{
 		kind: "Deployment", namespace: "default", name: "api", clusterUID: "uid-abc",
 		rateWindow: 1 * time.Hour, bucket: 60 * time.Hour,
 	}
-	want := `max_over_time(sum(container_memory_working_set_bytes{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",pod_uid!=""})[60h])`
-	got := b.buildMemory()
-	if got != want {
+	want := `max_over_time(sum(max_over_time(container_memory_working_set_bytes{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",pod_uid!=""}[1m]))[60h:1m])`
+	if got := b.buildMemory(); got != want {
 		t.Errorf("bucketed memory mismatch:\n  want: %s\n  got:  %s", want, got)
 	}
-	if strings.Contains(got, ":") {
-		t.Errorf("gauge query became a subquery, paying for inner evaluations it does not need: %s", got)
+}
+
+func TestPromBuilder_NodeMemory_BucketedSearchesThePeakEveryMinute(t *testing.T) {
+	b := promBuilder{kind: "Node", name: "worker-1", clusterUID: "uid-abc", rateWindow: 15 * time.Minute, bucket: 14 * time.Hour}
+	want := `max_over_time(sum(max_over_time(node_memory_working_set_bytes{cluster_id="uid-abc",node="worker-1"}[1m]))[14h:1m])`
+	if got := b.buildMemory(); got != want {
+		t.Errorf("bucketed node memory mismatch:\n  want: %s\n  got:  %s", want, got)
+	}
+	wantCPU := `max_over_time(sum(rate(node_cpu_usage_seconds_total{cluster_id="uid-abc",node="worker-1"}[1m]))[14h:1m])`
+	if got := b.buildCPU(); got != wantCPU {
+		t.Errorf("bucketed node CPU mismatch:\n  want: %s\n  got:  %s", wantCPU, got)
 	}
 }
 

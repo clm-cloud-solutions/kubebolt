@@ -482,16 +482,16 @@ function WorkloadTerminalTab({ pods, isLoading, error }: { pods: ResourceItem[];
 }
 
 export function DeploymentTerminalTab({ namespace, name }: { namespace: string; name: string }) {
-  const { data, isLoading, error } = useDeploymentPods(namespace, name)
+  const { data, isLoading, error } = useDeploymentPods(namespace, name, 'picker')
   return <WorkloadTerminalTab pods={data?.items ?? []} isLoading={isLoading} error={error} />
 }
 
 export function StatefulSetTerminalTab({ namespace, name }: { namespace: string; name: string }) {
-  const { data, isLoading, error } = useStatefulSetPods(namespace, name)
+  const { data, isLoading, error } = useStatefulSetPods(namespace, name, 'picker')
   return <WorkloadTerminalTab pods={data?.items ?? []} isLoading={isLoading} error={error} />
 }
 
 export function DaemonSetTerminalTab({ namespace, name }: { namespace: string; name: string }) {
-  const { data, isLoading, error } = useDaemonSetPods(namespace, name)
+  const { data, isLoading, error } = useDaemonSetPods(namespace, name, 'picker')
   return <WorkloadTerminalTab pods={data?.items ?? []} isLoading={isLoading} error={error} />
 }

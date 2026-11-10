@@ -11,6 +11,55 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.4.8] — 2026-11-10
+
+Metric correctness: each pod's network is stored once, and `hostNetwork` pods no
+longer report the node's network as their own. Same v1.0 metric/label schema —
+drop-in within 1.x.
+
+### Fixed
+
+- **Every pod's network was stored twice.** The stats collector
+  (`/stats/summary`) and the cAdvisor collector (`/metrics/cadvisor`) both sent
+  `container_network_{receive,transmit}_{bytes,errors}_total` for each pod
+  interface. Their label sets never matched: stats carries `pod_uid` and the
+  workload labels, and the kubelet's cAdvisor endpoint carries neither. So
+  VictoriaMetrics kept two series, every sum by pod or namespace came out
+  doubled, and both copies counted as active series. Present since 0.0.5.
+  - cAdvisor now runs right after stats, in the same loop, and skips what that
+    pass sent.
+  - It still sends what `/stats/summary` leaves out:
+    - `*_packets_dropped_total`;
+    - pods stats did not report, such as short-lived ones or those on kubelets
+      with an empty network block;
+    - interfaces stats did not list. A second interface (e.g. Multus `net1`)
+      is real traffic, so the key is per interface, never per pod.
+  - After the upgrade the copies without `pod_uid` stop. Queries that select
+    `pod_uid!=""` or the workload labels read the same. A plain `sum` falls to
+    the real value. Stored history keeps both copies until retention drops
+    them.
+- **`*_packets_dropped_total` gets the workload labels.** cAdvisor stamps the
+  pod's UID from the pods cache, so enrichment adds `workload_kind`,
+  `workload_name` and `label_*`. Its series change labels once, at the upgrade.
+- `testdata/cadvisor_metrics.txt` now has the shape of a real kubelet: pod
+  network only for the pause sandbox (`container=""`), and no `pod_uid`. The
+  old fixture invented both, which hid the duplicate.
+- **Pods with `hostNetwork: true` no longer send pod network.**
+  - **Why:** they share the node's network namespace, so both collectors
+    reported the node's interfaces as the pod's own: `eth0`, the overlay
+    device, and every per-pod veth the drop list does not cover.
+  - **The effect:** every such pod counted the node's traffic once more, and
+    summing its interfaces counted the overlay twice. With Cilium on kind, 11
+    hostNetwork pods produced 82% of the `container_network_*` series.
+  - **Where that traffic is now:** `node_network_*`, once. This is what the
+    Datadog kubelet check and the kubernetes-mixin network dashboards already
+    do.
+  - **How the agent tells:** the pods cache reads `spec.hostNetwork` from the
+    kubelet's `/pods`. When `/stats/summary` lists a pod the cache does not
+    know, the cache is refreshed in that same pass, so a new hostNetwork pod
+    never sends the node's network as its own.
+  - **If the cache cannot be read**, every pod keeps its network.
+
 ## [1.4.7] — 2026-11-06
 
 Dependency update: the agent's code is the same as 1.4.6. Same v1.0

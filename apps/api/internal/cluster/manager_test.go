@@ -64,6 +64,58 @@ func TestManager_AddAgentProxyCluster_RegistersAndLists(t *testing.T) {
 	}
 }
 
+// IsAgentProxyCluster backs the finding #71 guard: a capability-less agent must
+// tell a cluster that is agent-proxy RIGHT NOW (defer the demotion) from one that
+// was never agent-proxy (demote at once).
+func TestManager_IsAgentProxyCluster(t *testing.T) {
+	m := newBareManager()
+	m.SetAgentRegistry(channel.NewAgentRegistry())
+
+	if m.IsAgentProxyCluster("c-unknown") {
+		t.Error("an unregistered cluster must not be reported agent-proxy")
+	}
+	if m.IsAgentProxyCluster("") {
+		t.Error("empty clusterID must be false")
+	}
+
+	if _, err := m.AddAgentProxyCluster("c-prod", "Production"); err != nil {
+		t.Fatalf("AddAgentProxyCluster err = %v", err)
+	}
+	if !m.IsAgentProxyCluster("c-prod") {
+		t.Error("an agent-proxy cluster must be reported agent-proxy")
+	}
+
+	// Downgraded to metrics-only → false, even though the identity context
+	// survives (finding #46 keeps agentProxyContexts).
+	if _, err := m.AddMetricsOnlyCluster("c-prod", "Production"); err != nil {
+		t.Fatalf("AddMetricsOnlyCluster err = %v", err)
+	}
+	if m.IsAgentProxyCluster("c-prod") {
+		t.Error("a cluster flagged metrics-only must not be reported agent-proxy")
+	}
+}
+
+// Finding #73: switching to a metrics-only cluster must succeed. switchCluster
+// had no metrics-only branch, so it fell through to the connector-spin path,
+// which reports "connecting failed" (a metrics-only cluster has no connector) —
+// even though it had already set the active context. The API then answered 503
+// on a switch that actually took effect, and the UI did not navigate to the
+// Overview when switching from a global page.
+func TestManager_SwitchCluster_MetricsOnlyReturnsNoError(t *testing.T) {
+	m := newBareManager()
+	m.SetAgentRegistry(channel.NewAgentRegistry())
+	ctxName, err := m.AddMetricsOnlyCluster("uid-metrics", "metrics-cluster")
+	if err != nil {
+		t.Fatalf("AddMetricsOnlyCluster err = %v", err)
+	}
+	if err := m.SwitchCluster(ctxName); err != nil {
+		t.Fatalf("SwitchCluster(metrics-only) = %v, want nil", err)
+	}
+	if m.activeContext != ctxName {
+		t.Errorf("active context = %q, want %q", m.activeContext, ctxName)
+	}
+}
+
 func TestManager_AddAgentProxyCluster_RejectsEmptyID(t *testing.T) {
 	m := newBareManager()
 	m.SetAgentRegistry(channel.NewAgentRegistry())

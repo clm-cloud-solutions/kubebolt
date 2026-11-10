@@ -15,9 +15,15 @@ import (
 
 // CadvisorCollector scrapes the kubelet's /metrics/cadvisor endpoint
 // (Prometheus text exposition format) and extracts pod-level network
-// counters. Exists because some kubelet deployments — docker-desktop
-// among them — leave the `network` block empty in /stats/summary, while
-// cAdvisor still reports it correctly from the pod's network namespace.
+// counters. It fills what /stats/summary leaves out: packets_dropped, which
+// the summary has no field for, and pods or interfaces the summary does not
+// report (short-lived pods, kubelets that leave its `network` block empty).
+// With WithStatsNetwork it sends only those: what the stats collector
+// already sent is skipped, so each pod interface reaches the store once.
+//
+// The kubelet's endpoint reports pod network only for the pause sandbox
+// (container="") and carries no pod_uid (testdata/cadvisor_metrics.txt
+// mirrors a real kubelet).
 type CadvisorCollector struct {
 	client      *kubelet.Client
 	clusterID   string
@@ -42,10 +48,37 @@ type CadvisorCollector struct {
 	// names dominate container_network_* cardinality — ~85% of active
 	// series on a 2k-pod AKS cluster. nil means "keep all interfaces".
 	dropInterfaces *InterfaceMatcher
+	// statsNetwork is what the stats collector sent in its last pass; those
+	// samples are skipped. Nil = send everything.
+	statsNetwork *PodNetworkSeen
+	// pods resolves a pod by namespace and name: its UID, for the families
+	// only this collector sends (cadvisorOnlyMetrics), and whether it runs
+	// with hostNetwork. Nil = no pod_uid, every pod sends its network.
+	pods *PodsCache
 }
 
-func NewCadvisor(client *kubelet.Client, clusterID, clusterName, nodeName, tenantID string, dropInterfaces *InterfaceMatcher) *CadvisorCollector {
-	return &CadvisorCollector{
+// CadvisorOption is a functional option for NewCadvisor.
+type CadvisorOption func(*CadvisorCollector)
+
+// WithStatsNetwork skips the pod network samples the stats collector sent
+// in its last pass (see PodNetworkSeen). Run this collector right after
+// stats, in the same loop, so the set it reads is that pass's.
+func WithStatsNetwork(seen *PodNetworkSeen) CadvisorOption {
+	return func(c *CadvisorCollector) { c.statsNetwork = seen }
+}
+
+// WithPods gives the collector the pods cache. It stamps pod_uid on the
+// families only this collector sends, so PodsCache.Enrich adds their workload
+// labels, and it sends nothing for pods with spec.hostNetwork: their
+// interfaces are the node's, which node_network_* reports
+// (WithHostNetworkPods on the stats side). Run this collector after stats,
+// whose pass refreshes the cache for pods it did not know.
+func WithPods(pods *PodsCache) CadvisorOption {
+	return func(c *CadvisorCollector) { c.pods = pods }
+}
+
+func NewCadvisor(client *kubelet.Client, clusterID, clusterName, nodeName, tenantID string, dropInterfaces *InterfaceMatcher, opts ...CadvisorOption) *CadvisorCollector {
+	c := &CadvisorCollector{
 		client:         client,
 		clusterID:      clusterID,
 		clusterName:    clusterName,
@@ -53,6 +86,10 @@ func NewCadvisor(client *kubelet.Client, clusterID, clusterName, nodeName, tenan
 		tenantID:       tenantID,
 		dropInterfaces: dropInterfaces,
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 func (c *CadvisorCollector) Name() string { return "kubelet_cadvisor_network" }
@@ -71,6 +108,16 @@ var allowedCadvisorMetrics = map[string]struct{}{
 	"container_network_transmit_bytes_total":           {},
 	"container_network_receive_errors_total":           {},
 	"container_network_transmit_errors_total":          {},
+	"container_network_receive_packets_dropped_total":  {},
+	"container_network_transmit_packets_dropped_total": {},
+}
+
+// cadvisorOnlyMetrics are the families /stats/summary has no field for.
+// Only these get a pod_uid (WithPods). Bytes and errors never do: for a
+// pod stats reports from its next pass on, a cAdvisor sample with the same
+// labels would land in stats' series, and two readings of one counter taken
+// at different moments read as a counter reset.
+var cadvisorOnlyMetrics = map[string]struct{}{
 	"container_network_receive_packets_dropped_total":  {},
 	"container_network_transmit_packets_dropped_total": {},
 }
@@ -109,24 +156,29 @@ func (c *CadvisorCollector) Collect(ctx context.Context) ([]*agentv2.Sample, err
 		if podNs == "" || podName == "" {
 			continue
 		}
-		// cAdvisor emits container_network_* per pod and per container in
-		// the pod. The pod-level row carries container="" (the pause
-		// container, owner of the network namespace); per-container rows
-		// repeat the same counter values. We pass them all through with
-		// canonical labels — VM stores them as distinct series and
-		// dashboards filter on container="" for the pod-level view, per
-		// cAdvisor mainstream convention. The 5x cardinality is the
-		// accepted trade-off for canonical compatibility.
+		// Already sent by the stats collector this pass. The container label
+		// is not part of the key: the kubelet reports pod network only for
+		// the pause sandbox (container=""), and a per-container row from some
+		// other cAdvisor would repeat the same counters.
+		if c.statsNetwork.has(metric, podNs, podName, labels["interface"]) {
+			continue
+		}
+		// A hostNetwork pod's interfaces are the node's (WithPods).
+		if c.pods.IsHostNetwork(podNs, podName) {
+			continue
+		}
 		sampleLabels := map[string]string{
 			"cluster_id": c.clusterID,
 			"node":       c.nodeName,
 			"namespace":  podNs,
 			"pod":        podName,
-			"container":  labels["container"], // may be empty for pod-level row
+			"container":  labels["container"], // "" for the pod-level row
 			"interface":  labels["interface"],
 		}
-		if uid := labels["pod_uid"]; uid != "" {
-			sampleLabels["pod_uid"] = uid
+		if _, only := cadvisorOnlyMetrics[metric]; only {
+			if uid := c.pods.UIDFor(podNs, podName); uid != "" {
+				sampleLabels["pod_uid"] = uid
+			}
 		}
 		if c.clusterName != "" {
 			sampleLabels["cluster_name"] = c.clusterName

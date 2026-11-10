@@ -96,8 +96,12 @@ type Result struct {
 	Totals Totals           `json:"totals"`
 	// WindowDays is how much history the P95 really spans; nil when unknown.
 	WindowDays *float64 `json:"windowDays,omitempty"`
-	// Preliminary: WindowDays < ConfidenceDays — the figures are optimistic.
-	Preliminary bool `json:"preliminary"`
+	// InsufficientHistory: the cluster does not yet have ConfidenceDays of usage
+	// history (or has none at all), so right-sizing makes NO recommendations. A
+	// P95 over too short a window is a quiet snapshot of a barely-run cluster, and
+	// acting on it means resizing a workload on no real evidence (finding #74).
+	// Consumers show a "collecting samples" state rather than a confident list.
+	InsufficientHistory bool `json:"insufficientHistory"`
 }
 
 // Key identifies a workload in the P95 indexes: namespace/kind/name.
@@ -106,12 +110,27 @@ func Key(namespace, kind, name string) string { return namespace + "/" + kind + 
 // Evaluate applies the rules to every workload. cpuP95 is in millicores and
 // memP95 in bytes, keyed by Key; a workload with no sample gets P95 0.
 func Evaluate(workloads []models.NamespaceWorkload, cpuP95, memP95 map[string]int64, windowDays *float64) Result {
+	// History gate (finding #74): right-sizing needs at least ConfidenceDays of
+	// usage history to say anything. Below that — or with no samples at all
+	// (windowDays nil) — the P95 is a quiet snapshot of a cluster that has barely
+	// run, and a recommendation built on it means shrinking a workload on no real
+	// evidence. Make no recommendations; report that the data is still collecting.
+	if windowDays == nil || *windowDays < ConfidenceDays {
+		return Result{Recs: []Recommendation{}, WindowDays: windowDays, InsufficientHistory: true}
+	}
 	recs := []Recommendation{}
 	for _, nsw := range workloads {
 		for _, w := range nsw.Workloads {
 			k := Key(w.Namespace, w.Kind, w.Name)
-			cpu := EvaluateResource(w.CPU.Requested, w.CPU.Limit, cpuP95[k], CPUAbsFloorMilli, roundCPU)
-			mem := EvaluateResource(w.Memory.Requested, w.Memory.Limit, memP95[k], MemAbsFloorBytes, roundMem)
+			// A workload absent from the P95 index has no sample at all (e.g. just
+			// deployed into an otherwise-sampled cluster). hasData keeps that apart
+			// from a measured zero: an idle workload genuinely using ~0 IS over-
+			// provisioned, but one never sampled must not be — else it is flagged on
+			// no evidence and told to shrink to the rounding floor (finding #74).
+			cpu95, cpuHas := cpuP95[k]
+			mem95, memHas := memP95[k]
+			cpu := EvaluateResource(w.CPU.Requested, w.CPU.Limit, cpu95, CPUAbsFloorMilli, cpuHas, roundCPU)
+			mem := EvaluateResource(w.Memory.Requested, w.Memory.Limit, mem95, MemAbsFloorBytes, memHas, roundMem)
 			sev, ok := CombinedSeverity(cpu.State, mem.State)
 			if !ok {
 				continue
@@ -141,7 +160,6 @@ func Evaluate(workloads []models.NamespaceWorkload, cpuP95, memP95 map[string]in
 			res.Totals.ReclaimMemBytes += r.Mem.Request - r.Mem.Suggest
 		}
 	}
-	res.Preliminary = windowDays != nil && *windowDays < ConfidenceDays
 	return res
 }
 
@@ -149,8 +167,17 @@ func Evaluate(workloads []models.NamespaceWorkload, cpuP95, memP95 map[string]in
 // resource's own rounding — CPU and memory are never told apart by magnitude:
 // the web version did (below 1024 = millicores), so a CPU suggestion of a
 // core or more was rounded as bytes and came out as ~10 million millicores.
-func EvaluateResource(request, limit, p95, absFloor int64, round func(float64) int64) Finding {
+//
+// hasData is false when the workload has no P95 sample at all (absent from the
+// index). Then there is nothing measured to act on, so no rule fires: a missing
+// sample must not be read as a measured zero, which would flag every unsampled
+// workload as over-provisioned and recommend shrinking it to the rounding floor
+// (finding #74).
+func EvaluateResource(request, limit, p95, absFloor int64, hasData bool, round func(float64) int64) Finding {
 	f := Finding{Request: request, Limit: limit, P95: p95, State: OK}
+	if !hasData {
+		return f
+	}
 	switch {
 	// Near-limit first: it is the urgent signal.
 	case limit > 0 && float64(p95) >= 0.8*float64(limit) && p95-limit > -absFloor:

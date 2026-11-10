@@ -6,6 +6,59 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.6.0] — 2026-11-10
+
+The Pods tab pages its pods, VictoriaMetrics shows what it does with your
+metrics, and every pod's network counts once. Drop-in, no schema change; the
+agent moves to 1.4.8, a metric-correctness fix. Full note:
+[docs/releases/v2.6.0.md](docs/releases/v2.6.0.md).
+
+### Added
+
+- **A workload's Pods tab pages its pods**, 50 at a time, sorted by name, read
+  from the workload's namespace and carrying only the fields the list draws.
+- **System Health gains a VictoriaMetrics section** — the store measuring its own
+  ingestion, active series and drops — and VictoriaMetrics now keeps series of up
+  to 60 labels so the agent's enriched series are stored in full (a
+  VictoriaMetrics you run yourself needs `-maxLabelsPerTimeseries=60`).
+- A `hostNetwork` pod's Monitor tab points at its node's network.
+
+### Fixed
+
+- **Every pod's network was stored twice.** The agent (1.4.8) sends each pod
+  interface once; `hostNetwork` pods no longer report the node's network as their
+  own (it lives in `node_network_*`). `sum by (pod)` / `by (namespace)` network
+  totals are no longer doubled.
+- **Right-sizing no longer recommends shrinking workloads before it has data.**
+  Below ~2 days of history the Capacity and Cost surfaces show a "collecting
+  samples" note instead of advice, or a false "well sized"; a metrics store that
+  does not answer says so instead of "well sized" too.
+- **A metrics-only cluster that was never agent-proxy is reachable** (its
+  dashboards 503'd "waiting for agent"); switching to it from a global page opens
+  on the first click, renaming it no longer fails on the encoded context, and
+  deleting it removes it. A Prometheus-reading agent's demotion no longer
+  overwrites a DaemonSet agent registering at the same instant, nor brings back
+  a cluster deleted within its 30-second grace window.
+- **The Insights Bursts tab is scoped to the selected cluster** (with a *This
+  cluster / All clusters* toggle), and "See the N episodes" opens the burst's
+  exact members by id — the count matches and the top classifiers and pager work
+  over that set. Home's "while you were away" stays org-wide.
+- A reconnecting Prometheus-reading (Mode C) agent no longer demotes its
+  agent-proxy cluster.
+- Monitor charts draw each step's peak on long ranges (the stats beside them
+  read `last` / `avg peak` / `min peak`); Kobi's `get_workload_metrics` finds the
+  same peaks and says when each happened.
+- A recurring OOM stays open until the container outlasts its interval; a
+  Deployment's first rollout no longer trips the zero-replicas insight.
+- Agent samples reach VictoriaMetrics with their labels in one order.
+
+### Security
+
+- Kobi's chat renders Markdown images as text (a model answer could embed an
+  image whose URL the browser fetched on render); the page carries an image CSP.
+- VictoriaMetrics and vmagent → v1.156.0-scratch; two Alpine CVEs in the pinned
+  `azure-mcp` sidecar waived (owner + remove-by date).
+
 ## [2.5.2] — 2026-11-06
 
 Kobi gets a face, and the YAML tab keeps what it hides. Drop-in, no schema

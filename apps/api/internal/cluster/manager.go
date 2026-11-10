@@ -466,6 +466,28 @@ func (m *Manager) AddAgentProxyCluster(clusterID, displayName string) (string, e
 	return contextName, nil
 }
 
+// IsAgentProxyCluster reports whether clusterID is agent-proxy RIGHT NOW: the
+// identity context exists (registered agent-proxy by boot restore or a live
+// kube-proxy agent — agentProxyContexts is NOT cleared on a metrics-only
+// downgrade, see finding #46) AND it is not flagged metrics-only. The
+// agent-channel handler consults it before a capability-less agent demotes a
+// cluster, to tell a genuine first registration of a metrics-only cluster from a
+// demotion of a cluster that is agent-proxy at this instant — the finding #71
+// reconnect race. Satisfies agent.ClusterRegistrar.
+func (m *Manager) IsAgentProxyCluster(clusterID string) bool {
+	if clusterID == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	contextName := AgentProxyContextName(clusterID)
+	if _, ok := m.agentProxyContexts[contextName]; !ok {
+		return false
+	}
+	_, metricsOnly := m.metricsOnlyContexts[contextName]
+	return !metricsOnly
+}
+
 // AddMetricsOnlyCluster registers a cluster whose agent ships metrics but does NOT
 // advertise kube-proxy — so it has no live-resource connector. It surfaces the cluster
 // in ListClusters (switchable, flagged Mode="metrics-only") via the same synthetic-
@@ -480,6 +502,50 @@ func (m *Manager) AddMetricsOnlyCluster(clusterID, displayName string) (string, 
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.addMetricsOnlyLocked(clusterID, displayName), nil
+}
+
+// AddMetricsOnlyClusterUnlessProxy is the first-registration demotion of a
+// capability-less agent's cluster: re-checked and written under ONE lock. It
+// does nothing (false) when the cluster became agent-proxy between the caller's
+// look and this write — a proxy-capable agent's registration landing in that
+// window used to be overwritten, the cluster left monitored-only until a
+// DaemonSet agent reconnected (the check-then-act left by finding #71).
+func (m *Manager) AddMetricsOnlyClusterUnlessProxy(clusterID, displayName string) (bool, error) {
+	if clusterID == "" {
+		return false, fmt.Errorf("clusterID is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	contextName := AgentProxyContextName(clusterID)
+	_, proxy := m.agentProxyContexts[contextName]
+	_, metricsOnly := m.metricsOnlyContexts[contextName]
+	if proxy && !metricsOnly {
+		return false, nil
+	}
+	m.addMetricsOnlyLocked(clusterID, displayName)
+	return true, nil
+}
+
+// DemoteRegisteredCluster is the grace window's deferred demotion: it demotes
+// only while the cluster is still registered. It does nothing (false) when the
+// operator deleted the cluster during the window — the timer re-creating it was
+// a deleted cluster coming back, monitored-only, with no agent behind it.
+func (m *Manager) DemoteRegisteredCluster(clusterID, displayName string) (bool, error) {
+	if clusterID == "" {
+		return false, fmt.Errorf("clusterID is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, registered := m.agentProxyContexts[AgentProxyContextName(clusterID)]; !registered {
+		return false, nil
+	}
+	m.addMetricsOnlyLocked(clusterID, displayName)
+	return true, nil
+}
+
+// addMetricsOnlyLocked is AddMetricsOnlyCluster's body. Assumes m.mu held.
+func (m *Manager) addMetricsOnlyLocked(clusterID, displayName string) string {
 	contextName := AgentProxyContextName(clusterID)
 	if m.metricsOnlyContexts == nil {
 		m.metricsOnlyContexts = make(map[string]string)
@@ -524,7 +590,7 @@ func (m *Manager) AddMetricsOnlyCluster(clusterID, displayName string) (string, 
 		slog.String("context", contextName),
 		slog.String("display_name", displayName),
 	)
-	return contextName, nil
+	return contextName
 }
 
 // retryAgentProxyConnect re-runs connectToContextLocked for an agent-
@@ -639,8 +705,16 @@ func (m *Manager) RemoveAgentProxyCluster(clusterID string) {
 		}
 	}
 
-	// In-memory teardown — nothing to do if the context isn't registered.
-	if _, ok := m.agentProxyContexts[contextName]; !ok {
+	// The cluster is no longer metrics-only either. Without it a metrics-only
+	// cluster could not be deleted (the call answered 200 and the cluster stayed
+	// listed), and the leftover flag kept a stale header for it reachable through
+	// requireClusterAccess.
+	delete(m.metricsOnlyContexts, contextName)
+
+	// In-memory teardown — nothing to do if the context isn't registered. A
+	// cluster that was only ever metrics-only has no agentProxyContexts entry but
+	// does have the kubeconfig context AddMetricsOnlyCluster wrote.
+	if _, ok := m.agentProxyContexts[contextName]; !ok && m.kubeConfig.Contexts[contextName] == nil {
 		return
 	}
 	if m.activeContext == contextName {
@@ -670,6 +744,19 @@ func (m *Manager) ClusterIDForContext(contextName string) string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.agentProxyContexts[contextName]
+}
+
+// IsMetricsOnlyContext reports whether contextName is a registered metrics-only
+// cluster — a valid, connector-less cluster whose Overview is served from VM, not
+// an unresolved agent-proxy context. requireClusterAccess uses it so a
+// metrics-only cluster that was NEVER agent-proxy (its agent:<uid> context lives
+// in metricsOnlyContexts, not agentProxyContexts, so ClusterIDForContext returns
+// "") is not mistaken for "no agent connected yet" (finding #73).
+func (m *Manager) IsMetricsOnlyContext(contextName string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.metricsOnlyContexts[contextName]
+	return ok
 }
 
 // Storage returns the attached storage, or nil if none was set.
@@ -1203,6 +1290,26 @@ func (m *Manager) switchCluster(contextName string, onlyIfUnselected bool) error
 	// collector, and insight ticker stay live in the background.
 	m.parkActiveLocked()
 	m.rememberSelectionLocked(contextName)
+
+	// Metrics-only cluster: there is no connector to spin. Mirror
+	// connectToContextLocked's metrics-only branch — mark it active with a nil
+	// runtime and return success. Without this the switch falls through to the
+	// connector-spin path below, where getOrSpinPooled returns no connector (a
+	// metrics-only cluster has none) and the switch reports "connecting failed"
+	// even though the active context was already set. The API then answered 503
+	// on a switch that actually took effect, so the UI did not navigate to the
+	// Overview when switching from a global page (finding #73).
+	if _, ok := m.metricsOnlyContexts[contextName]; ok {
+		m.connector = nil
+		m.collector = nil
+		m.engine = nil
+		m.cancelFn = nil
+		m.activeGate = nil
+		m.activeContext = contextName
+		m.connErr = nil
+		slog.Info("switched cluster context (metrics-only, no connector)", slog.String("context", contextName))
+		return nil
+	}
 
 	// If the target is already pooled (previously connected, informers still
 	// live), promote it — an INSTANT switch with no WaitForCacheSync. This is

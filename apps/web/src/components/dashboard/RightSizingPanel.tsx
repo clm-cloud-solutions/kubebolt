@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import { Scale } from 'lucide-react'
 import { useMetricsOnly } from '@/hooks/useMetricsOnly'
 import {
@@ -8,7 +9,6 @@ import {
   type ResourceState,
   type Severity,
 } from '@/hooks/useRightSizing'
-import { PreliminaryBadge } from './PreliminaryBadge'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { HoverTooltip, TooltipHeader, TooltipRow } from '@/components/shared/Tooltip'
 import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
@@ -41,9 +41,36 @@ const KIND_TO_PATH: Record<string, string> = {
 
 export function RightSizingPanel({ installed, overview }: Props) {
   const isMetricsOnly = useMetricsOnly()
-  const { recs, isLoading, error, preliminary, windowDays } = useRightSizing(installed, overview)
+  const { recs, isLoading, error, insufficientHistory } = useRightSizing(installed, overview)
+  const queryClient = useQueryClient()
 
   if (!installed) return null
+
+  // Metrics-only FIRST, before the error branch: right-sizing reads per-workload
+  // requests/limits from the connector, which a monitored-only cluster has none
+  // of, so /right-sizing returns "cluster not connected". That is EXPECTED here,
+  // not a failure — show the note regardless of the query error instead of the
+  // generic "couldn't load" state. (Full right-sizing from KSM is a Phase-2
+  // capability.)
+  if (isMetricsOnly) {
+    return (
+      <div className="rounded-lg border border-kb-border bg-kb-card p-4">
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-kb-text-secondary shrink-0">
+            <Scale className="w-4 h-4" />
+          </span>
+          <h4 className="text-sm font-semibold text-kb-text-primary">Right-sizing Recommendations</h4>
+        </div>
+        <p className="text-[11px] text-kb-text-tertiary leading-relaxed">
+          Right-sizing needs per-workload resource specs (requests/limits), which aren't
+          available on a monitored-only cluster. Enable the agent-proxy (
+          <code className="text-kb-text-secondary">rbac.mode=reader</code> or{' '}
+          <code className="text-kb-text-secondary">operator</code>) or connect the cluster's API
+          directly to surface recommendations.
+        </p>
+      </div>
+    )
+  }
 
   // The full list renders inside a scroll container (below) so every
   // recommendation is reachable. The Kobi payload stays capped — sending
@@ -52,10 +79,11 @@ export function RightSizingPanel({ installed, overview }: Props) {
   const KOBI_ROW_CAP = 10
 
   if (!isLoading && !error && recs.length === 0) {
-    // Metrics-only: there are no per-workload request/limit specs to evaluate (the
-    // overview's namespaceWorkloads is connector-derived, empty here). Show a note
-    // instead of an empty grid cell — full right-sizing from KSM is a Phase-2 capability.
-    if (isMetricsOnly) {
+    // Not enough history yet — the cluster has under ~2 days of usage samples
+    // (or none at all), so right-sizing makes no recommendations rather than
+    // ones built on a quiet snapshot of a barely-run cluster (finding #74). Say
+    // so plainly instead of hiding, so an empty panel doesn't read as "broken".
+    if (insufficientHistory) {
       return (
         <div className="rounded-lg border border-kb-border bg-kb-card p-4">
           <div className="flex items-center gap-2 mb-2">
@@ -65,11 +93,9 @@ export function RightSizingPanel({ installed, overview }: Props) {
             <h4 className="text-sm font-semibold text-kb-text-primary">Right-sizing Recommendations</h4>
           </div>
           <p className="text-[11px] text-kb-text-tertiary leading-relaxed">
-            Right-sizing needs per-workload resource specs (requests/limits), which aren't
-            available on a monitored-only cluster. Enable the agent-proxy (
-            <code className="text-kb-text-secondary">rbac.mode=reader</code> or{' '}
-            <code className="text-kb-text-secondary">operator</code>) or connect the cluster's API
-            directly to surface recommendations.
+            Collecting samples — right-sizing needs about 2 days of usage history before it
+            can tell real over-provisioning from a cluster that has only just started running.
+            It fills in on its own.
           </p>
         </div>
       )
@@ -96,7 +122,6 @@ export function RightSizingPanel({ installed, overview }: Props) {
           <h4 className="text-sm font-semibold text-kb-text-primary truncate">
             Right-sizing Recommendations
           </h4>
-          {preliminary && <PreliminaryBadge windowDays={windowDays} />}
           {recs.length > 0 && (
             <AskCopilotButton
               payload={{
@@ -123,9 +148,17 @@ export function RightSizingPanel({ installed, overview }: Props) {
       )}
 
       {error && !isLoading && (
-        <div className="text-[11px] text-status-warn font-mono py-3">
-          Failed to compute recommendations — VM query timed out or returned no data.
-          The first samples need ~15min to flow after agent install.
+        <div className="py-3 space-y-2">
+          <p className="text-[12px] text-kb-text-secondary leading-relaxed">
+            Couldn't load right-sizing right now — the metrics store isn't responding.
+          </p>
+          <button
+            type="button"
+            onClick={() => queryClient.invalidateQueries({ queryKey: ['rightsizing'] })}
+            className="text-[11px] font-medium text-kb-accent hover:underline"
+          >
+            Retry
+          </button>
         </div>
       )}
 

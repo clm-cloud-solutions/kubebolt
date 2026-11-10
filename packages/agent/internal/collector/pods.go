@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -22,7 +23,12 @@ type PodsCache struct {
 
 	mu      sync.RWMutex
 	entries map[string]podMeta
+	// uids maps namespace/name to the pod's UID, for samples that know the
+	// pod only by name (cAdvisor's).
+	uids map[podKey]string
 }
+
+type podKey struct{ namespace, name string }
 
 type podMeta struct {
 	Namespace    string
@@ -30,6 +36,9 @@ type podMeta struct {
 	Labels       map[string]string
 	WorkloadKind string
 	WorkloadName string
+	// HostNetwork is spec.hostNetwork: the pod shares the node's network
+	// namespace, so its network counters are the node's.
+	HostNetwork bool
 }
 
 var propagatedLabels = []string{
@@ -53,6 +62,9 @@ func NewPods(client *kubelet.Client) *PodsCache {
 
 // Refresh pulls /pods from kubelet and replaces the cache.
 func (c *PodsCache) Refresh(ctx context.Context) error {
+	if c.client == nil {
+		return errors.New("pods cache has no kubelet client")
+	}
 	body, err := c.client.Get(ctx, "/pods")
 	if err != nil {
 		return err
@@ -63,15 +75,17 @@ func (c *PodsCache) Refresh(ctx context.Context) error {
 	}
 
 	next := make(map[string]podMeta, len(list.Items))
+	uids := make(map[podKey]string, len(list.Items))
 	for _, p := range list.Items {
 		uid := p.Metadata.UID
 		if uid == "" {
 			continue
 		}
 		meta := podMeta{
-			Namespace: p.Metadata.Namespace,
-			Name:      p.Metadata.Name,
-			Labels:    filterLabels(p.Metadata.Labels),
+			Namespace:   p.Metadata.Namespace,
+			Name:        p.Metadata.Name,
+			Labels:      filterLabels(p.Metadata.Labels),
+			HostNetwork: p.Spec.HostNetwork,
 		}
 		// Take the first controller ownerRef if present.
 		for _, ref := range p.Metadata.OwnerReferences {
@@ -82,12 +96,50 @@ func (c *PodsCache) Refresh(ctx context.Context) error {
 			}
 		}
 		next[uid] = meta
+		uids[podKey{meta.Namespace, meta.Name}] = uid
 	}
 
 	c.mu.Lock()
 	c.entries = next
+	c.uids = uids
 	c.mu.Unlock()
 	return nil
+}
+
+// UIDFor returns the UID of the pod with this namespace and name, or "" when
+// the cache has not seen it. Safe on a nil cache.
+func (c *PodsCache) UIDFor(namespace, name string) string {
+	if c == nil {
+		return ""
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.uids[podKey{namespace, name}]
+}
+
+// IsHostNetwork reports whether the pod with this namespace and name runs
+// with spec.hostNetwork. A pod the cache has not seen reports false, so its
+// network is kept. Safe on a nil cache.
+func (c *PodsCache) IsHostNetwork(namespace, name string) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	uid, ok := c.uids[podKey{namespace, name}]
+	return ok && c.entries[uid].HostNetwork
+}
+
+// Knows reports whether the cache holds the pod with this UID. Safe on a nil
+// cache.
+func (c *PodsCache) Knows(uid string) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	_, ok := c.entries[uid]
+	return ok
 }
 
 // Size returns the number of cached pods. Useful for health logging.
@@ -168,6 +220,11 @@ type podList struct {
 
 type pod struct {
 	Metadata podMetadata `json:"metadata"`
+	Spec     podSpec     `json:"spec"`
+}
+
+type podSpec struct {
+	HostNetwork bool `json:"hostNetwork"`
 }
 
 type podMetadata struct {

@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -144,8 +145,8 @@ func (h *handlers) purgeClusterSecurityData(r *http.Request, ids ...string) {
 }
 
 func (h *handlers) handleDeleteCluster(w http.ResponseWriter, r *http.Request) {
-	contextName := chi.URLParam(r, "context")
-	if contextName == "" {
+	contextName, err := contextURLParam(r)
+	if err != nil || contextName == "" {
 		respondError(w, http.StatusBadRequest, "context name is required")
 		return
 	}
@@ -184,8 +185,8 @@ type renameClusterRequest struct {
 }
 
 func (h *handlers) handleRenameCluster(w http.ResponseWriter, r *http.Request) {
-	contextName := chi.URLParam(r, "context")
-	if contextName == "" {
+	contextName, err := contextURLParam(r)
+	if err != nil || contextName == "" {
 		respondError(w, http.StatusBadRequest, "context name is required")
 		return
 	}
@@ -212,4 +213,19 @@ func (h *handlers) handleRenameCluster(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// contextURLParam reads the {context} path segment, decoded exactly once. chi
+// matches against r.URL.RawPath when the request set it — the path carried an
+// escape the default encoding would not produce, such as %3A in an agent-proxy
+// "agent%3A<id>" — and then returns the segment still encoded; otherwise it
+// matches the already-decoded r.URL.Path. Unescaping that second form again
+// broke a name with a literal "%" ("100%25" → "100%" → invalid escape) or
+// turned it into another name ("a%2541b" → "a%41b" → "aAb").
+func contextURLParam(r *http.Request) (string, error) {
+	raw := chi.URLParam(r, "context")
+	if r.URL.RawPath == "" {
+		return raw, nil
+	}
+	return url.PathUnescape(raw)
 }

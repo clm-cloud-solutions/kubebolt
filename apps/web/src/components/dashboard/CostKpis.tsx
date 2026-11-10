@@ -4,6 +4,7 @@ import { BarList, KPI_COLOR, Legend, RingStat, SemiGauge, SplitBar } from '@/com
 import { columnsFor, useElementWidth } from '@/hooks/useElementWidth'
 import { formatMoney, formatPercent } from '@/utils/formatters'
 import type { ClusterCost } from '@/hooks/useClusterCost'
+import { collectedLabel, RIGHT_SIZING_ERROR_COPY, type RightSizingState } from '@/hooks/useRightSizing'
 import { Link } from 'react-router-dom'
 import { AnchorLink } from '@/components/shared/kpi/CardLinks'
 import { shortenNodeName } from '@/components/resources/NodesSummaryStrip'
@@ -27,9 +28,10 @@ interface Props {
   savingsMonthly: number
   recCount: number
   ratesAvailable: boolean
-  // From useRightSizing — the P95 window is young, so the savings / idle figures
-  // are directional, not a mandate. Surfaced so the headline isn't taken as gospel.
-  preliminary?: boolean
+  // What right-sizing could evaluate (useRightSizing's rightSizingState): only
+  // `clean` may say "well sized" — a failed read or a cluster still collecting
+  // has evaluated nothing.
+  rightSizing: RightSizingState
   windowDays?: number
 }
 
@@ -66,7 +68,7 @@ function dotColor(accent: 'ok' | 'warn' | 'crit' | 'info' | 'default'): string {
 
 const KPI_MIN_WIDTH = 280
 
-export function CostKpis({ cost, savingsMonthly, recCount, ratesAvailable, preliminary, windowDays }: Props) {
+export function CostKpis({ cost, savingsMonthly, recCount, ratesAvailable, rightSizing, windowDays }: Props) {
   const [gridRef, gridWidth] = useElementWidth<HTMLDivElement>()
   // Two thresholds, not one. At 31% idle a cluster is carrying normal burst
   // and HA headroom — amber, worth a look. At 90% it is paying for a cluster
@@ -77,10 +79,6 @@ export function CostKpis({ cost, savingsMonthly, recCount, ratesAvailable, preli
   const idleLit = idleAccent === 'crit'
   // Where the idle spend sits, most first: the lit card names the node.
   const idleNodes = cost.byNode.filter((n) => n.idleMonthly > 0).sort((a, b) => b.idleMonthly - a.idleMonthly)
-  // A young P95 window makes idle/savings read optimistically — say so in the
-  // caption so the headline number carries its own caveat.
-  const prelimSpan =
-    windowDays == null ? '' : windowDays < 1 ? `~${Math.max(1, Math.round(windowDays * 24))}h` : `~${windowDays.toFixed(1)}d`
   const money = (v: number) => formatMoney(v, { exact: v < 100_000 })
   const topNs = [...cost.byNamespace].filter((n) => n.monthly > 0).sort((a, b) => b.monthly - a.monthly)
   const recoverPct =
@@ -216,11 +214,17 @@ export function CostKpis({ cost, savingsMonthly, recCount, ratesAvailable, preli
         value={ratesAvailable && savingsMonthly > 0 ? formatMoney(savingsMonthly, { exact: true }) : '—'}
         unit="/mo savings"
         description={
-          recCount > 0
+          rightSizing === 'recs'
             ? `rightsizing ${recCount} ${recCount === 1 ? 'workload' : 'workloads'}${
                 recoverPct != null ? ` · ${recoverPct < 1 ? '<1' : Math.round(recoverPct)}% of idle` : ''
               }`
-            : 'well sized — nothing to hand back'
+            : rightSizing === 'loading'
+              ? 'computing from 7d P95…'
+              : rightSizing === 'error'
+                ? RIGHT_SIZING_ERROR_COPY
+                : rightSizing === 'collecting'
+                  ? 'collecting samples — needs ~2 days'
+                  : 'well sized — nothing to hand back'
         }
         viz={
           recoverPct != null ? (
@@ -241,8 +245,11 @@ export function CostKpis({ cost, savingsMonthly, recCount, ratesAvailable, preli
         }
         caption={
           <>
-            P95 over 7d
-            {preliminary && <span className="text-status-warn"> · preliminary{prelimSpan ? ` (${prelimSpan}/7d)` : ''}</span>}
+            {rightSizing === 'collecting'
+              ? collectedLabel(windowDays)
+              : rightSizing === 'error'
+                ? 'P95 not computed'
+                : 'P95 over 7d'}
           </>
         }
         info={

@@ -3,6 +3,7 @@ package copilot
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -222,9 +223,14 @@ func (e *Executor) execGetWorkloadMetrics(reqCtx context.Context, _ ToolCall, ar
 	}
 	resp.RangeAdjusted = retentionNote
 	if spec.Bucket > 0 {
-		resp.Aggregation = fmt.Sprintf("each trend point is the PEAK of its %s step (max_over_time); "+
-			"summary.max is therefore the true peak of the whole range, and avg/p95 are computed over "+
-			"per-step peaks so they read higher than typical load", promDuration(spec.Bucket))
+		resp.Aggregation = fmt.Sprintf("cpu and memory: each trend point is the PEAK of its %s step (max_over_time), "+
+			"stamped at the END of that step: the peak happened somewhere in the %s before t, not at t. "+
+			"summary.maxAt is when the range's max happened; use it, not a point's t, "+
+			"to say when the peak was. summary.max is the true peak of the whole range, and avg/p95 are "+
+			"computed over per-step peaks so they read higher than typical load. "+
+			"network is NOT peaked: each point is the rate over the %s before t, a sample of its step, "+
+			"so a burst between samples does not show",
+			promDuration(spec.Bucket), promDuration(spec.Bucket), promDuration(spec.RateWindow))
 	}
 	// Empty-target short-circuit applies to non-Pod, non-Node kinds where
 	// pod resolution yielded nothing (workload paused, scaled to 0, etc).
@@ -386,6 +392,41 @@ func dedupStrings(in []string) []string {
 	return out
 }
 
+// maxAt is when the summary's max happened. On a bucketed range a point's
+// time is its bucket's END, so it asks VictoriaMetrics for the minute
+// (peakAtQuery), at the last point, across exactly what the points cover:
+// from the first point's bucket start to the last point. Elsewhere it is the
+// max point's own time. Nil when the minute cannot be read: the tool still
+// answers, and the aggregation note says what a point's time means.
+func maxAt(ctx context.Context, b promBuilder, m MetricKind, points []metricPoint) *time.Time {
+	if len(points) == 0 {
+		return nil
+	}
+	last := points[len(points)-1].T
+	if q, ok := b.peakAtQuery(m, last.Sub(points[0].T)+b.bucket); ok {
+		ts, found, err := queryInstant(ctx, q, last)
+		if err != nil || !found || ts <= 0 {
+			return nil
+		}
+		at := time.Unix(int64(ts), 0).UTC()
+		return &at
+	}
+	if b.bucket > 0 {
+		return nil
+	}
+	best := -1
+	for i, p := range points {
+		if !math.IsNaN(p.V) && (best < 0 || p.V > points[best].V) {
+			best = i
+		}
+	}
+	if best < 0 {
+		return nil
+	}
+	at := points[best].T
+	return &at
+}
+
 // runMetric runs one metric's range query, summarizes, and downsamples.
 // Handles both single-series (workload aggregate) and multi-series
 // (perContainer=true → one series per container) responses.
@@ -441,6 +482,7 @@ func runMetric(ctx context.Context, b promBuilder, m MetricKind, start, end time
 		// the query is single-series for this path.
 		points := series[0].Points
 		out.Summary = summarize(points)
+		out.Summary.MaxAt = maxAt(ctx, b, m, points)
 		out.Trend = downsample(points, trendTargetPoints)
 		return out, nil
 	}

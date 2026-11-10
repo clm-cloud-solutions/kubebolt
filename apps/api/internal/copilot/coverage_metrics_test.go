@@ -117,7 +117,25 @@ func TestQueryMetrics_RefusesWhatItCannotAnswerHonestly(t *testing.T) {
 	}
 }
 
-func TestRightSizing_ReadableUnitsAndPreliminary(t *testing.T) {
+// While right-sizing is collecting, the engine returns no recommendations. The
+// payload must then carry only the collecting note — "no workload breaks a
+// rule" next to it reads as "nothing is oversized".
+func TestRightSizing_CollectingSaysOnlyThat(t *testing.T) {
+	days := 0.4
+	var payload map[string]any
+	b, _ := json.Marshal(summarizeRightSizing(rightsizing.Result{
+		Recs: []rightsizing.Recommendation{}, WindowDays: &days, InsufficientHistory: true,
+	}, "", "", defaultRightSizingRows))
+	_ = json.Unmarshal(b, &payload)
+	if _, ok := payload["note"]; ok {
+		t.Errorf("a collecting result must not say no workload breaks a rule: %v", payload["note"])
+	}
+	if payload["insufficientHistoryNote"] == nil {
+		t.Error("a collecting result must carry insufficientHistoryNote")
+	}
+}
+
+func TestRightSizing_ReadableUnitsAndInsufficientHistory(t *testing.T) {
 	days := 1.2
 	res := rightsizing.Result{
 		Recs: []rightsizing.Recommendation{{
@@ -125,9 +143,9 @@ func TestRightSizing_ReadableUnitsAndPreliminary(t *testing.T) {
 			CPU: rightsizing.Finding{Request: 2000, P95: 150, State: rightsizing.Over, Suggest: 180},
 			Mem: rightsizing.Finding{Request: 512 * 1024 * 1024, P95: 100 * 1024 * 1024, State: rightsizing.OK},
 		}},
-		Totals:      rightsizing.Totals{Count: 1, ReclaimCPUMilli: 1820},
-		WindowDays:  &days,
-		Preliminary: true,
+		Totals:              rightsizing.Totals{Count: 1, ReclaimCPUMilli: 1820},
+		WindowDays:          &days,
+		InsufficientHistory: true,
 	}
 	// The tool needs a live connector (it reads the workloads' specs), so the
 	// shaping is exercised directly; the executor gate is the generic one.
@@ -142,7 +160,7 @@ func TestRightSizing_ReadableUnitsAndPreliminary(t *testing.T) {
 	if _, ok := row["memory"]; ok {
 		t.Error("a resource in state ok must not add a row")
 	}
-	if payload["preliminary"] != true || payload["reclaimable"].(map[string]any)["cpu"] != "1820m" {
+	if payload["insufficientHistory"] != true || payload["reclaimable"].(map[string]any)["cpu"] != "1820m" {
 		t.Errorf("payload = %v", payload)
 	}
 }

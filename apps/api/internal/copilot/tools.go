@@ -306,7 +306,7 @@ func ToolDefinitions() []ToolDefinition {
 		{
 			Name: "query_metrics",
 			// The escape hatch get_workload_metrics is not.
-			Description: "Run a PromQL query against KubeBolt's metrics store, confined to your organization and the CURRENT cluster (any tenant_id / cluster_id matcher you write is replaced by the server). Use it for what get_workload_metrics does not cover: restarts (kube_pod_container_status_restarts_total), PVC fill (kubelet_volume_stats_used_bytes / capacity), object state (kube_* from kube-state-metrics), HTTP rates and latency from Hubble (pod_flow_http_requests_total, pod_flow_http_latency_seconds_*), node load and pressure. Omit range for the value now, or pass range for a trend (min/avg/max/last plus up to 30 points per series). At most 20 series come back, largest last value first — aggregate with sum by (...) or topk to stay under that. Call get_coverage first if you are not sure a source is shipping; an empty result is not a zero.",
+			Description: "Run a PromQL query against KubeBolt's metrics store, confined to your organization and the CURRENT cluster (any tenant_id / cluster_id matcher you write is replaced by the server). Use it for what get_workload_metrics does not cover: restarts (kube_pod_container_status_restarts_total), PVC fill (kubelet_volume_stats_used_bytes / capacity), object state (kube_* from kube-state-metrics), HTTP rates and latency from Hubble (pod_flow_http_requests_total, pod_flow_http_latency_seconds_*), node load and pressure. Omit range for the value now, or pass range for a trend (min/avg/max/last plus up to 30 points per series). At most 20 series come back, largest last value first — aggregate with sum by (...) or topk to stay under that. Pod network (container_network_*) can hold two series per pod and interface, one with pod_uid and one without: before any sum, keep one per interface with rate(m{…,pod_uid!=\"\"}[5m]) or on (namespace, pod, interface) rate(m{…,pod_uid=\"\",job=\"\"}[5m]). A hostNetwork pod reports its node's interfaces, not traffic of its own. Call get_coverage first if you are not sure a source is shipping; an empty result is not a zero.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -319,7 +319,7 @@ func ToolDefinitions() []ToolDefinition {
 		{
 			Name: "get_right_sizing",
 			// The same engine the Capacity and Cost screens read.
-			Description: "Get right-sizing recommendations for the current cluster's workloads — the same deterministic rules and numbers the Capacity and Cost screens show, from each workload's 7-day P95 of CPU and memory against its requests and limits: NEAR-LIMIT (P95 at 80%+ of the limit — raise the limit before it throttles or OOMs; critical), OVER-PROVISIONED (P95 under half the request — lower it; warning) and NO-SPECS (usage without requests or limits; info), each with a suggested value, plus the total CPU and memory reclaimable. Use it for \"are we oversized\", \"what can we save\", \"which workloads are about to hit their limits\". When it reports preliminary (under 2 days of history), say the figures are not yet reliable.",
+			Description: "Get right-sizing recommendations for the current cluster's workloads — the same deterministic rules and numbers the Capacity and Cost screens show, from each workload's 7-day P95 of CPU and memory against its requests and limits: NEAR-LIMIT (P95 at 80%+ of the limit — raise the limit before it throttles or OOMs; critical), OVER-PROVISIONED (P95 under half the request — lower it; warning) and NO-SPECS (usage without requests or limits; info), each with a suggested value, plus the total CPU and memory reclaimable. Use it for \"are we oversized\", \"what can we save\", \"which workloads are about to hit their limits\". When it reports insufficientHistory (under 2 days of usage history) there are no recommendations yet — say the data is still collecting and do not suggest resizing anything.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -710,7 +710,7 @@ func ToolDefinitions() []ToolDefinition {
 		{
 			Name: "get_workload_metrics",
 			Description: "Query CPU, memory, and network metrics for a workload, pod, OR node — and a node's disk fill — over a time " +
-				"range. Returns a compact summary {min, avg, max, p95} plus a downsampled sparkline " +
+				"range. Returns a compact summary {min, avg, max, p95, and maxAt — when the max happened} plus a downsampled sparkline " +
 				"(~12 points) per requested metric. When CPU or memory is requested, also returns the " +
 				"target's current resource bounds and a derived utilizationPercent — for workloads/pods " +
 				"that's requests/limits from KSM; for nodes it's allocatable (\"request\") and capacity " +

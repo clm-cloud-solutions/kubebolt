@@ -409,9 +409,9 @@ func summarizeRightSizing(res rightsizing.Result, namespace, severity string, li
 	if res.WindowDays != nil {
 		out["historyDays"] = math.Round(*res.WindowDays*10) / 10
 	}
-	if res.Preliminary {
-		out["preliminary"] = true
-		out["preliminaryNote"] = "less than 2 days of usage history: the P95 has not seen two daily peaks, so savings are optimistic — say so, and do not recommend acting on them yet"
+	if res.InsufficientHistory {
+		out["insufficientHistory"] = true
+		out["insufficientHistoryNote"] = "under 2 days of usage history: right-sizing is still collecting and makes no recommendations yet — do not suggest resizing anything, and say the data is not ready"
 	}
 	if len(rows) > limit {
 		out["truncated"] = true
@@ -434,7 +434,10 @@ func summarizeRightSizing(res rightsizing.Result, namespace, severity string, li
 		list = append(list, row)
 	}
 	out["recommendations"] = list
-	if len(res.Recs) == 0 {
+	// While history is insufficient no rule was evaluated, so "no workload breaks
+	// a rule" would contradict insufficientHistoryNote and read as "nothing is
+	// oversized".
+	if len(res.Recs) == 0 && !res.InsufficientHistory {
 		out["note"] = "no workload breaks a rule. If the cluster was just connected, get_coverage says whether usage metrics are flowing — without them every P95 is 0 and nothing can be flagged."
 	}
 	return out

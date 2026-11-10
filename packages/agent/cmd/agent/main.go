@@ -147,8 +147,8 @@ func main() {
 	// series on a 2k-pod AKS cluster). Entries ending in "*" prefix-match;
 	// everything else is exact. Empty value = keep all interfaces. Applied in
 	// BOTH network collectors: stats.go (/stats/summary) and cadvisor.go emit the
-	// same per-interface series, so filtering only one lets the other re-introduce
-	// the dropped names (VM merges the duplicate series).
+	// same per-interface counters, and cadvisor.go sends what stats.go did not, so
+	// filtering only one lets the other re-introduce the dropped names.
 	dropNetIfaces, err := collector.NewInterfaceMatcher(csvList(os.Getenv("KUBEBOLT_AGENT_DROP_NET_INTERFACES")))
 	if err != nil {
 		// A bad pattern must stop the boot: silently mis-dropping either
@@ -159,10 +159,20 @@ func main() {
 	if dropNetIfaces.Size() > 0 {
 		slog.Info("container_network: dropping interfaces", slog.Int("count", dropNetIfaces.Size()))
 	}
+	// Both collectors read each pod's network counters, with label sets that
+	// never match: the store would keep two copies and every sum would double.
+	// cadvisor sends only what stats did not send in the same pass (packets_dropped,
+	// pods and interfaces /stats/summary leaves out). Neither sends pod network for
+	// hostNetwork pods: their interfaces are the node's, already in node_network_*.
+	podNetSeen := collector.NewPodNetworkSeen()
 	stats := collector.NewStats(kc, clusterID, clusterName, *nodeName, tenantID,
 		collector.WithDeferNodeNetwork(deferNodeNetwork),
-		collector.WithDropInterfaces(dropNetIfaces))
-	cadvisor := collector.NewCadvisor(kc, clusterID, clusterName, *nodeName, tenantID, dropNetIfaces)
+		collector.WithDropInterfaces(dropNetIfaces),
+		collector.WithPodNetworkSeen(podNetSeen),
+		collector.WithHostNetworkPods(pods))
+	cadvisor := collector.NewCadvisor(kc, clusterID, clusterName, *nodeName, tenantID, dropNetIfaces,
+		collector.WithStatsNetwork(podNetSeen),
+		collector.WithPods(pods))
 	// NodeStress reads /proc/loadavg + /proc/pressure/* directly.
 	// procPath defaults to "/proc" — system-wide files aren't PID-
 	// namespaced so reading from inside the container returns host
@@ -347,31 +357,20 @@ func main() {
 			}
 		}()
 
-		// Stats collector.
+		// Stats collector, then the cAdvisor network collector, in one loop.
+		// cAdvisor skips the pod network stats sent in the same pass
+		// (PodNetworkSeen); on independent tickers its first pass could run
+		// before stats' and send every pod's copy again after each restart.
+		// If stats fails, it records nothing and cAdvisor sends everything.
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			// Send a first batch immediately so VM has data within seconds.
-			collectAndBuffer(rootCtx, stats, pods, buf)
-			tick := time.NewTicker(*statsInterval)
-			defer tick.Stop()
-			for {
-				select {
-				case <-rootCtx.Done():
-					return
-				case <-tick.C:
-					collectAndBuffer(rootCtx, stats, pods, buf)
-				}
+			pass := func() {
+				collectAndBuffer(rootCtx, stats, pods, buf)
+				collectAndBuffer(rootCtx, cadvisor, pods, buf)
 			}
-		}()
-
-		// cAdvisor network collector — runs on the same cadence as stats.
-		// Complements /stats/summary for kubelets that don't populate the
-		// pod-level network block (e.g. docker-desktop).
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			collectAndBuffer(rootCtx, cadvisor, pods, buf)
+			// Send a first batch immediately so VM has data within seconds.
+			pass()
 			tick := time.NewTicker(*statsInterval)
 			defer tick.Stop()
 			for {
@@ -379,7 +378,7 @@ func main() {
 				case <-rootCtx.Done():
 					return
 				case <-tick.C:
-					collectAndBuffer(rootCtx, cadvisor, pods, buf)
+					pass()
 				}
 			}
 		}()

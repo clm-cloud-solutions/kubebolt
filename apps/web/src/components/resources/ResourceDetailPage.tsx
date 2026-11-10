@@ -37,6 +37,7 @@ import { StatusBadge } from './StatusBadge'
 import { ResourceUsageCell } from '@/components/shared/ResourceUsageCell'
 import { HoverTooltip } from '@/components/shared/Tooltip'
 import { MetricChart, METRIC_ACCENTS } from '@/components/shared/MetricChart'
+import { gaugeMax1m, peakPerStep } from '@/utils/promql'
 import { RangeSelector } from '@/components/shared/RangeSelector'
 import { useMonitorRange } from '@/hooks/useDashboardRange'
 import { TerminalTab, DeploymentTerminalTab, StatefulSetTerminalTab, DaemonSetTerminalTab } from './TerminalTab'
@@ -46,6 +47,8 @@ import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
 import { useAuth } from '@/contexts/AuthContext'
 import { formatAge, formatCPU, formatMemory } from '@/utils/formatters'
 import type { ResourceItem } from '@/types/kubernetes'
+import { NodeNetworkNote, WorkloadNodeNetworkNote } from './NodeNetworkNote'
+import { PodsPager, usePodPages } from './WorkloadPodsPages'
 
 // ─── Keys Display ───────────────────────────────────────────────
 
@@ -2439,6 +2442,18 @@ function MonitorTab({ type, item }: { type: string; item: ResourceItem }) {
 
 const MONITOR_BANNER_DISMISSED_KEY = 'kb-monitor-banner-dismissed'
 
+// The agent sends a pod's network twice: its stats collector with pod_uid
+// and the workload labels, its cAdvisor collector without them. The label
+// sets never match, so VictoriaMetrics keeps both and a plain sum doubles
+// every interface (finding #70). Take the enriched copy and fall back to
+// cAdvisor's per interface, for the pods only cAdvisor saw (short-lived
+// ones) and for agents that send only that copy. The key keeps the
+// interface: a second interface is real traffic, never a duplicate.
+function podNetworkRate(metric: string, selector: string): string {
+  const series = `${metric}{${selector},job="",container="",interface=~"eth.*|en.*|cilium_.*"`
+  return `sum by (interface) (rate(${series},pod_uid!=""}[1m]) or on (cluster_id, namespace, pod, interface) rate(${series},pod_uid=""}[1m]))`
+}
+
 function PodMonitorCharts({ item }: { item: ResourceItem }) {
   const ns = String(item.namespace)
   const name = String(item.name)
@@ -2502,7 +2517,13 @@ function PodMonitorCharts({ item }: { item: ResourceItem }) {
           // (PodsCache enrichment) that the chart's parent Workload
           // Monitor depends on, so the agent stays the primary source
           // and this filter excludes Prom's overlap entirely.
-          query={`sum by (container) (rate(container_cpu_usage_seconds_total{${selector},job="",container!=""}[1m]))`}
+          //
+          // On ranges whose step is over a minute every point is the step's
+          // peak (peakPerStep), so a burst between two points still shows.
+          queries={[{
+            query: `sum by (container) (rate(container_cpu_usage_seconds_total{${selector},job="",container!=""}[1m]))`,
+            peak: peakPerStep(`sum by (container) (rate(container_cpu_usage_seconds_total{${selector},job="",container!=""}[1m]))`),
+          }]}
           referenceLines={cpuRefs}
           accents={METRIC_ACCENTS.cpu}
           chartType="area"
@@ -2511,14 +2532,22 @@ function PodMonitorCharts({ item }: { item: ResourceItem }) {
           title="Memory working set by container"
           unit="bytes"
           // Same job=""/container!="" filter pattern as CPU above —
-          // agent-only, excludes Prom kubelet scrape's overlap.
-          query={`sum by (container) (container_memory_working_set_bytes{${selector},job="",container!=""})`}
+          // agent-only, excludes Prom kubelet scrape's overlap. Peaks on
+          // long ranges as well: a spike of a few minutes is what an OOM
+          // kill looks like, and an hourly sample skipped it.
+          queries={[{
+            query: `sum by (container) (container_memory_working_set_bytes{${selector},job="",container!=""})`,
+            peak: peakPerStep(`sum by (container) (${gaugeMax1m(`container_memory_working_set_bytes{${selector},job="",container!=""}`)})`),
+          }]}
           referenceLines={memRefs}
           accents={METRIC_ACCENTS.memory}
           chartType="area"
         />
       </div>
 
+      {item.hostNetwork === true ? (
+        <NodeNetworkNote title="Network traffic" scope="pod" nodeNames={item.nodeName ? [String(item.nodeName)] : []} />
+      ) : (
       <MonitorChart
         title="Network traffic (RX up / TX down)"
         unit="bytes/s"
@@ -2537,17 +2566,17 @@ function PodMonitorCharts({ item }: { item: ResourceItem }) {
           // /metrics/cadvisor surfaces every interface the kernel reports.
           //
           // `job=""` keeps the agent-first convention from CPU/Memory
-          // above. Network is less duplicative than CPU/Memory (Prom and
-          // agent agree on the labels), but using the same filter keeps
-          // the chart consistent and yields the workload_* enrichment for
-          // the Pod Monitor's secondary indicators.
-          { query: `sum by (interface) (rate(container_network_receive_bytes_total{${selector},job="",container="",interface=~"eth.*|en.*|cilium_.*"}[1m]))`, prefix: 'RX' },
-          { query: `sum by (interface) (rate(container_network_transmit_bytes_total{${selector},job="",container="",interface=~"eth.*|en.*|cilium_.*"}[1m]))`, prefix: 'TX', negate: true },
+          // above: a customer Prometheus forwarding its own cAdvisor scrape
+          // carries `job` and stays out. podNetworkRate picks one of the
+          // agent's two copies of each interface (finding #70).
+          { query: podNetworkRate('container_network_receive_bytes_total', selector), prefix: 'RX' },
+          { query: podNetworkRate('container_network_transmit_bytes_total', selector), prefix: 'TX', negate: true },
         ]}
         accents={METRIC_ACCENTS.networkRxTx}
         chartType="area"
         height={200}
       />
+      )}
     </div>
   )
 }
@@ -2660,7 +2689,13 @@ function WorkloadMonitorCharts({ item, selector, replicas, kindLabel }: Workload
         <MonitorChart
           title={`CPU by container (sum across ${replicaLabel})`}
           unit="cores"
-          query={`sum by (container) (rate(container_cpu_usage_seconds_total{${selector}}[1m]))`}
+          // Peak per step on long ranges, as in the pod's Monitor tab. The
+          // sum runs every minute, so it is the busiest minute of the
+          // replicas together, not each replica's own peak added up.
+          queries={[{
+            query: `sum by (container) (rate(container_cpu_usage_seconds_total{${selector}}[1m]))`,
+            peak: peakPerStep(`sum by (container) (rate(container_cpu_usage_seconds_total{${selector}}[1m]))`),
+          }]}
           referenceLines={cpuRefs}
           accents={METRIC_ACCENTS.cpu}
           chartType="area"
@@ -2668,13 +2703,19 @@ function WorkloadMonitorCharts({ item, selector, replicas, kindLabel }: Workload
         <MonitorChart
           title={`Memory working set by container (sum across ${replicaLabel})`}
           unit="bytes"
-          query={`sum by (container) (container_memory_working_set_bytes{${selector}})`}
+          queries={[{
+            query: `sum by (container) (container_memory_working_set_bytes{${selector}})`,
+            peak: peakPerStep(`sum by (container) (${gaugeMax1m(`container_memory_working_set_bytes{${selector}}`)})`),
+          }]}
           referenceLines={memRefs}
           accents={METRIC_ACCENTS.memory}
           chartType="area"
         />
       </div>
 
+      {item.hostNetwork === true ? (
+        <WorkloadNodeNetworkNote item={item} kindLabel={kindLabel} title={`Network traffic — total across ${replicaLabel}`} />
+      ) : (
       <MonitorChart
         title={`Network traffic — total across ${replicaLabel} (RX up / TX down)`}
         unit="bytes/s"
@@ -2687,6 +2728,7 @@ function WorkloadMonitorCharts({ item, selector, replicas, kindLabel }: Workload
         chartType="area"
         height={200}
       />
+      )}
     </div>
   )
 }
@@ -2743,7 +2785,10 @@ function NodeMonitorCharts({ item }: { item: ResourceItem }) {
         <MonitorChart
           title="CPU usage"
           unit="cores"
-          query={`sum(rate(node_cpu_usage_seconds_total{${selector}}[1m]))`}
+          queries={[{
+            query: `sum(rate(node_cpu_usage_seconds_total{${selector}}[1m]))`,
+            peak: peakPerStep(`sum(rate(node_cpu_usage_seconds_total{${selector}}[1m]))`),
+          }]}
           referenceLines={cpuRefs}
           accents={METRIC_ACCENTS.cpu}
           chartType="area"
@@ -2751,7 +2796,10 @@ function NodeMonitorCharts({ item }: { item: ResourceItem }) {
         <MonitorChart
           title="Memory working set"
           unit="bytes"
-          query={`node_memory_working_set_bytes{${selector}}`}
+          queries={[{
+            query: `node_memory_working_set_bytes{${selector}}`,
+            peak: peakPerStep(gaugeMax1m(`node_memory_working_set_bytes{${selector}}`)),
+          }]}
           referenceLines={memRefs}
           accents={METRIC_ACCENTS.memory}
           chartType="area"
@@ -3276,11 +3324,12 @@ function AgentLockedTile({
 
 function DeploymentPodsTab({ namespace, name }: { namespace: string; name: string }) {
   const { data, isLoading, error } = useDeploymentPods(namespace, name)
+  const pods = data?.items ?? []
+  const pages = usePodPages(pods)
 
   if (isLoading) return <LoadingSpinner />
   if (error) return <ErrorState message={error.message} />
 
-  const pods = data?.items ?? []
   if (pods.length === 0) return <div className="text-sm text-kb-text-tertiary text-center py-12">No pods found</div>
 
   return (
@@ -3300,8 +3349,8 @@ function DeploymentPodsTab({ namespace, name }: { namespace: string; name: strin
           </tr>
         </thead>
         <tbody className="text-kb-text-secondary">
-          {pods.map((pod, i) => (
-            <tr key={i} className="border-t border-kb-border">
+          {pages.pageItems.map((pod, i) => (
+            <tr key={String(pod.name ?? i)} className="border-t border-kb-border">
               <td className="py-2"><ResourceLink name={pod.name} namespace={pod.namespace} resourceType="pods" /></td>
               <td className="py-2">{(() => { const val = String(pod.ready ?? '0/0'); const [r, t] = val.split('/'); return <StatusBadge status={r === t && t !== '0' ? 'Running' : 'Warning'} label={val} /> })()}</td>
               <td className="py-2"><StatusBadge status={pod.status} /></td>
@@ -3326,17 +3375,19 @@ function DeploymentPodsTab({ namespace, name }: { namespace: string; name: strin
           ))}
         </tbody>
       </table>
+      <PodsPager {...pages} />
     </Section>
   )
 }
 
 function StatefulSetPodsTab({ namespace, name }: { namespace: string; name: string }) {
   const { data, isLoading, error } = useStatefulSetPods(namespace, name)
+  const pods = data?.items ?? []
+  const pages = usePodPages(pods)
 
   if (isLoading) return <LoadingSpinner />
   if (error) return <ErrorState message={error.message} />
 
-  const pods = data?.items ?? []
   if (pods.length === 0) return <div className="text-sm text-kb-text-tertiary text-center py-12">No pods found</div>
 
   return (
@@ -3356,8 +3407,8 @@ function StatefulSetPodsTab({ namespace, name }: { namespace: string; name: stri
           </tr>
         </thead>
         <tbody className="text-kb-text-secondary">
-          {pods.map((pod, i) => (
-            <tr key={i} className="border-t border-kb-border">
+          {pages.pageItems.map((pod, i) => (
+            <tr key={String(pod.name ?? i)} className="border-t border-kb-border">
               <td className="py-2"><ResourceLink name={pod.name} namespace={pod.namespace} resourceType="pods" /></td>
               <td className="py-2">{(() => { const val = String(pod.ready ?? '0/0'); const [r, t] = val.split('/'); return <StatusBadge status={r === t && t !== '0' ? 'Running' : 'Warning'} label={val} /> })()}</td>
               <td className="py-2"><StatusBadge status={pod.status} /></td>
@@ -3382,17 +3433,19 @@ function StatefulSetPodsTab({ namespace, name }: { namespace: string; name: stri
           ))}
         </tbody>
       </table>
+      <PodsPager {...pages} />
     </Section>
   )
 }
 
 function DaemonSetPodsTab({ namespace, name }: { namespace: string; name: string }) {
   const { data, isLoading, error } = useDaemonSetPods(namespace, name)
+  const pods = data?.items ?? []
+  const pages = usePodPages(pods)
 
   if (isLoading) return <LoadingSpinner />
   if (error) return <ErrorState message={error.message} />
 
-  const pods = data?.items ?? []
   if (pods.length === 0) return <div className="text-sm text-kb-text-tertiary text-center py-12">No pods found</div>
 
   return (
@@ -3412,8 +3465,8 @@ function DaemonSetPodsTab({ namespace, name }: { namespace: string; name: string
           </tr>
         </thead>
         <tbody className="text-kb-text-secondary">
-          {pods.map((pod, i) => (
-            <tr key={i} className="border-t border-kb-border">
+          {pages.pageItems.map((pod, i) => (
+            <tr key={String(pod.name ?? i)} className="border-t border-kb-border">
               <td className="py-2"><ResourceLink name={pod.name} namespace={pod.namespace} resourceType="pods" /></td>
               <td className="py-2">{(() => { const val = String(pod.ready ?? '0/0'); const [r, t] = val.split('/'); return <StatusBadge status={r === t && t !== '0' ? 'Running' : 'Warning'} label={val} /> })()}</td>
               <td className="py-2"><StatusBadge status={pod.status} /></td>
@@ -3438,17 +3491,19 @@ function DaemonSetPodsTab({ namespace, name }: { namespace: string; name: string
           ))}
         </tbody>
       </table>
+      <PodsPager {...pages} />
     </Section>
   )
 }
 
 function JobPodsTab({ namespace, name }: { namespace: string; name: string }) {
   const { data, isLoading, error } = useJobPods(namespace, name)
+  const pods = data?.items ?? []
+  const pages = usePodPages(pods)
 
   if (isLoading) return <LoadingSpinner />
   if (error) return <ErrorState message={error.message} />
 
-  const pods = data?.items ?? []
   if (pods.length === 0) return <div className="text-sm text-kb-text-tertiary text-center py-12">No pods found</div>
 
   return (
@@ -3466,8 +3521,8 @@ function JobPodsTab({ namespace, name }: { namespace: string; name: string }) {
           </tr>
         </thead>
         <tbody className="text-kb-text-secondary">
-          {pods.map((pod, i) => (
-            <tr key={i} className="border-t border-kb-border">
+          {pages.pageItems.map((pod, i) => (
+            <tr key={String(pod.name ?? i)} className="border-t border-kb-border">
               <td className="py-2"><ResourceLink name={pod.name} namespace={pod.namespace} resourceType="pods" /></td>
               <td className="py-2">
                 {pod.nodeName ? <ResourceLink name={String(pod.nodeName)} resourceType="nodes" /> : '-'}
@@ -3492,6 +3547,7 @@ function JobPodsTab({ namespace, name }: { namespace: string; name: string }) {
           ))}
         </tbody>
       </table>
+      <PodsPager {...pages} />
     </Section>
   )
 }
@@ -3680,17 +3736,17 @@ function WorkloadLogsTab({ pods, isLoading: podsLoading, error: podsError }: { p
 }
 
 function DeploymentLogsTab({ namespace, name }: { namespace: string; name: string }) {
-  const { data, isLoading, error } = useDeploymentPods(namespace, name)
+  const { data, isLoading, error } = useDeploymentPods(namespace, name, 'picker')
   return <WorkloadLogsTab pods={data?.items ?? []} isLoading={isLoading} error={error} />
 }
 
 function StatefulSetLogsTab({ namespace, name }: { namespace: string; name: string }) {
-  const { data, isLoading, error } = useStatefulSetPods(namespace, name)
+  const { data, isLoading, error } = useStatefulSetPods(namespace, name, 'picker')
   return <WorkloadLogsTab pods={data?.items ?? []} isLoading={isLoading} error={error} />
 }
 
 function DaemonSetLogsTab({ namespace, name }: { namespace: string; name: string }) {
-  const { data, isLoading, error } = useDaemonSetPods(namespace, name)
+  const { data, isLoading, error } = useDaemonSetPods(namespace, name, 'picker')
   return <WorkloadLogsTab pods={data?.items ?? []} isLoading={isLoading} error={error} />
 }
 
@@ -4243,13 +4299,13 @@ export function ResourceDetailPage() {
       case 'related': return <RelatedTab type={type} item={item!} />
       case 'events': return <EventsTab type={type} namespace={namespace} name={name} />
       case 'monitor': return <MonitorTab type={type} item={item!} />
-      case 'deploy-pods': return <DeploymentPodsTab namespace={namespace} name={name} />
+      case 'deploy-pods': return <DeploymentPodsTab key={`${namespace}/${name}`} namespace={namespace} name={name} />
       case 'deploy-logs': return <DeploymentLogsTab namespace={namespace} name={name} />
-      case 'sts-pods': return <StatefulSetPodsTab namespace={namespace} name={name} />
+      case 'sts-pods': return <StatefulSetPodsTab key={`${namespace}/${name}`} namespace={namespace} name={name} />
       case 'sts-logs': return <StatefulSetLogsTab namespace={namespace} name={name} />
-      case 'ds-pods': return <DaemonSetPodsTab namespace={namespace} name={name} />
+      case 'ds-pods': return <DaemonSetPodsTab key={`${namespace}/${name}`} namespace={namespace} name={name} />
       case 'ds-logs': return <DaemonSetLogsTab namespace={namespace} name={name} />
-      case 'job-pods': return <JobPodsTab namespace={namespace} name={name} />
+      case 'job-pods': return <JobPodsTab key={`${namespace}/${name}`} namespace={namespace} name={name} />
       case 'node-pods': return <NodePodsTab nodeName={name} />
       case 'np-matched-pods': return <NetworkPolicyMatchedPodsTab item={item!} />
       case 'job-logs': return <JobLogsTab namespace={namespace} name={name} />

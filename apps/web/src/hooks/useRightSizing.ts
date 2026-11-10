@@ -63,21 +63,46 @@ export interface RightSizingResult {
   // over [7d], but a freshly-connected cluster only has a few hours — so this
   // is what the recommendation is REALLY based on. undefined while loading.
   windowDays?: number
-  // True when windowDays < CONFIDENCE_DAYS: the P95 hasn't seen enough daily
-  // cycles yet (a low-load snapshot masquerading as a 7d baseline), so the
-  // reclaim / savings figures are optimistic and should read as PRELIMINARY
-  // rather than something to act on. Surfaced as a badge by consumers.
-  preliminary: boolean
+  // True when the cluster has under ~2 days of usage history (or none at all):
+  // right-sizing is still collecting and returns NO recommendations, rather than
+  // ones built on a quiet snapshot of a barely-run cluster. Consumers show a
+  // "collecting samples" state instead of an empty or falsely-confident list.
+  insufficientHistory: boolean
 }
 
 interface RightSizingResponse {
   recs: Recommendation[]
   totals: RightSizingTotals
   windowDays?: number
-  preliminary: boolean
+  insufficientHistory: boolean
 }
 
 const EMPTY_TOTALS: RightSizingTotals = { count: 0, reclaimCpuMilli: 0, reclaimMemBytes: 0 }
+
+// The states every right-sizing surface must tell apart. Only `clean` may say
+// "well sized": a failed read and a cluster still collecting have evaluated
+// nothing, and both used to fall through to that claim. Recommendations already
+// on screen win over a later failed refresh — they are still the last true answer.
+export type RightSizingState = 'loading' | 'recs' | 'error' | 'collecting' | 'clean'
+
+export function rightSizingState(
+  r: Pick<RightSizingResult, 'isLoading' | 'error' | 'insufficientHistory'>,
+  count: number,
+): RightSizingState {
+  if (r.isLoading) return 'loading'
+  if (count > 0) return 'recs'
+  if (r.error) return 'error'
+  if (r.insufficientHistory) return 'collecting'
+  return 'clean'
+}
+
+// How far a collecting cluster is towards the ~2 days the rules need.
+export function collectedLabel(windowDays?: number | null): string {
+  if (windowDays == null || windowDays <= 0) return 'no usage history yet'
+  return `${Math.max(1, Math.round(windowDays * 24))}h of ~48h collected`
+}
+
+export const RIGHT_SIZING_ERROR_COPY = 'couldn’t read usage history — tries again in 5 min'
 
 // `overview` is no longer read — the backend has the workloads' specs — and
 // stays in the signature so the eight consumers do not change.
@@ -98,6 +123,6 @@ export function useRightSizing(installed: boolean, _overview?: ClusterOverview):
     isLoading: q.isLoading,
     error: (q.error as Error | null) ?? null,
     windowDays: q.data?.windowDays,
-    preliminary: q.data?.preliminary ?? false,
+    insufficientHistory: q.data?.insufficientHistory ?? false,
   }
 }

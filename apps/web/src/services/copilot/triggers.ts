@@ -105,12 +105,16 @@ export interface MetricAnomalyTriggerPayload {
     query: string           // first query's PromQL; multi-query charts send the primary one
     unit?: string           // "cores" | "bytes" | "bytes/s" | "percent" | ...
     rangeLabel: string      // "5m" | "15m" | "1h" | ...
+    // Set when the chart draws step peaks (long ranges): the step each peak
+    // covers. Series with `peak` have avg/min over per-step peaks.
+    peakStep?: string
     series: Array<{
       name: string
       now?: number
       avg?: number
       max?: number
       min?: number
+      peak?: boolean
     }>
     // Optional reference lines breached during the range — gives
     // the LLM a hint that "limit was hit" without re-querying.
@@ -380,10 +384,18 @@ export function buildTriggerPrompt(payload: CopilotTriggerPayload): string {
       ]
       if (m.unit) lines.push(`Unit: ${m.unit}`)
 
+      if (m.peakStep && m.series.some((s) => s.peak)) {
+        lines.push(
+          ``,
+          `Series marked (peaks) draw the PEAK of each ${m.peakStep} step: max is the true peak of the range, ` +
+            `"now" is the last step's peak, and avg / min are over those per-step peaks — higher than ` +
+            `typical load. Do not size requests from them; use max for headroom and query the raw series for typical use.`,
+        )
+      }
       if (m.series.length > 0) {
         lines.push(``, `Series (now / avg / max / min):`)
         for (const s of m.series.slice(0, 12)) {
-          const parts: string[] = [`  - ${s.name}`]
+          const parts: string[] = [`  - ${s.name}${s.peak ? ' (peaks)' : ''}`]
           const stats: string[] = []
           if (typeof s.now === 'number') stats.push(`now=${formatNumber(s.now)}`)
           if (typeof s.avg === 'number') stats.push(`avg=${formatNumber(s.avg)}`)

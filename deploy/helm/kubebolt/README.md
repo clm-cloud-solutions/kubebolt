@@ -156,7 +156,7 @@ identities. The web runs under its own, so none of those reach it.
 |-----------|-------------|---------|
 | `metrics.storage.embedded.enabled` | Deploy the bundled single-node VictoriaMetrics StatefulSet | `true` |
 | `metrics.storage.embedded.image.repository` | VictoriaMetrics image | `victoriametrics/victoria-metrics` |
-| `metrics.storage.embedded.image.tag` | VictoriaMetrics tag | `v1.155.0-scratch` |
+| `metrics.storage.embedded.image.tag` | VictoriaMetrics tag | `v1.156.0-scratch` |
 | `metrics.storage.embedded.image.pullPolicy` | Pull policy | `IfNotPresent` |
 | `metrics.storage.embedded.retention` | Retention window | `30d` |
 | `metrics.storage.embedded.persistence.enabled` | Use a PVC (otherwise `emptyDir`) | `true` |
@@ -166,7 +166,7 @@ identities. The web runs under its own, so none of those reach it.
 | `metrics.alertRules.labels` | Extra labels on the `PrometheusRule`, for your Prometheus' `ruleSelector` (kube-prometheus-stack: `release: <its release>`) | `{}` |
 | `metrics.storage.embedded.persistence.accessModes` | PVC access modes | `[ReadWriteOnce]` |
 | `metrics.storage.embedded.resources` | VictoriaMetrics requests / limits | `100m`/`256Mi` – `1000m`/`2Gi` |
-| `metrics.storage.embedded.extraArgs` | Extra VictoriaMetrics flags, appended after the chart's (`--dedup.minScrapeInterval=30s` is set by default; pass `--dedup.minScrapeInterval=0` to disable) | `[]` |
+| `metrics.storage.embedded.extraArgs` | Extra VictoriaMetrics flags, appended after the chart's (`--dedup.minScrapeInterval=30s` and `--maxLabelsPerTimeseries=60` are set by default; pass `--dedup.minScrapeInterval=0` to disable dedup) | `[]` |
 | `metrics.storage.externalUrl` | External VictoriaMetrics-compatible URL, required when `embedded.enabled=false` | `""` |
 | `metrics.remoteWrite.enabled` | Accept Prometheus `remote_write` at `POST /api/v1/prom/write` (used by the agent's vmagent sidecar or your own Prometheus) | `false` |
 | `metrics.remoteWrite.authMode` | Bearer-token enforcement on that endpoint: `disabled` / `permissive` / `enforced` (same ingest tokens as the agent channel) | `disabled` |
