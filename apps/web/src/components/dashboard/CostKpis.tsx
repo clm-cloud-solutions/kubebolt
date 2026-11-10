@@ -4,6 +4,7 @@ import { BarList, KPI_COLOR, Legend, RingStat, SemiGauge, SplitBar } from '@/com
 import { columnsFor, useElementWidth } from '@/hooks/useElementWidth'
 import { formatMoney, formatPercent } from '@/utils/formatters'
 import type { ClusterCost } from '@/hooks/useClusterCost'
+import { collectedLabel, RIGHT_SIZING_ERROR_COPY, type RightSizingState } from '@/hooks/useRightSizing'
 import { Link } from 'react-router-dom'
 import { AnchorLink } from '@/components/shared/kpi/CardLinks'
 import { shortenNodeName } from '@/components/resources/NodesSummaryStrip'
@@ -27,9 +28,11 @@ interface Props {
   savingsMonthly: number
   recCount: number
   ratesAvailable: boolean
-  // True while right-sizing is still collecting history (under ~2 days): there are
-  // no recommendations yet, so the savings KPI says so instead of "well sized".
-  insufficientHistory?: boolean
+  // What right-sizing could evaluate (useRightSizing's rightSizingState): only
+  // `clean` may say "well sized" — a failed read or a cluster still collecting
+  // has evaluated nothing.
+  rightSizing: RightSizingState
+  windowDays?: number
 }
 
 // Efficiency thresholds — green when you use most of what you pay
@@ -65,7 +68,7 @@ function dotColor(accent: 'ok' | 'warn' | 'crit' | 'info' | 'default'): string {
 
 const KPI_MIN_WIDTH = 280
 
-export function CostKpis({ cost, savingsMonthly, recCount, ratesAvailable, insufficientHistory }: Props) {
+export function CostKpis({ cost, savingsMonthly, recCount, ratesAvailable, rightSizing, windowDays }: Props) {
   const [gridRef, gridWidth] = useElementWidth<HTMLDivElement>()
   // Two thresholds, not one. At 31% idle a cluster is carrying normal burst
   // and HA headroom — amber, worth a look. At 90% it is paying for a cluster
@@ -211,13 +214,17 @@ export function CostKpis({ cost, savingsMonthly, recCount, ratesAvailable, insuf
         value={ratesAvailable && savingsMonthly > 0 ? formatMoney(savingsMonthly, { exact: true }) : '—'}
         unit="/mo savings"
         description={
-          recCount > 0
+          rightSizing === 'recs'
             ? `rightsizing ${recCount} ${recCount === 1 ? 'workload' : 'workloads'}${
                 recoverPct != null ? ` · ${recoverPct < 1 ? '<1' : Math.round(recoverPct)}% of idle` : ''
               }`
-            : insufficientHistory
-              ? 'collecting samples — needs ~2 days'
-              : 'well sized — nothing to hand back'
+            : rightSizing === 'loading'
+              ? 'computing from 7d P95…'
+              : rightSizing === 'error'
+                ? RIGHT_SIZING_ERROR_COPY
+                : rightSizing === 'collecting'
+                  ? 'collecting samples — needs ~2 days'
+                  : 'well sized — nothing to hand back'
         }
         viz={
           recoverPct != null ? (
@@ -237,7 +244,13 @@ export function CostKpis({ cost, savingsMonthly, recCount, ratesAvailable, insuf
           ) : undefined
         }
         caption={
-          <>P95 over 7d</>
+          <>
+            {rightSizing === 'collecting'
+              ? collectedLabel(windowDays)
+              : rightSizing === 'error'
+                ? 'P95 not computed'
+                : 'P95 over 7d'}
+          </>
         }
         info={
           <>

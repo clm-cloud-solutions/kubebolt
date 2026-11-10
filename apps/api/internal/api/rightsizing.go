@@ -65,24 +65,45 @@ func (h *handlers) computeRightSizing(ctx context.Context, conn *cluster.Connect
 	}
 	scope := func(q string) string { return scopeQueryByTenant(scopeQueryByCluster(q, uid), tenant) }
 
-	cpuRows, err := runInstantQuery(ctx, scope(rightSizingCPUQuery))
+	in, err := readRightSizingInputs(ctx, scope)
 	if err != nil {
 		return rightsizing.Result{}, err
-	}
-	memRows, err := runInstantQuery(ctx, scope(rightSizingMemQuery))
-	if err != nil {
-		return rightsizing.Result{}, err
-	}
-	var windowDays *float64
-	if rows, err := runInstantQuery(ctx, scope(rightSizingWindowQuery)); err == nil && len(rows) > 0 {
-		d := rows[0].Value / 24
-		windowDays = &d
 	}
 	res := rightsizing.Evaluate(conn.NamespaceWorkloads(),
-		p95Index(cpuRows, 1000), // cores → millicores
-		p95Index(memRows, 1), windowDays)
+		p95Index(in.cpu, 1000), // cores → millicores
+		p95Index(in.mem, 1), in.windowDays)
 	rightSizingCache.Store(key, rightSizingEntry{at: time.Now(), res: res})
 	return res, nil
+}
+
+type rightSizingInputs struct {
+	cpu, mem   []vmRow
+	windowDays *float64 // nil = the store holds no usage history for this cluster
+}
+
+// readRightSizingInputs runs the three queries. A failed read of ANY of them is
+// an error — including the history window: read as "no history", a timeout on
+// that one query made the gate answer "still collecting" (no recommendations)
+// over a cluster with weeks of data, and the cache kept that answer for the
+// whole TTL. Only an empty answer means there is no history.
+func readRightSizingInputs(ctx context.Context, scope func(string) string) (rightSizingInputs, error) {
+	var in rightSizingInputs
+	var err error
+	if in.cpu, err = runInstantQuery(ctx, scope(rightSizingCPUQuery)); err != nil {
+		return rightSizingInputs{}, err
+	}
+	if in.mem, err = runInstantQuery(ctx, scope(rightSizingMemQuery)); err != nil {
+		return rightSizingInputs{}, err
+	}
+	rows, err := runInstantQuery(ctx, scope(rightSizingWindowQuery))
+	if err != nil {
+		return rightSizingInputs{}, err
+	}
+	if len(rows) > 0 {
+		d := rows[0].Value / 24
+		in.windowDays = &d
+	}
+	return in, nil
 }
 
 func p95Index(rows []vmRow, scale float64) map[string]int64 {

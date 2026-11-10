@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/services/api'
-import { useRightSizing } from '@/hooks/useRightSizing'
+import { useRightSizing, rightSizingState, collectedLabel, RIGHT_SIZING_ERROR_COPY } from '@/hooks/useRightSizing'
 import { useCostAvailable } from '@/hooks/useCostAvailable'
 import { useNodeRates, estimateMonthlySavings } from '@/hooks/useClusterCost'
 import { formatCPU, formatMemory, formatMoney } from '@/utils/formatters'
@@ -79,7 +79,11 @@ export function CapacityStrip({ rangeMinutes, installed, overview }: Props) {
   const mem = usePeakSeries('mem', MEM_QUERY, rangeMinutes, installed)
   const cpuNodePeaks = useNodePeaks('cpu', CPU_BY_NODE, rangeMinutes, installed)
   const memNodePeaks = useNodePeaks('mem', MEM_BY_NODE, rangeMinutes, installed)
-  const { recs, totals, isLoading: recsLoading, windowDays, insufficientHistory } = useRightSizing(installed, overview)
+  const { recs, totals, isLoading: recsLoading, error: recsError, windowDays, insufficientHistory } = useRightSizing(installed, overview)
+  // A failed read or a cluster still collecting has evaluated nothing: the card
+  // shows "—", never "0" or "well sized" (the 0 claimed nothing was reclaimable).
+  const rsState = rightSizingState({ isLoading: recsLoading, error: recsError, insufficientHistory }, totals.count)
+  const rsUnknown = rsState === 'error' || rsState === 'collecting'
 
   // Money layer: when OpenCost cost rates are available, price the
   // reclaimable capacity into $/mo — the same node rates and formula
@@ -273,16 +277,24 @@ export function CapacityStrip({ rangeMinutes, installed, overview }: Props) {
       />
       <KpiCard
         primary
-        value={recsLoading ? '…' : reclaimHeadline ? reclaimHeadline[0] : '0'}
-        unit={byCpu ? (reclaimHeadline?.[1] === 'cores' ? 'cores' : 'cpu') : reclaimHeadline ? `${reclaimHeadline[1]} memory` : undefined}
+        value={rsState === 'loading' ? '…' : rsUnknown ? '—' : reclaimHeadline ? reclaimHeadline[0] : '0'}
+        unit={
+          rsUnknown
+            ? undefined
+            : byCpu
+              ? (reclaimHeadline?.[1] === 'cores' ? 'cores' : 'cpu')
+              : reclaimHeadline ? `${reclaimHeadline[1]} memory` : undefined
+        }
         description={
-          totals.count > 0
+          rsState === 'recs'
             ? `reclaimable${showMoney ? ` · ≈ ${formatMoney(savingsMonthly, { exact: true })}/mo` : ''} · ${totals.count} ${totals.count === 1 ? 'rec' : 'recs'}`
-            : recsLoading
+            : rsState === 'loading'
               ? 'computing from 7d P95…'
-              : insufficientHistory
-                ? 'collecting samples — needs ~2 days'
-                : 'well sized — nothing to hand back'
+              : rsState === 'error'
+                ? RIGHT_SIZING_ERROR_COPY
+                : rsState === 'collecting'
+                  ? 'collecting samples — needs ~2 days'
+                  : 'well sized — nothing to hand back'
         }
         viz={
           reclaimRows.length > 0 ? (
@@ -298,7 +310,11 @@ export function CapacityStrip({ rangeMinutes, installed, overview }: Props) {
         }
         caption={
           <>
-            {`P95 over ${windowDays != null ? `${Math.max(1, Math.round(windowDays))}d` : '7d'}`}
+            {rsState === 'collecting'
+              ? collectedLabel(windowDays)
+              : rsState === 'error'
+                ? 'P95 not computed'
+                : `P95 over ${windowDays != null ? `${Math.max(1, Math.round(windowDays))}d` : '7d'}`}
             {totals.count > 0 && (
               <>
                 {' · '}

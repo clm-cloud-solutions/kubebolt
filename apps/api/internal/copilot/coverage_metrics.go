@@ -434,7 +434,10 @@ func summarizeRightSizing(res rightsizing.Result, namespace, severity string, li
 		list = append(list, row)
 	}
 	out["recommendations"] = list
-	if len(res.Recs) == 0 {
+	// While history is insufficient no rule was evaluated, so "no workload breaks
+	// a rule" would contradict insufficientHistoryNote and read as "nothing is
+	// oversized".
+	if len(res.Recs) == 0 && !res.InsufficientHistory {
 		out["note"] = "no workload breaks a rule. If the cluster was just connected, get_coverage says whether usage metrics are flowing — without them every P95 is 0 and nothing can be flagged."
 	}
 	return out
