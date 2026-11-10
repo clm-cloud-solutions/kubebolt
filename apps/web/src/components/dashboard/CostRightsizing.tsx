@@ -5,7 +5,6 @@ import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
 import { formatMoney, formatCPU, formatMemory } from '@/utils/formatters'
 import { estimateMonthlySavings, type NodeRates } from '@/hooks/useClusterCost'
 import type { Recommendation } from '@/hooks/useRightSizing'
-import { PreliminaryBadge } from './PreliminaryBadge'
 
 // CostRightsizing — the FinOps lens on the shared right-sizing engine
 // (design/kubebolt-cost-redesign.html "Rightsizing recommendations").
@@ -26,9 +25,9 @@ interface Props {
   recs: Recommendation[]
   rates: NodeRates
   savingsMonthly: number
-  // From useRightSizing — young P95 window ⇒ directional savings.
-  preliminary?: boolean
-  windowDays?: number
+  // True while right-sizing is still collecting history (under ~2 days): there
+  // are no recommendations yet, so the card says so instead of "well sized".
+  insufficientHistory?: boolean
 }
 
 const KIND_TO_PATH: Record<string, string> = {
@@ -56,7 +55,7 @@ function priceRecs(recs: Recommendation[], rates: NodeRates): Priced[] {
     .sort((a, b) => b.savings - a.savings)
 }
 
-export function CostRightsizing({ recs, rates, savingsMonthly, preliminary, windowDays }: Props) {
+export function CostRightsizing({ recs, rates, savingsMonthly, insufficientHistory }: Props) {
   const priced = priceRecs(recs, rates)
 
   // Kobi payload — the priced recommendations the user sees, so the
@@ -96,7 +95,6 @@ export function CostRightsizing({ recs, rates, savingsMonthly, preliminary, wind
           <h4 className="text-sm font-semibold text-kb-text-primary truncate">
             Rightsizing savings
           </h4>
-          {preliminary && <PreliminaryBadge windowDays={windowDays} />}
           <HoverTooltip
             body={
               <>
@@ -141,9 +139,11 @@ export function CostRightsizing({ recs, rates, savingsMonthly, preliminary, wind
 
       {priced.length === 0 ? (
         <div className="py-8 text-center text-xs text-kb-text-tertiary">
-          {rates.available
-            ? 'No over-provisioned workloads — well sized'
-            : 'Cost rates unavailable — savings can’t be priced'}
+          {insufficientHistory
+            ? 'Collecting samples — right-sizing needs about 2 days of usage history'
+            : rates.available
+              ? 'No over-provisioned workloads — well sized'
+              : 'Cost rates unavailable — savings can’t be priced'}
         </div>
       ) : (
         <>

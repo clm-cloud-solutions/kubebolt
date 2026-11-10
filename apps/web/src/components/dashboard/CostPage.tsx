@@ -51,7 +51,7 @@ export function CostPage() {
   // right-sizing recommendations.
   const cost = useClusterCost(costAvailable)
   const rates = useNodeRates(costAvailable)
-  const { recs, totals, preliminary, windowDays } = useRightSizing(installed, overview)
+  const { recs, totals, insufficientHistory } = useRightSizing(installed, overview)
   const savingsMonthly = estimateMonthlySavings(
     totals.reclaimCpuMilli,
     totals.reclaimMemBytes,
@@ -93,8 +93,7 @@ export function CostPage() {
             savingsMonthly={savingsMonthly}
             recCount={totals.count}
             ratesAvailable={rates.available}
-            preliminary={preliminary}
-            windowDays={windowDays}
+            insufficientHistory={insufficientHistory}
           />
 
           {/* Cost trends — one enclosing card for the two run-rate charts, the
@@ -183,7 +182,7 @@ export function CostPage() {
             <div id="cost-breakdown" className="min-w-0 scroll-mt-4 [&>*]:h-full">
               <CostBreakdown cost={cost} />
             </div>
-            <CostRightsizing recs={recs} rates={rates} savingsMonthly={savingsMonthly} preliminary={preliminary} windowDays={windowDays} />
+            <CostRightsizing recs={recs} rates={rates} savingsMonthly={savingsMonthly} insufficientHistory={insufficientHistory} />
           </div>
         </>
       )}
