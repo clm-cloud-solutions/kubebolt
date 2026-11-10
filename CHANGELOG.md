@@ -34,6 +34,10 @@ agent moves to 1.4.8, a metric-correctness fix. Full note:
 - **A metrics-only cluster that was never agent-proxy is reachable** (its
   dashboards 503'd "waiting for agent"); switching to it from a global page opens
   on the first click, and renaming it no longer fails on the encoded context.
+- **The Insights Bursts tab is scoped to the selected cluster** (with a *This
+  cluster / All clusters* toggle), and "See the N episodes" opens the burst's
+  exact members by id — the count matches and the top classifiers and pager work
+  over that set. Home's "while you were away" stays org-wide.
 - A reconnecting Prometheus-reading (Mode C) agent no longer demotes its
   agent-proxy cluster.
 - Monitor charts draw each step's peak on long ranges; Kobi's

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -108,6 +109,67 @@ func (h *handlers) handleListEpisodes(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]any{
 		"episodes": eps,
 		"window":   map[string]string{"since": q.Since.Format(time.RFC3339), "until": q.Until.Format(time.RFC3339)},
+	})
+}
+
+// handleBurstEpisodes — GET /insights/operational-episodes/{id}/episodes.
+// Returns EXACTLY the member episodes of one burst, by id — not a time window.
+// "See the N episodes" must land on the same N, with no non-member (expectation)
+// episode the window would otherwise sweep in (finding #75). The burst id is
+// deterministic, so recomputing the same window the Bursts tab used reproduces
+// it; the URL carries one burst id, never the N member ids (which a big burst
+// would bloat it with).
+func (h *handlers) handleBurstEpisodes(w http.ResponseWriter, r *http.Request) {
+	if h.operational == nil || h.episodes == nil {
+		respondError(w, http.StatusServiceUnavailable, "operational episodes are not enabled on this install")
+		return
+	}
+	id := chi.URLParam(r, "id")
+	org := auth.ContextTenantID(r)
+	now := time.Now().UTC()
+	since, until := now.Add(-24*time.Hour), now
+	var err error
+	if raw := r.URL.Query().Get("since"); raw != "" {
+		if since, err = time.Parse(time.RFC3339, raw); err != nil {
+			respondError(w, http.StatusBadRequest, "since must be RFC3339")
+			return
+		}
+	}
+	if raw := r.URL.Query().Get("until"); raw != "" {
+		if until, err = time.Parse(time.RFC3339, raw); err != nil {
+			respondError(w, http.StatusBadRequest, "until must be RFC3339")
+			return
+		}
+	}
+	ops, err := h.operational.ClusterAndStore(r.Context(), org, since, until)
+	if err != nil {
+		slog.Error("burst episodes: cluster-and-store failed",
+			slog.String("org", org), slog.String("error", err.Error()))
+		respondError(w, http.StatusInternalServerError, "could not compute operational episodes")
+		return
+	}
+	var memberIDs []string
+	for i := range ops {
+		if ops[i].ID == id {
+			memberIDs = ops[i].MemberIDs
+			break
+		}
+	}
+	// Fetch the members by id (the detail reader), filtered to the caller's
+	// readable clusters. A member pruned since the burst was computed is skipped.
+	may := h.readableCluster(r)
+	eps := make([]insights.Episode, 0, len(memberIDs))
+	for _, mid := range memberIDs {
+		ep, _, e := h.episodes.Episode(r.Context(), org, mid)
+		if e != nil || !may(ep.ClusterID) {
+			continue
+		}
+		eps = append(eps, ep)
+	}
+	h.enrichEpisodeClusterNames(r, eps)
+	respondJSON(w, http.StatusOK, map[string]any{
+		"episodes": eps,
+		"window":   map[string]string{"since": since.Format(time.RFC3339), "until": until.Format(time.RFC3339)},
 	})
 }
 

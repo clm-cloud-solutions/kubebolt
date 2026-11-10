@@ -223,6 +223,13 @@ func (h *handlers) handleOperationalEpisodes(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	ops = filterBursts(ops, h.readableCluster(r))
+	// Insights is cluster-scoped: by default show only bursts that touched the
+	// active cluster, so a burst entirely on another cluster does not surface
+	// under this one (finding #75). ?cluster=all opts back into the org-wide
+	// view. Home's shift report is a separate, deliberately org-wide path.
+	if active := h.activeClusterUID(r.Context()); active != "" && r.URL.Query().Get("cluster") != "all" {
+		ops = burstsTouchingCluster(ops, active)
+	}
 	respondJSON(w, http.StatusOK, map[string]any{
 		"episodes":     ops,
 		"clusterNames": h.burstClusterNames(r, ops),

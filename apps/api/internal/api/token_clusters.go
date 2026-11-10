@@ -210,6 +210,25 @@ func filterBursts(ops []insights.OperationalEpisode, may func(string) bool) []in
 	return out
 }
 
+// burstsTouchingCluster keeps the bursts whose cluster set includes the given
+// one — SELECTION scoping for the cluster-scoped Insights view (finding #75),
+// so a burst entirely on another cluster does not surface under this one.
+// Unlike filterBursts (PERMISSION scoping, which narrows the cluster set and
+// blanks the blast of a partly-unreadable burst), the caller can read the whole
+// burst here, so its blast and cluster set are left intact.
+func burstsTouchingCluster(ops []insights.OperationalEpisode, cluster string) []insights.OperationalEpisode {
+	out := make([]insights.OperationalEpisode, 0, len(ops))
+	for _, o := range ops {
+		for _, c := range o.Clusters {
+			if c == cluster {
+				out = append(out, o)
+				break
+			}
+		}
+	}
+	return out
+}
+
 // windowForClusters reads an episode window for a caller narrowed to some
 // clusters. The store pages the whole org newest first, so filtering one org
 // page afterwards could leave a narrowed caller with nothing at all while its

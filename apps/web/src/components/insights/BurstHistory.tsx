@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { AlertTriangle, Layers, RotateCw, Rocket, HelpCircle } from 'lucide-react'
@@ -114,12 +114,16 @@ export function BurstHistory() {
   // between the query key and the label the operator is reading.
   const now = useMemo(() => new Date(), [searchParams.toString()])
   const win = resolveWindow(searchParams, now)
+  // Cluster scope mirrors Active / History: by default the bursts that touched
+  // the cluster you are looking at, with an opt-out to the org-wide view
+  // (finding #75). Home's "while you were away" is a separate, org-wide path.
+  const [scope, setScope] = useState<'cluster' | 'all'>('cluster')
 
   const since = win.from.toISOString()
   const until = win.to.toISOString()
   const { data, isLoading, error } = useQuery({
-    queryKey: ['operational-bursts', since, until],
-    queryFn: () => api.getOperationalBursts({ since, until }),
+    queryKey: ['operational-bursts', since, until, scope],
+    queryFn: () => api.getOperationalBursts({ since, until, cluster: scope === 'all' ? 'all' : undefined }),
     refetchInterval: win.preset ? 60_000 : false, // a fixed date does not move
     retry: false,
   })
@@ -141,18 +145,22 @@ export function BurstHistory() {
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-center gap-3">
-        <div className="flex rounded-lg border border-kb-border overflow-hidden text-[11px] font-mono">
+        <div className="flex gap-1">
           {(['24h', '7d', '30d'] as const).map((p) => (
             <button
               key={p}
               onClick={() => setParam((n) => { if (p !== '24h') n.set('range', p) })}
-              className={`px-3 py-1 ${win.preset === p ? 'bg-kb-elevated text-kb-text-primary font-semibold' : 'text-kb-text-secondary hover:text-kb-text-primary'}`}
+              className={`px-2.5 py-1 rounded-md text-[10px] font-mono border transition-colors ${
+                win.preset === p
+                  ? 'bg-status-info-dim text-status-info border-status-info/20'
+                  : 'bg-kb-card text-kb-text-secondary border-kb-border hover:border-kb-border-active'
+              }`}
             >
-              Last {p}
+              {p}
             </button>
           ))}
         </div>
-        <label className="flex items-center gap-1.5 text-[11px] font-mono text-kb-text-tertiary">
+        <label className="flex items-center gap-1.5 text-[10px] font-mono text-kb-text-tertiary">
           On a day
           <input
             type="date"
@@ -164,12 +172,23 @@ export function BurstHistory() {
             }}
             // color-scheme: in dark mode the calendar icon is drawn light (dark
             // on dark it vanished) and the picker it opens follows the theme.
-            className="bg-kb-card border border-kb-border rounded px-1.5 py-0.5 text-kb-text-secondary text-[11px] font-mono focus:outline-none focus:border-kb-border-active [color-scheme:light] dark:[color-scheme:dark] [&::-webkit-calendar-picker-indicator]:cursor-pointer"
+            className="bg-kb-card border border-kb-border rounded px-1.5 py-0.5 text-kb-text-secondary text-[10px] font-mono focus:outline-none focus:border-kb-border-active [color-scheme:light] dark:[color-scheme:dark] [&::-webkit-calendar-picker-indicator]:cursor-pointer"
           />
         </label>
-        <span className="text-[11px] font-mono text-kb-text-tertiary">
+        <span className="text-[10px] font-mono text-kb-text-tertiary">
           {fmtMoment(since)} → {fmtMoment(until)}
         </span>
+        <div className="flex rounded-md border border-kb-border overflow-hidden text-[10px] font-mono">
+          {(['cluster', 'all'] as const).map((v) => (
+            <button
+              key={v}
+              onClick={() => setScope(v)}
+              className={`px-2.5 py-1 ${scope === v ? 'bg-kb-elevated text-kb-text-primary font-semibold' : 'text-kb-text-secondary hover:text-kb-text-primary'}`}
+            >
+              {v === 'cluster' ? 'This cluster' : 'All clusters'}
+            </button>
+          ))}
+        </div>
       </div>
 
       {isLoading && <div className="text-sm text-kb-text-tertiary font-mono">Looking for bursts…</div>}
@@ -233,11 +252,12 @@ export function BurstHistory() {
               )}
 
               <div className="mt-2">
-                {/* The window travels: the history opens on the same range this
-                    burst covers, which is the only way to see its members
-                    without a per-burst endpoint. */}
+                {/* Drill into the burst's EXACT members by id (bsince/buntil =
+                    the window the Bursts tab used, so the backend reproduces the
+                    same burst), not a time window — the count matches "See the N
+                    episodes" and no non-member episode sneaks in (finding #75). */}
                 <Link
-                  to={`/insights?view=history&from=${encodeURIComponent(b.windowFrom)}&to=${encodeURIComponent(b.windowTo)}`}
+                  to={`/insights?view=history&burst=${encodeURIComponent(b.id)}&bsince=${encodeURIComponent(since)}&buntil=${encodeURIComponent(until)}`}
                   className="text-[11px] font-mono text-kb-accent hover:underline"
                 >
                   See the {b.memberIds.length} episodes →

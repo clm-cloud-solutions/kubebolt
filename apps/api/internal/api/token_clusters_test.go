@@ -89,6 +89,23 @@ func TestFilterBursts(t *testing.T) {
 	}
 }
 
+// Finding #75: the cluster-scoped Insights bursts tab keeps only the bursts that
+// touched the active cluster, and — unlike the permission filter — leaves the
+// full cluster set and blast intact (the caller can read the whole burst).
+func TestBurstsTouchingCluster(t *testing.T) {
+	ops := []insights.OperationalEpisode{
+		{ID: "here", Clusters: []string{"uid-a", "uid-b"}},
+		{ID: "elsewhere", Clusters: []string{"uid-b"}},
+	}
+	got := burstsTouchingCluster(ops, "uid-a")
+	if len(got) != 1 || got[0].ID != "here" {
+		t.Fatalf("got %+v, want only [here]", got)
+	}
+	if !reflect.DeepEqual(got[0].Clusters, []string{"uid-a", "uid-b"}) {
+		t.Fatalf("selection scope narrowed the cluster set: %+v", got[0].Clusters)
+	}
+}
+
 func TestFilterEpisodes(t *testing.T) {
 	eps := []insights.Episode{{ID: "1", ClusterID: "uid-a"}, {ID: "2", ClusterID: "uid-b"}}
 	got := filterEpisodes(eps, func(id string) bool { return id == "uid-b" })

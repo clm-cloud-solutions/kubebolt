@@ -150,7 +150,18 @@ export function EpisodeHistory({ severity, pageSize, defaultScope = 'cluster' }:
   // Scope: los episodios expired viven casi siempre en clusters MUERTOS que
   // ya no puedes seleccionar en el topbar (hallazgo in-vivo 31-ago: 131
   // expired, cero visibles) — «All clusters» es la única puerta hacia ellos.
-  const [scope, setScope] = useState<'cluster' | 'all'>(defaultScope)
+  // A link may open History in the all-clusters scope with ?cluster=all, read
+  // once on mount (the History tab remounts per tab switch).
+  const [scope, setScope] = useState<'cluster' | 'all'>(
+    searchParams.get('cluster') === 'all' ? 'all' : defaultScope,
+  )
+  // Burst drill-down: ?burst=<id>&bsince&buntil shows EXACTLY that burst's member
+  // episodes (fetched by id), not the episodes overlapping a window — so the count
+  // matches "See the N episodes" and no non-member (expectation) episode sneaks in
+  // (finding #75). The URL carries one burst id, never the N member ids.
+  const burstId = searchParams.get('burst')
+  const bsince = searchParams.get('bsince') ?? undefined
+  const buntil = searchParams.get('buntil') ?? undefined
   const [status, setStatus] = useState('')
   const [page, setPage] = useState(1)
   // Progressive total (in-vivo find 31-ago: «page N» alone gives no sense of
@@ -167,25 +178,37 @@ export function EpisodeHistory({ severity, pageSize, defaultScope = 'cluster' }:
   // last_seen, los expired viejos quedaban ESTRUCTURALMENTE enterrados bajo
   // cientos de resolved recientes — «Any state» nunca los enseñaba).
   const { data, isLoading, error } = useQuery({
-    queryKey: ['insight-episodes', windowKey, scope, status, severity, pageSize, page],
+    queryKey: burstId
+      ? ['burst-episodes', burstId, bsince, buntil]
+      : ['insight-episodes', windowKey, scope, status, severity, pageSize, page],
     queryFn: () =>
-      api.getInsightEpisodes({
-        // Computed HERE, not in render: a relative range slides with the
-        // clock, and the key above deliberately does not.
-        since: (pinned ? pinned.from : new Date(Date.now() - hours * 3600_000)).toISOString(),
-        until: pinned ? pinned.to.toISOString() : undefined,
-        status: status || undefined,
-        severity: severity || undefined,
-        cluster: scope === 'all' ? 'all' : undefined,
-        limit: pageSize,
-        page,
-      }),
-    refetchInterval: 60_000,
+      burstId
+        ? api.getBurstEpisodes(burstId, bsince, buntil)
+        : api.getInsightEpisodes({
+            // Computed HERE, not in render: a relative range slides with the
+            // clock, and the key above deliberately does not.
+            since: (pinned ? pinned.from : new Date(Date.now() - hours * 3600_000)).toISOString(),
+            until: pinned ? pinned.to.toISOString() : undefined,
+            status: status || undefined,
+            severity: severity || undefined,
+            cluster: scope === 'all' ? 'all' : undefined,
+            limit: pageSize,
+            page,
+          }),
+    refetchInterval: burstId ? false : 60_000,
     retry: false,
   })
 
-  const pageItems = data?.episodes ?? []
-  const hasNext = pageItems.length === pageSize
+  const fetched = data?.episodes ?? []
+  // Burst mode holds the whole (bounded) member set, so the top severity filter
+  // and the pager run client-side over it — the backend returned every member of
+  // the burst, not a server page (finding #75).
+  const burstVisible = burstId
+    ? fetched.filter((e) => !severity || (e.maxSeverity || e.severity) === severity)
+    : fetched
+  const burstTotal = burstId ? burstVisible.length : null
+  const pageItems = burstId ? burstVisible.slice((page - 1) * pageSize, page * pageSize) : fetched
+  const hasNext = burstId ? page * pageSize < burstVisible.length : pageItems.length === pageSize
 
   useEffect(() => {
     if (!data) return
@@ -193,7 +216,7 @@ export function EpisodeHistory({ severity, pageSize, defaultScope = 'cluster' }:
     setKnownTotal((t) => advanceKnownTotal(t, n, page, pageSize))
   }, [data, page, pageSize])
 
-  const countLabel = episodeCountLabel(pageItems.length, page, pageSize, knownTotal)
+  const countLabel = episodeCountLabel(pageItems.length, page, pageSize, burstTotal ?? knownTotal)
 
   // The pager renders OUTSIDE the list so an empty page>1 (you walked past
   // the edge) still offers the way back — before, the EmptyState said «go
@@ -214,7 +237,7 @@ export function EpisodeHistory({ severity, pageSize, defaultScope = 'cluster' }:
             <ChevronLeft className="w-3.5 h-3.5" />
           </button>
           <span className="text-[11px] font-mono text-kb-text-secondary px-2">
-            {episodePagesLabel(page, pageSize, knownTotal)}
+            {episodePagesLabel(page, pageSize, burstTotal ?? knownTotal)}
           </span>
           <button
             type="button"
@@ -232,6 +255,17 @@ export function EpisodeHistory({ severity, pageSize, defaultScope = 'cluster' }:
   return (
     <div>
       <div className="flex items-center gap-2 mb-3 flex-wrap">
+        {burstId ? (
+          <div className="flex items-center gap-2 px-2.5 py-1 rounded-md bg-status-info-dim text-status-info text-[10px] font-mono">
+            <span>
+              {burstTotal} episode{burstTotal === 1 ? '' : 's'} of this burst
+            </span>
+            <Link to="/insights?view=bursts" className="underline hover:no-underline">
+              clear
+            </Link>
+          </div>
+        ) : (
+          <>
         {pinned && (
           <div className="flex items-center gap-2 px-2.5 py-1 rounded-md bg-status-info-dim text-status-info text-[10px] font-mono">
             <span>
@@ -294,6 +328,8 @@ export function EpisodeHistory({ severity, pageSize, defaultScope = 'cluster' }:
         <span className="text-[11px] text-kb-text-tertiary">
           episodes overlapping the window{scope === 'all' && ' — dead clusters included'}
         </span>
+          </>
+        )}
       </div>
 
       {isLoading ? (
@@ -333,7 +369,7 @@ export function EpisodeHistory({ severity, pageSize, defaultScope = 'cluster' }:
                   <div className="mt-1 flex items-center gap-2 text-[11px] font-mono text-kb-text-secondary min-w-0">
                     <span className="truncate">{ep.resource}</span>
                     <span className="px-1.5 py-0.5 rounded bg-kb-elevated text-kb-text-tertiary text-[10px] shrink-0">{ep.ruleId}</span>
-                    {scope === 'all' && (
+                    {(scope === 'all' || burstId) && (
                       <span className="px-1.5 py-0.5 rounded bg-kb-elevated text-kb-text-tertiary text-[10px] shrink-0" title={ep.clusterId}>
                         {ep.clusterName || `cluster ${ep.clusterId.slice(0, 8)}…`}
                       </span>

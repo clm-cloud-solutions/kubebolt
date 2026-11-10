@@ -582,6 +582,7 @@ func NewRouter(
 				// Operational episodes: the org's bursts — cross-cluster, so
 				// outside requireConnector like the rest of history.
 				r.Get("/insights/operational-episodes", h.handleOperationalEpisodes)
+				r.Get("/insights/operational-episodes/{id}/episodes", h.handleBurstEpisodes)
 				// The shift report: «while you were away», hung from the
 				// requesting user's presence anchor.
 				r.Get("/insights/shift-report", h.handleShiftReport)
