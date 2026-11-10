@@ -178,3 +178,26 @@ describe('buildTriggerPrompt — action_stalled', () => {
     expect(out).toContain('Answer in the language this conversation has been in')
   })
 })
+
+describe('buildTriggerPrompt — metric_anomaly on step peaks', () => {
+  const series = { name: 'api', now: 0.9, avg: 0.7, max: 1.2, min: 0.4 }
+
+  it('tells Kobi which series are step peaks and not to size from their avg', () => {
+    const out = buildTriggerPrompt({
+      type: 'metric_anomaly',
+      metric: { title: 'CPU', query: 'q', rangeLabel: '7d', peakStep: '1h', series: [{ ...series, peak: true }] },
+    })
+    expect(out).toContain('PEAK of each 1h step')
+    expect(out).toContain('Do not size requests from them')
+    expect(out).toContain('- api (peaks): now=')
+  })
+
+  it('says nothing about peaks on a short range', () => {
+    const out = buildTriggerPrompt({
+      type: 'metric_anomaly',
+      metric: { title: 'CPU', query: 'q', rangeLabel: '1h', series: [series] },
+    })
+    expect(out).not.toContain('PEAK of each')
+    expect(out).not.toContain('(peaks)')
+  })
+})

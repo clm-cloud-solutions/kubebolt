@@ -223,12 +223,14 @@ func (e *Executor) execGetWorkloadMetrics(reqCtx context.Context, _ ToolCall, ar
 	}
 	resp.RangeAdjusted = retentionNote
 	if spec.Bucket > 0 {
-		resp.Aggregation = fmt.Sprintf("each trend point is the PEAK of its %s step (max_over_time), "+
+		resp.Aggregation = fmt.Sprintf("cpu and memory: each trend point is the PEAK of its %s step (max_over_time), "+
 			"stamped at the END of that step: the peak happened somewhere in the %s before t, not at t. "+
-			"summary.maxAt is when the range's max happened (cpu and memory); use it, not a point's t, "+
+			"summary.maxAt is when the range's max happened; use it, not a point's t, "+
 			"to say when the peak was. summary.max is the true peak of the whole range, and avg/p95 are "+
-			"computed over per-step peaks so they read higher than typical load",
-			promDuration(spec.Bucket), promDuration(spec.Bucket))
+			"computed over per-step peaks so they read higher than typical load. "+
+			"network is NOT peaked: each point is the rate over the %s before t, a sample of its step, "+
+			"so a burst between samples does not show",
+			promDuration(spec.Bucket), promDuration(spec.Bucket), promDuration(spec.RateWindow))
 	}
 	// Empty-target short-circuit applies to non-Pod, non-Node kinds where
 	// pod resolution yielded nothing (workload paused, scaled to 0, etc).

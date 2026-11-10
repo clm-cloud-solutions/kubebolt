@@ -484,6 +484,11 @@ interface SeriesInfo {
   min?: number
   max?: number
   avg?: number
+  // True when every point of this series is the peak of its step (its query has
+  // a `peak` form and the step is over a minute). Its avg and min are then over
+  // per-step peaks — higher than typical load — and must say so; max stays the
+  // true max. Per series: a chart can mix peaked and sampled queries.
+  peak?: boolean
 }
 
 // ─── Component ──────────────────────────────────────────────────────────────
@@ -641,7 +646,13 @@ export function MetricChart({
           name = `${baseName} (${n})`
         }
         const color = seriesColor?.(s.metric, spec?.prefix) ?? spec?.accent ?? palette[allSeries.length % palette.length]
-        const info: SeriesInfo = { name, color, negated: !!spec?.negate, detail: seriesDetail?.(s.metric, spec?.prefix) }
+        const info: SeriesInfo = {
+          name,
+          color,
+          negated: !!spec?.negate,
+          detail: seriesDetail?.(s.metric, spec?.prefix),
+          peak: !!(peakStep && spec?.peak),
+        }
 
         const seen: number[] = []
         s.values.forEach(([t, vStr]) => {
@@ -691,7 +702,7 @@ export function MetricChart({
 
     return { points: sortedPoints, series: allSeries, scale }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [results, allQueries, effectiveRefs, seriesLabel, transform, unit, accents, seriesColor, seriesDetail, sparse, step, rangeMinutes, controlledWindow?.start, windowEnd])
+  }, [results, allQueries, effectiveRefs, seriesLabel, transform, unit, accents, seriesColor, seriesDetail, sparse, step, peakStep, rangeMinutes, controlledWindow?.start, windowEnd])
 
   const toggleSeries = (name: string) => {
     setHidden(prev => {
@@ -764,12 +775,14 @@ export function MetricChart({
                   query: allQueries[0]?.query ?? '',
                   unit,
                   rangeLabel: active.label,
+                  peakStep: peakStep ?? undefined,
                   series: series.slice(0, 12).map((s) => ({
                     name: s.name,
                     now: s.current,
                     avg: s.avg,
                     max: s.max,
                     min: s.min,
+                    peak: s.peak || undefined,
                   })),
                   referenceLines: effectiveRefs?.map((r) => ({
                     label: r.label,
@@ -1170,9 +1183,7 @@ export function MetricChart({
               scale={scale}
               onToggle={toggleSeries}
               hidden={hidden}
-              // A peak point covers its whole step: the newest one is the
-              // highest value of the last interval, not the value now.
-              lastLabel={peakStep ? 'last' : 'now'}
+              peakStep={peakStep}
             />
           )}
         </div>
@@ -1195,14 +1206,14 @@ function StatsPanel({
   scale,
   onToggle,
   hidden,
-  lastLabel,
+  peakStep,
 }: {
   series: SeriesInfo[]
   visibleSeries: SeriesInfo[]
   scale: UnitScale
   onToggle: (name: string) => void
   hidden: Set<string>
-  lastLabel: string
+  peakStep: string | null
 }) {
   const singleSeries = series.length === 1
   return (
@@ -1233,10 +1244,26 @@ function StatsPanel({
               </div>
             )}
             <div className="space-y-0.5">
-              <StatRow label={lastLabel} value={formatValue(s.current, scale, true)} emphasize />
-              <StatRow label="avg" value={formatValue(s.avg, scale, true)} />
+              {/* A peak point covers its whole step: the newest is the highest
+                  value of the last interval, not the value now; avg and min are
+                  over the steps' peaks and read higher than typical load. */}
+              <StatRow
+                label={s.peak ? 'last' : 'now'}
+                value={formatValue(s.current, scale, true)}
+                emphasize
+                title={s.peak ? `Peak of the last ${peakStep} step` : undefined}
+              />
+              <StatRow
+                label={s.peak ? 'avg peak' : 'avg'}
+                value={formatValue(s.avg, scale, true)}
+                title={s.peak ? `Average of each ${peakStep} step's peak — higher than typical load` : undefined}
+              />
               <StatRow label="max" value={formatValue(s.max, scale, true)} />
-              <StatRow label="min" value={formatValue(s.min, scale, true)} />
+              <StatRow
+                label={s.peak ? 'min peak' : 'min'}
+                value={formatValue(s.min, scale, true)}
+                title={s.peak ? `Lowest ${peakStep} step peak — not the lowest value` : undefined}
+              />
             </div>
           </button>
         )
@@ -1245,9 +1272,9 @@ function StatsPanel({
   )
 }
 
-function StatRow({ label, value, emphasize }: { label: string; value: string; emphasize?: boolean }) {
+function StatRow({ label, value, emphasize, title }: { label: string; value: string; emphasize?: boolean; title?: string }) {
   return (
-    <div className="flex items-baseline justify-between gap-1">
+    <div className="flex items-baseline justify-between gap-1" title={title}>
       <span className="text-kb-text-tertiary">{label}</span>
       <span className={`tabular-nums ${emphasize ? 'text-kb-text-primary' : 'text-kb-text-secondary'}`}>
         {value}
