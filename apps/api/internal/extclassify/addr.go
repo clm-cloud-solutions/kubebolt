@@ -66,12 +66,20 @@ func classifyWellKnownAddr(a netip.Addr, clusterProvider string) (Classification
 	return Classification{}, false
 }
 
+// IsNonUnicast reports whether a is not one host's address: unspecified, or
+// multicast of any scope. Nothing answers on the other end as a peer, so there
+// is nothing to attribute or investigate. The usual one in pod flows is ff02::2,
+// the IPv6 Router Solicitation a pod sends when its interface comes up.
+func IsNonUnicast(a netip.Addr) bool {
+	return a.IsUnspecified() || a.IsMulticast() || a.IsInterfaceLocalMulticast() || a.IsLinkLocalMulticast()
+}
+
 // classifyAddr handles an address with no usable hostname. A private address
 // sits in the cluster's network, so its provider is the cluster's; which
 // managed service owns it is not in the address and needs an inventory
 // lookup. A public address with no name cannot be attributed at all.
 func classifyAddr(a netip.Addr, clusterProvider, clusterRegion string) Classification {
-	if a.IsUnspecified() || a.IsMulticast() || a.IsInterfaceLocalMulticast() || a.IsLinkLocalMulticast() {
+	if IsNonUnicast(a) {
 		return Classification{
 			Kind:       KindUnknown,
 			Confidence: ConfidenceUnknown,

@@ -6,6 +6,25 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Kobi reads more of ECR through the AWS connector**: an image's scan findings
+  (`DescribeImageScanFindings`), a repository's images and tags (`ListImages`,
+  `ListTagsForResource`) and its lifecycle policy (`GetLifecyclePolicy`, the
+  usual answer to a tag that is suddenly "manifest unknown"). Never image layers
+  or manifests. **Existing connector roles need `ecr:GetLifecyclePolicy` and
+  `ecr:List*` added** (the connector drawer prints the updated policy); until
+  then those calls are refused and nothing else changes.
+
+### Fixed
+
+- **The traffic map's "(external)" region** no longer draws multicast
+  destinations (the IPv6 Router Solicitation every pod sends to `ff02::2` when
+  it starts, a red edge on IPv4-only datapaths), no longer lists addresses a pod
+  reached long ago but not in the window, and names the API server's addresses
+  `kubernetes.default.svc` instead of showing them as bare IPs. Kobi's
+  `get_external_connections` reads the same edges.
+
 ## [2.6.0] — 2026-11-10
 
 The Pods tab pages its pods, VictoriaMetrics shows what it does with your

@@ -7,12 +7,14 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 
 	"k8s.io/apimachinery/pkg/labels"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
+	"github.com/kubebolt/kubebolt/apps/api/internal/extclassify"
 )
 
 // FlowEdge is the rendered-friendly shape of a single flow, for both
@@ -260,11 +262,6 @@ func computeFlowEdgesIn(ctx context.Context, sc flowScope, windowMin int, ns str
 	// with the highest resolution rate when an IP is known by several
 	// names. This is the lookup table for turning external destination_ip
 	// into a human-readable hostname.
-	type dnsKey struct{ srcNs, srcPod, ip string }
-	type dnsValue struct {
-		fqdn string
-		rate float64
-	}
 	dnsByPodIP := map[dnsKey]dnsValue{}
 	for _, row := range dnsRows {
 		k := dnsKey{
@@ -290,7 +287,6 @@ func computeFlowEdgesIn(ctx context.Context, sc flowScope, windowMin int, ns str
 	// or hostNetwork hops; the cluster state we already hold lets us
 	// recover the mapping without an extra round trip. Built once per
 	// request — the lister is in-memory and the index is GC'd after.
-	type podRef struct{ namespace, name string }
 	podByIP := map[string]podRef{}
 	// Pod CIDR ranges (one per node) let us distinguish a stale internal
 	// IP — pod that died inside the metric rate window so the lister no
@@ -337,42 +333,16 @@ func computeFlowEdgesIn(ctx context.Context, sc flowScope, windowMin int, ns str
 		return false
 	}
 
-	// External edges come with an IP instead of a (namespace, pod)
-	// destination. Three cases:
-	//   1. IP matches a current pod        → rewrite as pod-to-pod edge
-	//   2. IP is in a pod CIDR but no match → drop (orphan from rate
-	//      window — pod died, IP not yet recycled in metrics)
-	//   3. IP is outside all pod CIDRs     → keep as external; attach
-	//      hostname from this pod's recent DNS if available
-	for _, row := range externalRows {
-		srcNs := row.Labels["source_namespace"]
-		srcPod := row.Labels["source_pod"]
-		ip := row.Labels["destination_ip"]
-		if ip == "" {
-			continue
-		}
-		edge := FlowEdge{
-			SrcNamespace: srcNs,
-			SrcPod:       srcPod,
-			Verdict:      row.Labels["verdict"],
-			RatePerSec:   row.Value,
-		}
-		if ref, ok := podByIP[ip]; ok {
-			edge.DstNamespace = ref.namespace
-			edge.DstPod = ref.name
-		} else if isClusterInternalIP(ip) {
-			// Stale pod IP — drop so it doesn't clutter the (external)
-			// region. The matching live pod, if any, is already
-			// represented by its current edge.
-			continue
-		} else {
-			edge.DstIP = ip
-			if v, ok := dnsByPodIP[dnsKey{srcNs: srcNs, srcPod: srcPod, ip: ip}]; ok {
-				edge.DstFqdn = v.fqdn
-			}
-		}
-		edges = append(edges, edge)
+	apiServer := map[string]bool{}
+	for _, ip := range apiServerAddresses(sc.conn) {
+		apiServer[ip] = true
 	}
+	edges = append(edges, externalPeers{
+		podByIP:   podByIP,
+		inPodCIDR: isClusterInternalIP,
+		apiServer: apiServer,
+		dns:       dnsByPodIP,
+	}.edges(externalRows)...)
 
 	resp := FlowEdgesResponse{
 		Edges:         edges,
@@ -391,6 +361,99 @@ func computeFlowEdgesIn(ctx context.Context, sc flowScope, windowMin int, ns str
 		resp.SourcePresent = len(presence) > 0 && presence[0].Value > 0
 	}
 	return resp, nil
+}
+
+// dnsKey is one pod's DNS answer for one address; dnsValue the name it resolved
+// and how often.
+type dnsKey struct{ srcNs, srcPod, ip string }
+type dnsValue struct {
+	fqdn string
+	rate float64
+}
+
+// podRef is a pod by namespace and name.
+type podRef struct{ namespace, name string }
+
+// apiServerFQDN names the API server's addresses on the map: the name pods
+// reach it by, which get_external_connections also reads as kube-apiserver.
+const apiServerFQDN = "kubernetes.default.svc"
+
+// externalPeers turns external flow rows (an IP instead of a destination pod)
+// into edges, from the cluster state read once per request.
+type externalPeers struct {
+	podByIP   map[string]podRef
+	inPodCIDR func(ip string) bool
+	// apiServer are the kubernetes Service's endpoints. On a managed control
+	// plane (EKS, AKS, GKE) they are neither a pod nor outside the cluster,
+	// and without a name they showed up in "(external)" as bare VPC IPs.
+	apiServer map[string]bool
+	dns       map[dnsKey]dnsValue
+}
+
+// edges skips non-unicast destinations (isExternalPeer) and rows with no
+// traffic in the window, then:
+//  1. IP matches a current pod        → pod-to-pod edge
+//  2. IP is in a pod CIDR but no match → dropped (orphan from the rate
+//     window: the pod died and its IP is not recycled yet)
+//  3. anything else                   → external edge, named by this pod's
+//     recent DNS answer, else apiServerFQDN when it is the API server
+func (p externalPeers) edges(rows []vmRow) []FlowEdge {
+	var out []FlowEdge
+	for _, row := range rows {
+		srcNs := row.Labels["source_namespace"]
+		srcPod := row.Labels["source_pod"]
+		ip := row.Labels["destination_ip"]
+		if !isExternalPeer(ip) {
+			continue
+		}
+		// The agent keeps one cumulative counter per (pod, destination IP)
+		// from the moment it starts and sends every one on each flush, so an
+		// address a pod reached once an hour ago still comes back, at rate 0.
+		// A managed endpoint that answers each lookup with a new address (S3)
+		// left dozens of idle endpoints in "(external)" for the window's
+		// "live" view; a pod that no longer talks to something is not an edge.
+		if row.Value <= 0 {
+			continue
+		}
+		edge := FlowEdge{
+			SrcNamespace: srcNs,
+			SrcPod:       srcPod,
+			Verdict:      row.Labels["verdict"],
+			RatePerSec:   row.Value,
+		}
+		if ref, ok := p.podByIP[ip]; ok {
+			edge.DstNamespace = ref.namespace
+			edge.DstPod = ref.name
+		} else if p.inPodCIDR != nil && p.inPodCIDR(ip) {
+			// Stale pod IP: the matching live pod, if any, already has its
+			// current edge.
+			continue
+		} else {
+			edge.DstIP = ip
+			if v, ok := p.dns[dnsKey{srcNs: srcNs, srcPod: srcPod, ip: ip}]; ok {
+				edge.DstFqdn = v.fqdn
+			} else if p.apiServer[ip] {
+				edge.DstFqdn = apiServerFQDN
+			}
+		}
+		out = append(out, edge)
+	}
+	return out
+}
+
+// isExternalPeer reports whether an external flow's destination IP is a host the
+// map can draw as an endpoint. Multicast and unspecified addresses are not
+// (extclassify.IsNonUnicast, the rule get_external_connections applies too): a
+// pod sends an IPv6 Router Solicitation to ff02::2 when its interface comes up,
+// an IPv4-only datapath drops it, and the map drew a red edge to an "(external)"
+// endpoint after every pod restart. An address that does not parse is kept: the
+// map shows what the agent reported rather than hiding it.
+func isExternalPeer(ip string) bool {
+	if ip == "" {
+		return false
+	}
+	a, err := netip.ParseAddr(ip)
+	return err != nil || !extclassify.IsNonUnicast(a)
 }
 
 // pairKey identifies a directed pod-to-pod flow (source → destination) for
