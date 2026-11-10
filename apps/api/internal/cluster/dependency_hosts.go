@@ -833,7 +833,7 @@ func (c *Connector) selectorlessEndpoints(namespace, service string) (out []host
 // was granted, and a Get anywhere else reads as "not found" — which must not
 // be taken for "no such object".
 func (c *Connector) readableIn(resource, namespace string) bool {
-	p, ok := c.permissions[resource]
+	p, ok := c.Permissions()[resource]
 	if !ok || p == nil || !p.NamespaceScoped {
 		return true
 	}
