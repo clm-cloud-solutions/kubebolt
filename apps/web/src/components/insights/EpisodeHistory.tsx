@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { api, type InsightEpisode } from '@/services/api'
+import { api, ApiError, type InsightEpisode } from '@/services/api'
+import { burstsBackHref } from './BurstHistory'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { EmptyState } from '@/components/shared/EmptyState'
 import { History, ChevronLeft, ChevronRight } from 'lucide-react'
@@ -207,6 +208,10 @@ export function EpisodeHistory({ severity, pageSize, defaultScope = 'cluster' }:
     ? fetched.filter((e) => !severity || (e.maxSeverity || e.severity) === severity)
     : fetched
   const burstTotal = burstId ? burstVisible.length : null
+  // Members the history no longer holds (pruned after the retention horizon):
+  // said next to the count, so a shorter list than "See the N" is explained.
+  const burstMissing = burstId ? ((data as { missing?: number } | undefined)?.missing ?? 0) : 0
+  const burstBack = burstId ? burstsBackHref(searchParams.get('bq'), bsince, buntil) : ''
   const pageItems = burstId ? burstVisible.slice((page - 1) * pageSize, page * pageSize) : fetched
   const hasNext = burstId ? page * pageSize < burstVisible.length : pageItems.length === pageSize
 
@@ -258,10 +263,12 @@ export function EpisodeHistory({ severity, pageSize, defaultScope = 'cluster' }:
         {burstId ? (
           <div className="flex items-center gap-2 px-2.5 py-1 rounded-md bg-status-info-dim text-status-info text-[10px] font-mono">
             <span>
-              {burstTotal} episode{burstTotal === 1 ? '' : 's'} of this burst
+              {burstTotal !== fetched.length ? `${burstTotal} of ${fetched.length}` : burstTotal} episode
+              {fetched.length === 1 ? '' : 's'} of this burst
+              {burstMissing > 0 && ` · ${burstMissing} no longer in history`}
             </span>
-            <Link to="/insights?view=bursts" className="underline hover:no-underline">
-              clear
+            <Link to={burstBack} className="underline hover:no-underline">
+              back to bursts
             </Link>
           </div>
         ) : (
@@ -334,8 +341,40 @@ export function EpisodeHistory({ severity, pageSize, defaultScope = 'cluster' }:
 
       {isLoading ? (
         <LoadingSpinner />
+      ) : error && burstId ? (
+        error instanceof ApiError && error.status === 404 ? (
+          <EmptyState
+            icon={<History className="w-10 h-10" />}
+            title="This burst is no longer in that window"
+            message="Its episodes were regrouped or pruned since the link was made — go back to bursts to see what that window holds now."
+          />
+        ) : (
+          <EmptyState
+            icon={<History className="w-10 h-10" />}
+            title="Burst episodes unavailable"
+            message="Couldn’t read this burst’s episodes — try again in a moment."
+          />
+        )
       ) : error ? (
         <EmptyState icon={<History className="w-10 h-10" />} title="History unavailable" message="Episode history needs the KubeBolt database (Enterprise/Cloud)." />
+      ) : pageItems.length === 0 && burstId && page === 1 ? (
+        fetched.length > 0 ? (
+          <EmptyState
+            icon={<History className="w-10 h-10" />}
+            title={`No ${severity} episodes in this burst`}
+            message={`Clear the classifier above to see all ${fetched.length}.`}
+          />
+        ) : (
+          <EmptyState
+            icon={<History className="w-10 h-10" />}
+            title="No episodes to show"
+            message={
+              burstMissing > 0
+                ? 'This burst’s episodes are no longer in history.'
+                : 'None of this burst’s episodes is on a cluster you can read.'
+            }
+          />
+        )
       ) : pageItems.length === 0 ? (
         page > 1 ? (
           <div className="space-y-2">

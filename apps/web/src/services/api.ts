@@ -579,7 +579,9 @@ export const api = {
     const q = new URLSearchParams()
     if (since) q.set('since', since)
     if (until) q.set('until', until)
-    return fetchJSON<{ episodes: InsightEpisode[]; window: { since: string; until: string } }>(
+    // missing: members the history no longer holds (pruned after the retention
+    // horizon). A burst that no longer forms in the window answers 404.
+    return fetchJSON<{ episodes: InsightEpisode[]; missing?: number; window: { since: string; until: string } }>(
       `${API_BASE}/insights/operational-episodes/${encodeURIComponent(burstId)}/episodes?${q.toString()}`,
     )
   },

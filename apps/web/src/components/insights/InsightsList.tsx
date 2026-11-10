@@ -161,6 +161,11 @@ export function InsightsList() {
                         next.delete('day')
                         next.delete('range')
                       }
+                      // A burst drill-down belongs to the History view it opened
+                      // in: left behind, it turned the next History click back
+                      // into that one burst. Each tab opens on its own default
+                      // scope, as it did when the Bursts scope was local state.
+                      for (const k of ['burst', 'bsince', 'buntil', 'bq', 'cluster']) next.delete(k)
                       return next
                     }, { replace: true })
                   }

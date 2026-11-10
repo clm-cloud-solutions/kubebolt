@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { AlertTriangle, Layers, RotateCw, Rocket, HelpCircle } from 'lucide-react'
@@ -68,6 +68,29 @@ export function isStillOpen(b: OperationalBurst): boolean {
   return b.blast.stillFiring > 0
 }
 
+// The bursts view's own params a drill-down carries (as `bq`) so "back to
+// bursts" lands on the same window and scope — a preset stays live, a day stays
+// that day. Only these keys are kept from it.
+const BURSTS_VIEW_KEYS = ['range', 'day', 'from', 'to', 'cluster'] as const
+
+// burstsBackHref — where "back to bursts" goes from a burst's drill-down: the
+// view it came from (bq), else the burst's own window (a link made before bq
+// existed, or edited by hand).
+export function burstsBackHref(bq: string | null, bsince?: string, buntil?: string): string {
+  const out = new URLSearchParams({ view: 'bursts' })
+  if (bq) {
+    const from = new URLSearchParams(bq)
+    for (const k of BURSTS_VIEW_KEYS) {
+      const v = from.get(k)
+      if (v) out.set(k, v)
+    }
+  } else if (bsince && buntil) {
+    out.set('from', bsince)
+    out.set('to', buntil)
+  }
+  return `/insights?${out.toString()}`
+}
+
 const KIND_META: Record<OperationalBurst['kind'], { label: string; hint: string; Icon: typeof RotateCw; tone: string }> = {
   node_rotation: {
     label: 'Node rotation',
@@ -117,7 +140,16 @@ export function BurstHistory() {
   // Cluster scope mirrors Active / History: by default the bursts that touched
   // the cluster you are looking at, with an opt-out to the org-wide view
   // (finding #75). Home's "while you were away" is a separate, org-wide path.
-  const [scope, setScope] = useState<'cluster' | 'all'>('cluster')
+  // In the URL like the window: a link or a back from a drill-down keeps it.
+  const scope: 'cluster' | 'all' = searchParams.get('cluster') === 'all' ? 'all' : 'cluster'
+  const setScope = (v: 'cluster' | 'all') =>
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      next.set('view', 'bursts')
+      if (v === 'all') next.set('cluster', 'all')
+      else next.delete('cluster')
+      return next
+    }, { replace: true })
 
   const since = win.from.toISOString()
   const until = win.to.toISOString()
@@ -257,7 +289,7 @@ export function BurstHistory() {
                     same burst), not a time window — the count matches "See the N
                     episodes" and no non-member episode sneaks in (finding #75). */}
                 <Link
-                  to={`/insights?view=history&burst=${encodeURIComponent(b.id)}&bsince=${encodeURIComponent(since)}&buntil=${encodeURIComponent(until)}`}
+                  to={`/insights?view=history&burst=${encodeURIComponent(b.id)}&bsince=${encodeURIComponent(since)}&buntil=${encodeURIComponent(until)}&bq=${encodeURIComponent(searchParams.toString())}`}
                   className="text-[11px] font-mono text-kb-accent hover:underline"
                 >
                   See the {b.memberIds.length} episodes →

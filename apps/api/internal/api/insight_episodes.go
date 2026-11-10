@@ -126,20 +126,10 @@ func (h *handlers) handleBurstEpisodes(w http.ResponseWriter, r *http.Request) {
 	}
 	id := chi.URLParam(r, "id")
 	org := auth.ContextTenantID(r)
-	now := time.Now().UTC()
-	since, until := now.Add(-24*time.Hour), now
-	var err error
-	if raw := r.URL.Query().Get("since"); raw != "" {
-		if since, err = time.Parse(time.RFC3339, raw); err != nil {
-			respondError(w, http.StatusBadRequest, "since must be RFC3339")
-			return
-		}
-	}
-	if raw := r.URL.Query().Get("until"); raw != "" {
-		if until, err = time.Parse(time.RFC3339, raw); err != nil {
-			respondError(w, http.StatusBadRequest, "until must be RFC3339")
-			return
-		}
+	since, until, msg := parseBurstWindow(r)
+	if msg != "" {
+		respondError(w, http.StatusBadRequest, msg)
+		return
 	}
 	ops, err := h.operational.ClusterAndStore(r.Context(), org, since, until)
 	if err != nil {
@@ -149,19 +139,34 @@ func (h *handlers) handleBurstEpisodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var memberIDs []string
+	found := false
 	for i := range ops {
 		if ops[i].ID == id {
-			memberIDs = ops[i].MemberIDs
+			memberIDs, found = ops[i].MemberIDs, true
 			break
 		}
 	}
-	// Fetch the members by id (the detail reader), filtered to the caller's
-	// readable clusters. A member pruned since the burst was computed is skipped.
+	if !found {
+		// The id no longer forms in this window (its members were regrouped or
+		// pruned since the link was made). Say so, rather than an empty 200 the
+		// page would draw as a burst with no episodes.
+		respondError(w, http.StatusNotFound, "this burst is no longer in that window")
+		return
+	}
+	// Fetch the members by id (the detail reader). A member on a cluster the
+	// caller may not read is left out silently, as the bursts list does; one the
+	// reader no longer has (resolved episodes are pruned after the retention
+	// horizon) is counted, so the page can explain a shorter list.
 	may := h.readableCluster(r)
 	eps := make([]insights.Episode, 0, len(memberIDs))
+	missing := 0
 	for _, mid := range memberIDs {
 		ep, _, e := h.episodes.Episode(r.Context(), org, mid)
-		if e != nil || !may(ep.ClusterID) {
+		if e != nil {
+			missing++
+			continue
+		}
+		if !may(ep.ClusterID) {
 			continue
 		}
 		eps = append(eps, ep)
@@ -169,6 +174,7 @@ func (h *handlers) handleBurstEpisodes(w http.ResponseWriter, r *http.Request) {
 	h.enrichEpisodeClusterNames(r, eps)
 	respondJSON(w, http.StatusOK, map[string]any{
 		"episodes": eps,
+		"missing":  missing,
 		"window":   map[string]string{"since": since.Format(time.RFC3339), "until": until.Format(time.RFC3339)},
 	})
 }
@@ -215,7 +221,7 @@ func (h *handlers) handleGetEpisode(w http.ResponseWriter, r *http.Request) {
 // resolvable even for clusters no longer in the fleet, which is exactly
 // where the expired ghosts live. Cached per request per unique cluster.
 func (h *handlers) enrichEpisodeClusterNames(r *http.Request, eps []insights.Episode) {
-	if len(eps) == 0 {
+	if len(eps) == 0 || h.manager == nil {
 		return
 	}
 	names := map[string]string{}
