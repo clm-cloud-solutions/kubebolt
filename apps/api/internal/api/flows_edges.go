@@ -481,15 +481,27 @@ func pairKeyOf(row vmRow) pairKey {
 // covers the pair; surface a lone redirect (no forwarded counterpart in the
 // window) as forwarded, since it IS an allowed flow.
 func buildPodFlowEdges(eventsRows []vmRow, httpByPair map[pairKey]*L7Summary) []FlowEdge {
-	forwardedPairs := map[pairKey]bool{}
+	// The agent sends every counter it holds on each flush, so a pair that talked
+	// once since it started comes back at rate 0 and was drawn as a live edge
+	// with one particle (finding #76). Rows with no traffic in the window go
+	// first, before the merge below: an idle forwarded row must not make a
+	// redirected twin that does carry traffic give way to it.
+	live := make([]vmRow, 0, len(eventsRows))
 	for _, row := range eventsRows {
+		if row.Value > 0 {
+			live = append(live, row)
+		}
+	}
+
+	forwardedPairs := map[pairKey]bool{}
+	for _, row := range live {
 		if row.Labels["verdict"] == "forwarded" {
 			forwardedPairs[pairKeyOf(row)] = true
 		}
 	}
 
-	edges := make([]FlowEdge, 0, len(eventsRows))
-	for _, row := range eventsRows {
+	edges := make([]FlowEdge, 0, len(live))
+	for _, row := range live {
 		k := pairKeyOf(row)
 		verdict := row.Labels["verdict"]
 		if verdict == "redirected" {

@@ -173,3 +173,37 @@ func TestExternalPeersEdges(t *testing.T) {
 		}
 	}
 }
+
+// A pair with no traffic in the window is not an edge (the agent sends idle
+// counters at rate 0). Filtering happens before the redirected/forwarded merge:
+// an idle forwarded twin must not swallow a redirected row that carries traffic.
+func TestBuildPodFlowEdges_IdlePairsAreNotEdges(t *testing.T) {
+	rows := []vmRow{
+		mkFlowRow("web", "cache", "forwarded", 0),  // idle: gone
+		mkFlowRow("web", "api", "forwarded", 0),    // idle twin...
+		mkFlowRow("web", "api", "redirected", 2.5), // ...of a live L7-proxied flow
+		mkFlowRow("api", "db", "forwarded", 3),
+		mkFlowRow("api", "db", "redirected", 0),
+		mkFlowRow("web", "admin", "dropped", 0), // an old denial: gone
+		mkFlowRow("web", "audit", "dropped", 1),
+	}
+	httpByPair := map[pairKey]*L7Summary{pk("web", "api"): {RequestsPerSec: 2.5}}
+	edges := buildPodFlowEdges(rows, httpByPair)
+
+	got := map[pairKey]FlowEdge{}
+	for _, e := range edges {
+		got[pairKey{srcNs: e.SrcNamespace, srcPod: e.SrcPod, dstNs: e.DstNamespace, dstPod: e.DstPod}] = e
+	}
+	if len(edges) != 3 {
+		t.Fatalf("want 3 live edges, got %d: %+v", len(edges), edges)
+	}
+	if e, ok := got[pk("web", "api")]; !ok || e.Verdict != "forwarded" || e.RatePerSec != 2.5 || e.L7 == nil {
+		t.Errorf("web→api: the live redirected flow must stand as the forwarded edge with its L7: %+v", e)
+	}
+	if e, ok := got[pk("api", "db")]; !ok || e.RatePerSec != 3 {
+		t.Errorf("api→db: %+v", e)
+	}
+	if e, ok := got[pk("web", "audit")]; !ok || e.Verdict != "dropped" {
+		t.Errorf("web→audit: %+v", e)
+	}
+}
