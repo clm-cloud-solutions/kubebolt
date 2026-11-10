@@ -6,6 +6,40 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Kobi reads more of ECR through the AWS connector**: an image's scan findings
+  (`DescribeImageScanFindings`), a repository's images and tags (`ListImages`,
+  `ListTagsForResource`) and its lifecycle policy (`GetLifecyclePolicy`, the
+  usual answer to a tag that is suddenly "manifest unknown"). Never image layers
+  or manifests. **Existing connector roles need `ecr:GetLifecyclePolicy` and
+  `ecr:List*` added** (the connector drawer prints the updated policy); until
+  then those calls are refused and nothing else changes.
+
+### Fixed
+
+- **The traffic map's "(external)" region** no longer draws multicast
+  destinations (the IPv6 Router Solicitation every pod sends to `ff02::2` when
+  it starts, a red edge on IPv4-only datapaths), no longer lists addresses a pod
+  reached long ago but not in the window, and names the API server's addresses
+  `kubernetes.default.svc` instead of showing them as bare IPs. Kobi's
+  `get_external_connections` reads the same edges.
+- **An optional CRD installed after the cluster connected becomes available**
+  within two minutes: Cilium installed after the agent used to stay "not
+  detected" on the Overview, and Kobi said its policy CRDs were not installed,
+  until the API restarted.
+- **The traffic map** draws no pod pair without traffic in the window, and
+  traffic to a node's address (the kubelet) goes to the node, not to whichever
+  hostNetwork pod on it was listed last.
+- **Kobi's first ECR suggestion** is `DescribeImages` with the image's
+  repository, not an unfiltered `DescribeRepositories` that a role scoped to some
+  repositories refuses.
+- **Agent 1.4.9**: Hubble flow keys idle for 15 minutes are forgotten (active
+  series no longer only grow), and the node-exporter discovery finds
+  kube-prometheus-stack's node-exporter by default.
+- **Falco guide**: the ingest token goes in a Secret rather than the Helm values,
+  and kernel 6.18 needs Falco 0.45.1 (chart 9.2.1) or later.
+
 ## [2.6.0] — 2026-11-10
 
 The Pods tab pages its pods, VictoriaMetrics shows what it does with your

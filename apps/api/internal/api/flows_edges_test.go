@@ -1,6 +1,11 @@
 package api
 
-import "testing"
+import (
+	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
 
 // mkFlowRow builds a pod-to-pod L4 event row for the given pair + verdict.
 func mkFlowRow(src, dst, verdict string, val float64) vmRow {
@@ -89,5 +94,170 @@ func TestBuildPodFlowEdges_RedirectDropIsPerPair(t *testing.T) {
 	edges := buildPodFlowEdges(rows, map[pairKey]*L7Summary{})
 	if len(edges) != 2 {
 		t.Fatalf("expected both pairs' edges, got %d: %+v", len(edges), edges)
+	}
+}
+
+// Non-unicast destinations are not endpoints: the IPv6 Router Solicitation every
+// pod sends when its interface comes up (ff02::2, dropped on an IPv4-only
+// datapath) drew a red edge to "(external)" after each restart. Link-local
+// unicast stays: the metadata service and the EKS Pod Identity agent are real
+// dependencies.
+func TestIsExternalPeer(t *testing.T) {
+	cases := map[string]bool{
+		"":                false,
+		"ff02::2":         false, // all-routers (Router Solicitation)
+		"ff02::1:ff00:1":  false, // solicited-node (neighbor discovery)
+		"ff01::1":         false, // interface-local multicast
+		"224.0.0.251":     false, // mDNS
+		"239.255.255.250": false, // SSDP
+		"0.0.0.0":         false,
+		"::":              false,
+		"169.254.169.254": true, // instance metadata
+		"169.254.170.23":  true, // EKS Pod Identity agent
+		"fe80::1":         true,
+		"10.42.116.155":   true,
+		"3.5.129.105":     true,
+		"2600:1f16::1":    true,
+		"not-an-ip":       true,
+	}
+	for ip, want := range cases {
+		if got := isExternalPeer(ip); got != want {
+			t.Errorf("isExternalPeer(%q) = %v, want %v", ip, got, want)
+		}
+	}
+}
+
+func externalFlowRow(srcPod, ip, verdict string, val float64) vmRow {
+	return vmRow{
+		Labels: map[string]string{
+			"source_namespace": "shop",
+			"source_pod":       srcPod,
+			"destination_ip":   ip,
+			"verdict":          verdict,
+		},
+		Value: val,
+	}
+}
+
+// An external row becomes a pod edge, an external edge or nothing; the API
+// server's addresses (EKS control-plane ENIs in the VPC) get its in-cluster
+// name instead of showing up as bare IPs, unless the pod's own DNS named them.
+func TestExternalPeersEdges(t *testing.T) {
+	p := externalPeers{
+		podByIP:   map[string]podRef{"10.42.5.7": {namespace: "shop", name: "db-0"}},
+		inPodCIDR: func(ip string) bool { return ip == "10.244.1.9" },
+		apiServer: map[string]bool{"10.42.89.28": true, "10.42.101.135": true},
+		dns: map[dnsKey]dnsValue{
+			{srcNs: "shop", srcPod: "api", ip: "3.5.129.105"}:     {fqdn: "s3.us-east-2.amazonaws.com", rate: 1},
+			{srcNs: "shop", srcPod: "agent", ip: "10.42.101.135"}: {fqdn: "ABC.gr7.us-east-2.eks.amazonaws.com", rate: 1},
+		},
+	}
+	got := p.edges([]vmRow{
+		externalFlowRow("api", "10.42.5.7", "forwarded", 1),       // live pod
+		externalFlowRow("api", "10.244.1.9", "forwarded", 1),      // stale pod IP
+		externalFlowRow("api", "ff02::2", "dropped", 0.01),        // Router Solicitation
+		externalFlowRow("api", "3.5.129.105", "forwarded", 2),     // DNS-named
+		externalFlowRow("api", "10.42.89.28", "forwarded", 3),     // API server, no DNS
+		externalFlowRow("agent", "10.42.101.135", "forwarded", 4), // API server, own DNS wins
+		externalFlowRow("api", "52.15.162.77", "forwarded", 5),    // unnamed
+		externalFlowRow("api", "3.5.88.59", "forwarded", 0),       // idle in the window
+	})
+	want := []FlowEdge{
+		{SrcNamespace: "shop", SrcPod: "api", DstNamespace: "shop", DstPod: "db-0", Verdict: "forwarded", RatePerSec: 1},
+		{SrcNamespace: "shop", SrcPod: "api", DstIP: "3.5.129.105", DstFqdn: "s3.us-east-2.amazonaws.com", Verdict: "forwarded", RatePerSec: 2},
+		{SrcNamespace: "shop", SrcPod: "api", DstIP: "10.42.89.28", DstFqdn: apiServerFQDN, Verdict: "forwarded", RatePerSec: 3},
+		{SrcNamespace: "shop", SrcPod: "agent", DstIP: "10.42.101.135", DstFqdn: "ABC.gr7.us-east-2.eks.amazonaws.com", Verdict: "forwarded", RatePerSec: 4},
+		{SrcNamespace: "shop", SrcPod: "api", DstIP: "52.15.162.77", Verdict: "forwarded", RatePerSec: 5},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d edges, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("edge %d:\n got %+v\nwant %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// A pair with no traffic in the window is not an edge (the agent sends idle
+// counters at rate 0). Filtering happens before the redirected/forwarded merge:
+// an idle forwarded twin must not swallow a redirected row that carries traffic.
+func TestBuildPodFlowEdges_IdlePairsAreNotEdges(t *testing.T) {
+	rows := []vmRow{
+		mkFlowRow("web", "cache", "forwarded", 0),  // idle: gone
+		mkFlowRow("web", "api", "forwarded", 0),    // idle twin...
+		mkFlowRow("web", "api", "redirected", 2.5), // ...of a live L7-proxied flow
+		mkFlowRow("api", "db", "forwarded", 3),
+		mkFlowRow("api", "db", "redirected", 0),
+		mkFlowRow("web", "admin", "dropped", 0), // an old denial: gone
+		mkFlowRow("web", "audit", "dropped", 1),
+	}
+	httpByPair := map[pairKey]*L7Summary{pk("web", "api"): {RequestsPerSec: 2.5}}
+	edges := buildPodFlowEdges(rows, httpByPair)
+
+	got := map[pairKey]FlowEdge{}
+	for _, e := range edges {
+		got[pairKey{srcNs: e.SrcNamespace, srcPod: e.SrcPod, dstNs: e.DstNamespace, dstPod: e.DstPod}] = e
+	}
+	if len(edges) != 3 {
+		t.Fatalf("want 3 live edges, got %d: %+v", len(edges), edges)
+	}
+	if e, ok := got[pk("web", "api")]; !ok || e.Verdict != "forwarded" || e.RatePerSec != 2.5 || e.L7 == nil {
+		t.Errorf("web→api: the live redirected flow must stand as the forwarded edge with its L7: %+v", e)
+	}
+	if e, ok := got[pk("api", "db")]; !ok || e.RatePerSec != 3 {
+		t.Errorf("api→db: %+v", e)
+	}
+	if e, ok := got[pk("web", "audit")]; !ok || e.Verdict != "dropped" {
+		t.Errorf("web→audit: %+v", e)
+	}
+}
+
+// A node's address is the node, not whichever hostNetwork pod on it the lister
+// returned last: Prometheus → kubelet :10250 was drawn as traffic to aws-node or
+// kube-proxy. The API server keeps its name when it sits on a node's address
+// (kind, kubeadm).
+func TestExternalPeersEdges_NodeAddresses(t *testing.T) {
+	pods := []*corev1.Pod{
+		{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "aws-node-x"},
+			Spec: corev1.PodSpec{HostNetwork: true}, Status: corev1.PodStatus{PodIP: "10.42.1.5"}},
+		{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "api-1"},
+			Status: corev1.PodStatus{PodIP: "10.42.7.9"}},
+	}
+	nodes := []*corev1.Node{
+		{ObjectMeta: metav1.ObjectMeta{Name: "ip-10-42-1-5.us-east-2.compute.internal"},
+			Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{
+				{Type: corev1.NodeInternalIP, Address: "10.42.1.5"},
+				{Type: corev1.NodeHostName, Address: "ip-10-42-1-5"},
+			}}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "kind-control-plane"},
+			Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "172.18.0.2"}}}},
+	}
+	byIP := podIndexByIP(pods)
+	if _, ok := byIP["10.42.1.5"]; ok {
+		t.Fatal("a hostNetwork pod must not own its node's address")
+	}
+	p := externalPeers{
+		podByIP:   byIP,
+		apiServer: map[string]bool{"172.18.0.2": true},
+		nodeByIP:  nodeIndexByIP(nodes),
+	}
+	got := p.edges([]vmRow{
+		externalFlowRow("prometheus-0", "10.42.1.5", "forwarded", 1),  // kubelet on the node
+		externalFlowRow("prometheus-0", "10.42.7.9", "forwarded", 1),  // a pod
+		externalFlowRow("prometheus-0", "172.18.0.2", "forwarded", 1), // API server on a node
+	})
+	want := []FlowEdge{
+		{SrcNamespace: "shop", SrcPod: "prometheus-0", DstIP: "10.42.1.5", DstFqdn: "ip-10-42-1-5.us-east-2.compute.internal", Verdict: "forwarded", RatePerSec: 1},
+		{SrcNamespace: "shop", SrcPod: "prometheus-0", DstNamespace: "shop", DstPod: "api-1", Verdict: "forwarded", RatePerSec: 1},
+		{SrcNamespace: "shop", SrcPod: "prometheus-0", DstIP: "172.18.0.2", DstFqdn: apiServerFQDN, Verdict: "forwarded", RatePerSec: 1},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d edges, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("edge %d:\n got %+v\nwant %+v", i, got[i], want[i])
+		}
 	}
 }

@@ -71,11 +71,10 @@ are UP via the vmagent admin UI:
 
 If a job you expected to see (node-exporter, kube-state-metrics) is
 missing from activeTargets, the most common cause is a label-selector
-mismatch. The defaults in values.yaml match standalone Prometheus
-charts; kube-prometheus-stack uses
-`app.kubernetes.io/name=prometheus-node-exporter` for node-exporter
-(NOT the default `node-exporter`). Inspect the comment block on
-scrape.discovery in values.yaml for the override pattern.
+mismatch. The node-exporter default matches both the standalone chart
+(`node-exporter`) and kube-prometheus-stack (`prometheus-node-exporter`);
+any other name needs scrape.discovery.nodeExporter.labelSelector. See
+the comment block on scrape.discovery in values.yaml.
 {{- end }}
 
 Hubble flow collection is {{ if .Values.hubble.enabled }}ENABLED{{ else }}DISABLED (default){{ end }}.

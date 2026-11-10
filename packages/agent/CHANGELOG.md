@@ -11,6 +11,27 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Hubble flow keys are forgotten after 15 minutes without a new event.** The
+  aggregator kept every key (pod pair, pod → address, DNS answer, HTTP shape) for
+  the agent pod's whole life and sent all of them every 5 s. Pod restarts (the pod
+  name is in the key) and endpoints that answer each lookup with a new address
+  (S3, SQS, CloudWatch) made the key count, and the active series, only grow, and
+  the backend read keys idle for hours as edges at rate 0. A forgotten key stops
+  being sent and its series goes stale; if it comes back it restarts from 0, which
+  `rate()` reads as a reset. Nothing already sent is lost. Until now, restarting
+  the agent DaemonSet was the only way to clear them.
+
+### Changed
+
+- **The node-exporter discovery finds kube-prometheus-stack's node-exporter by
+  default.** `scrape.discovery.nodeExporter.labelSelector` now defaults to
+  `app.kubernetes.io/name=node-exporter|prometheus-node-exporter` (the value is a
+  regular expression matched in full). The old default matched only the
+  standalone chart, so a kube-prometheus-stack cluster got no node-exporter target
+  and a grey coverage chip, with no error.
+
 ## [1.4.8] — 2026-11-10
 
 Metric correctness: each pod's network is stored once, and `hostNetwork` pods no

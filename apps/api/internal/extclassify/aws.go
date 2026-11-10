@@ -56,11 +56,14 @@ var (
 	awsToolsS3          = []string{"call s3 GetBucketLocation", "call s3 GetBucketEncryption", "call s3 GetBucketPolicy"}
 	awsToolsDynamoDB    = []string{"call dynamodb ListTables", "call dynamodb DescribeTable", "call cloudwatch GetMetricData"}
 	awsToolsKafka       = []string{"call kafka ListClustersV2", "call kafka DescribeClusterV2", "call cloudwatch GetMetricData"}
-	awsToolsECR         = []string{"call ecr DescribeRepositories", "call ecr DescribeImages"}
-	awsToolsEFS         = []string{"call efs DescribeFileSystems", "call efs DescribeMountTargets"}
-	awsToolsRedshift    = []string{"call redshift DescribeClusters", "call cloudwatch GetMetricData"}
-	awsToolsEC2         = []string{"call ec2 DescribeInstances"}
-	awsToolsMetrics     = []string{"call cloudwatch GetMetricData"}
+	// DescribeImages first: it takes the repositoryName from the pod's image, and
+	// a role limited to some repositories refuses an unfiltered
+	// DescribeRepositories (the AWS lab, finding #76).
+	awsToolsECR      = []string{"call ecr DescribeImages", "call ecr DescribeRepositories", "call ecr GetLifecyclePolicy"}
+	awsToolsEFS      = []string{"call efs DescribeFileSystems", "call efs DescribeMountTargets"}
+	awsToolsRedshift = []string{"call redshift DescribeClusters", "call cloudwatch GetMetricData"}
+	awsToolsEC2      = []string{"call ec2 DescribeInstances"}
+	awsToolsMetrics  = []string{"call cloudwatch GetMetricData"}
 )
 
 // awsPrivateTLDs are top-level labels no public zone uses (.internal is
@@ -194,7 +197,7 @@ func classifyAWS(host string) (Classification, bool) {
 			hint = l[0]
 		}
 		return fqdnClass(ProviderAWS, "ecr", KindRegistry, hint, awsRegion(last), awsToolsECR,
-			"ECR registry (the hint is the AWS account id): check the repository and image exist and the node role can pull."), true
+			"ECR registry (the hint is the AWS account id). The repository and tag are in the pod's image (<account>.dkr.ecr.<region>.amazonaws.com/<repository>:<tag>): DescribeImages with that repositoryName says whether the tag exists; call DescribeRepositories only with repositoryNames (a role scoped to some repositories refuses an unfiltered list). A tag that is gone: GetLifecyclePolicy. Then whether the node role can pull."), true
 	// EFS: [<az>.]fs-<id>.efs.<region>
 	case before == "efs" && n >= 3:
 		hint := ""

@@ -216,7 +216,7 @@ func awsFamilyTable() []awsFamily {
 		{
 			Family: Family{
 				Label:     "Identity and container images",
-				Detail:    "The identity KubeBolt uses, IAM roles and their policies (for IRSA and Pod Identity), ECR repositories, images and repository policies. Kobi can also simulate what a role is allowed to do.",
+				Detail:    "The identity KubeBolt uses, IAM roles and their policies (for IRSA and Pod Identity), ECR repositories, images, scan findings, tags, and repository and lifecycle policies. Never image layers. Kobi can also simulate what a role is allowed to do.",
 				Kobi:      true,
 				Autopilot: true,
 			},
@@ -227,7 +227,10 @@ func awsFamilyTable() []awsFamily {
 					"GetPolicy", "GetPolicyVersion", "GetInstanceProfile",
 				}},
 				{service: "iam", ops: []string{"SimulatePrincipalPolicy"}, kobiOnly: true},
-				{service: "ecr", aliases: []string{"api.ecr"}, ops: []string{"DescribeRepositories", "DescribeImages", "GetRepositoryPolicy"}},
+				{service: "ecr", aliases: []string{"api.ecr"}, ops: []string{
+					"DescribeRepositories", "DescribeImages", "DescribeImageScanFindings", "ListImages", "ListTagsForResource",
+					"GetRepositoryPolicy", "GetLifecyclePolicy",
+				}},
 			},
 		},
 		{
