@@ -11,6 +11,18 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Hubble flow keys are forgotten after 15 minutes without a new event.** The
+  aggregator kept every key (pod pair, pod → address, DNS answer, HTTP shape) for
+  the agent pod's whole life and sent all of them every 5 s. Pod restarts (the pod
+  name is in the key) and endpoints that answer each lookup with a new address
+  (S3, SQS, CloudWatch) made the key count, and the active series, only grow, and
+  the backend read keys idle for hours as edges at rate 0. A forgotten key stops
+  being sent and its series goes stale; if it comes back it restarts from 0, which
+  `rate()` reads as a reset. Nothing already sent is lost. Until now, restarting
+  the agent DaemonSet was the only way to clear them.
+
 ## [1.4.8] — 2026-11-10
 
 Metric correctness: each pod's network is stored once, and `hostNetwork` pods no
