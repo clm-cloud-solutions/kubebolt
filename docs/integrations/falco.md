@@ -61,25 +61,42 @@ That UID is the cluster identity KubeBolt uses everywhere.
 CLUSTER_ID=$(kubectl get ns kube-system -o jsonpath='{.metadata.uid}')
 TOKEN=<your cluster-scoped ingest token>
 
+# The token goes in a Secret, not in the Helm values (where anyone who can run
+# `helm get values` reads it). falcosidekick loads it after its own Secret.
+kubectl create namespace falco --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n falco create secret generic falco-kubebolt \
+  --from-literal=WEBHOOK_CUSTOMHEADERS="Authorization:Bearer $TOKEN" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
 helm repo add falcosecurity https://falcosecurity.github.io/charts
-helm install falco falcosecurity/falco -n falco --create-namespace \
+helm upgrade --install falco falcosecurity/falco -n falco \
   --set driver.kind=modern_ebpf \
   --set falcosidekick.enabled=true \
+  --set-string falcosidekick.config.existingSecret=falco-kubebolt \
   --set-string falcosidekick.config.webhook.address=https://<your-kubebolt>/api/v1/ingest/falco \
-  --set-string falcosidekick.config.webhook.customHeaders="Authorization:Bearer $TOKEN" \
   --set-string falcosidekick.config.customfields="cluster_id:$CLUSTER_ID"
 ```
 
-> ⚠️ **`customHeaders`, with a capital H.** The chart's `values.yaml` documents it
-> as `customheaders` (all lowercase) but **the template reads `customHeaders`**.
-> Passing the documented spelling leaves the header empty **with no warning at
-> all**, the POST goes out without a token, and the API answers `401` — and the
-> obvious diagnosis, the wrong one, is that the token is bad. Check it with:
->
-> ```bash
-> kubectl get secret -n falco falco-falcosidekick \
->   -o jsonpath='{.data.WEBHOOK_CUSTOMHEADERS}' | base64 -d
-> ```
+Use chart **9.2.1 or later** (Falco 0.45.1+); on kernel 6.18 older versions do not
+start ([The driver](#the-driver)). `customfields` is optional: the token decides the
+cluster, and a `cluster_id` that disagrees with it is refused.
+
+To rotate the token, re-run the `kubectl … create secret` line with the new one
+and restart falcosidekick (`kubectl -n falco rollout restart
+deploy/falco-falcosidekick`): it reads the Secret only when it starts. To check
+what it sends:
+
+```bash
+kubectl get secret -n falco falco-kubebolt \
+  -o jsonpath='{.data.WEBHOOK_CUSTOMHEADERS}' | base64 -d
+```
+
+> ⚠️ **Passing the header in the values instead** (`webhook.customHeaders`) puts
+> the token in the release values, and it has to be **`customHeaders`, with a
+> capital H**: the chart's `values.yaml` documents `customheaders` (all
+> lowercase) but the template reads `customHeaders`. The documented spelling
+> leaves the header empty with no warning, the POST goes out without a token, and
+> the API answers `401`.
 
 ### The driver
 
@@ -91,6 +108,13 @@ ls /sys/kernel/btf/vmlinux      # must exist
 ```
 
 If it is not available, the chart also offers `ebpf` and `kmod`.
+
+**Kernel 6.18 needs Falco 0.45.1 or later** (chart 9.2.1+). Earlier versions with
+`modern_ebpf` crash-loop there: the BPF verifier rejects the `signal_deliver`
+program (`R9 invalid mem access 'scalar'`, libpman errno 13). Amazon EKS AL2023
+node images run 6.18 from November 2026. Fixed in falcosecurity/libs
+([#3119](https://github.com/falcosecurity/libs/pull/3119)); verified with chart
+9.2.2 / Falco 0.45.2.
 
 ### One sensor per kernel
 
@@ -127,11 +151,12 @@ The event lands in **Security → Runtime** (`/security/runtime`) in under a min
 
 | Symptom | Cause |
 |---|---|
-| `401 missing Bearer token` | lowercase `customheaders` (see above) |
+| `401 missing Bearer token` | the `falco-kubebolt` Secret is missing or was created after falcosidekick started (restart it); with the header in the values, lowercase `customheaders` |
 | `403 not scoped to a cluster` | the token was issued without a cluster |
 | `403 cluster_id does not match` | the token belongs to a different cluster than `customfields` |
 | `connection refused` | the URL is not reachable from the cluster |
 | Nothing in Falco's log | the driver never loaded — check kernel and BTF |
+| Falco pods in `CrashLoopBackOff`, `R9 invalid mem access 'scalar'` in the log | Falco older than 0.45.1 on kernel 6.18 — upgrade the chart to 9.2.1+ |
 
 ---
 
