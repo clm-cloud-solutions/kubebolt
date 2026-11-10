@@ -9,7 +9,6 @@ import {
   type ResourceState,
   type Severity,
 } from '@/hooks/useRightSizing'
-import { PreliminaryBadge } from './PreliminaryBadge'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { HoverTooltip, TooltipHeader, TooltipRow } from '@/components/shared/Tooltip'
 import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
@@ -42,7 +41,7 @@ const KIND_TO_PATH: Record<string, string> = {
 
 export function RightSizingPanel({ installed, overview }: Props) {
   const isMetricsOnly = useMetricsOnly()
-  const { recs, isLoading, error, preliminary, windowDays } = useRightSizing(installed, overview)
+  const { recs, isLoading, error, insufficientHistory } = useRightSizing(installed, overview)
   const queryClient = useQueryClient()
 
   if (!installed) return null
@@ -80,10 +79,11 @@ export function RightSizingPanel({ installed, overview }: Props) {
   const KOBI_ROW_CAP = 10
 
   if (!isLoading && !error && recs.length === 0) {
-    // No usage history yet — the P95 window query found no samples at all (a
-    // freshly connected cluster). Say so plainly instead of hiding, so an empty
-    // panel doesn't read as "broken".
-    if (windowDays === undefined) {
+    // Not enough history yet — the cluster has under ~2 days of usage samples
+    // (or none at all), so right-sizing makes no recommendations rather than
+    // ones built on a quiet snapshot of a barely-run cluster (finding #74). Say
+    // so plainly instead of hiding, so an empty panel doesn't read as "broken".
+    if (insufficientHistory) {
       return (
         <div className="rounded-lg border border-kb-border bg-kb-card p-4">
           <div className="flex items-center gap-2 mb-2">
@@ -93,8 +93,9 @@ export function RightSizingPanel({ installed, overview }: Props) {
             <h4 className="text-sm font-semibold text-kb-text-primary">Right-sizing Recommendations</h4>
           </div>
           <p className="text-[11px] text-kb-text-tertiary leading-relaxed">
-            Collecting samples — right-sizing needs about 15 minutes of usage history after
-            the agent connects. It fills in on its own.
+            Collecting samples — right-sizing needs about 2 days of usage history before it
+            can tell real over-provisioning from a cluster that has only just started running.
+            It fills in on its own.
           </p>
         </div>
       )
@@ -121,7 +122,6 @@ export function RightSizingPanel({ installed, overview }: Props) {
           <h4 className="text-sm font-semibold text-kb-text-primary truncate">
             Right-sizing Recommendations
           </h4>
-          {preliminary && <PreliminaryBadge windowDays={windowDays} />}
           {recs.length > 0 && (
             <AskCopilotButton
               payload={{

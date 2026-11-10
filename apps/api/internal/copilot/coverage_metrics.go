@@ -409,9 +409,9 @@ func summarizeRightSizing(res rightsizing.Result, namespace, severity string, li
 	if res.WindowDays != nil {
 		out["historyDays"] = math.Round(*res.WindowDays*10) / 10
 	}
-	if res.Preliminary {
-		out["preliminary"] = true
-		out["preliminaryNote"] = "less than 2 days of usage history: the P95 has not seen two daily peaks, so savings are optimistic — say so, and do not recommend acting on them yet"
+	if res.InsufficientHistory {
+		out["insufficientHistory"] = true
+		out["insufficientHistoryNote"] = "under 2 days of usage history: right-sizing is still collecting and makes no recommendations yet — do not suggest resizing anything, and say the data is not ready"
 	}
 	if len(rows) > limit {
 		out["truncated"] = true

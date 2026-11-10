@@ -117,7 +117,7 @@ func TestQueryMetrics_RefusesWhatItCannotAnswerHonestly(t *testing.T) {
 	}
 }
 
-func TestRightSizing_ReadableUnitsAndPreliminary(t *testing.T) {
+func TestRightSizing_ReadableUnitsAndInsufficientHistory(t *testing.T) {
 	days := 1.2
 	res := rightsizing.Result{
 		Recs: []rightsizing.Recommendation{{
@@ -125,9 +125,9 @@ func TestRightSizing_ReadableUnitsAndPreliminary(t *testing.T) {
 			CPU: rightsizing.Finding{Request: 2000, P95: 150, State: rightsizing.Over, Suggest: 180},
 			Mem: rightsizing.Finding{Request: 512 * 1024 * 1024, P95: 100 * 1024 * 1024, State: rightsizing.OK},
 		}},
-		Totals:      rightsizing.Totals{Count: 1, ReclaimCPUMilli: 1820},
-		WindowDays:  &days,
-		Preliminary: true,
+		Totals:              rightsizing.Totals{Count: 1, ReclaimCPUMilli: 1820},
+		WindowDays:          &days,
+		InsufficientHistory: true,
 	}
 	// The tool needs a live connector (it reads the workloads' specs), so the
 	// shaping is exercised directly; the executor gate is the generic one.
@@ -142,7 +142,7 @@ func TestRightSizing_ReadableUnitsAndPreliminary(t *testing.T) {
 	if _, ok := row["memory"]; ok {
 		t.Error("a resource in state ok must not add a row")
 	}
-	if payload["preliminary"] != true || payload["reclaimable"].(map[string]any)["cpu"] != "1820m" {
+	if payload["insufficientHistory"] != true || payload["reclaimable"].(map[string]any)["cpu"] != "1820m" {
 		t.Errorf("payload = %v", payload)
 	}
 }

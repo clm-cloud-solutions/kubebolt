@@ -79,7 +79,7 @@ export function CapacityStrip({ rangeMinutes, installed, overview }: Props) {
   const mem = usePeakSeries('mem', MEM_QUERY, rangeMinutes, installed)
   const cpuNodePeaks = useNodePeaks('cpu', CPU_BY_NODE, rangeMinutes, installed)
   const memNodePeaks = useNodePeaks('mem', MEM_BY_NODE, rangeMinutes, installed)
-  const { recs, totals, isLoading: recsLoading, windowDays, preliminary } = useRightSizing(installed, overview)
+  const { recs, totals, isLoading: recsLoading, windowDays, insufficientHistory } = useRightSizing(installed, overview)
 
   // Money layer: when OpenCost cost rates are available, price the
   // reclaimable capacity into $/mo — the same node rates and formula
@@ -280,7 +280,9 @@ export function CapacityStrip({ rangeMinutes, installed, overview }: Props) {
             ? `reclaimable${showMoney ? ` · ≈ ${formatMoney(savingsMonthly, { exact: true })}/mo` : ''} · ${totals.count} ${totals.count === 1 ? 'rec' : 'recs'}`
             : recsLoading
               ? 'computing from 7d P95…'
-              : 'well sized — nothing to hand back'
+              : insufficientHistory
+                ? 'collecting samples — needs ~2 days'
+                : 'well sized — nothing to hand back'
         }
         viz={
           reclaimRows.length > 0 ? (
@@ -297,7 +299,6 @@ export function CapacityStrip({ rangeMinutes, installed, overview }: Props) {
         caption={
           <>
             {`P95 over ${windowDays != null ? `${Math.max(1, Math.round(windowDays))}d` : '7d'}`}
-            {preliminary && <span className="text-status-warn"> · preliminary</span>}
             {totals.count > 0 && (
               <>
                 {' · '}

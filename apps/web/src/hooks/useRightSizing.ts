@@ -63,18 +63,18 @@ export interface RightSizingResult {
   // over [7d], but a freshly-connected cluster only has a few hours — so this
   // is what the recommendation is REALLY based on. undefined while loading.
   windowDays?: number
-  // True when windowDays < CONFIDENCE_DAYS: the P95 hasn't seen enough daily
-  // cycles yet (a low-load snapshot masquerading as a 7d baseline), so the
-  // reclaim / savings figures are optimistic and should read as PRELIMINARY
-  // rather than something to act on. Surfaced as a badge by consumers.
-  preliminary: boolean
+  // True when the cluster has under ~2 days of usage history (or none at all):
+  // right-sizing is still collecting and returns NO recommendations, rather than
+  // ones built on a quiet snapshot of a barely-run cluster. Consumers show a
+  // "collecting samples" state instead of an empty or falsely-confident list.
+  insufficientHistory: boolean
 }
 
 interface RightSizingResponse {
   recs: Recommendation[]
   totals: RightSizingTotals
   windowDays?: number
-  preliminary: boolean
+  insufficientHistory: boolean
 }
 
 const EMPTY_TOTALS: RightSizingTotals = { count: 0, reclaimCpuMilli: 0, reclaimMemBytes: 0 }
@@ -98,6 +98,6 @@ export function useRightSizing(installed: boolean, _overview?: ClusterOverview):
     isLoading: q.isLoading,
     error: (q.error as Error | null) ?? null,
     windowDays: q.data?.windowDays,
-    preliminary: q.data?.preliminary ?? false,
+    insufficientHistory: q.data?.insufficientHistory ?? false,
   }
 }

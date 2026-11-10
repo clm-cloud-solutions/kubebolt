@@ -32,10 +32,27 @@ func TestEvaluateResource_Rules(t *testing.T) {
 		{"no specs, idle", 0, 0, 5, CPUAbsFloorMilli, OK, 0},
 		{"healthy", 500, 1000, 300, CPUAbsFloorMilli, OK, 0},
 	} {
-		f := EvaluateResource(tc.req, tc.lim, tc.p95, tc.floor, roundCPU)
+		f := EvaluateResource(tc.req, tc.lim, tc.p95, tc.floor, true, roundCPU)
 		if f.State != tc.want || f.Suggest != tc.wantSuggest {
 			t.Errorf("%s: state=%s suggest=%d, want %s %d", tc.name, f.State, f.Suggest, tc.want, tc.wantSuggest)
 		}
+	}
+}
+
+// Finding #74: a workload with no P95 sample at all (hasData false) is a
+// workload we have never measured — not one measured at zero. No rule may fire,
+// or an unsampled Deployment with a request is flagged over-provisioned and told
+// to shrink to the rounding floor on no evidence whatsoever.
+func TestEvaluateResource_NoDataIsNoOpinion(t *testing.T) {
+	// Same inputs that, WITH data, are clearly over-provisioned (req 1000m, p95
+	// 0) — but with hasData false there is nothing to act on.
+	if f := EvaluateResource(1000, 0, 0, CPUAbsFloorMilli, false, roundCPU); f.State != OK || f.Suggest != 0 {
+		t.Errorf("no-data over-provisioned: state=%s suggest=%d, want ok 0", f.State, f.Suggest)
+	}
+	// A real measured zero (hasData true) IS over-provisioned — the idle case
+	// stays flagged, so the fix does not blind the engine to genuine waste.
+	if f := EvaluateResource(1000, 0, 0, CPUAbsFloorMilli, true, roundCPU); f.State != Over {
+		t.Errorf("measured-zero idle: state=%s, want over", f.State)
 	}
 }
 
@@ -43,17 +60,20 @@ func TestEvaluateResource_Rules(t *testing.T) {
 // suggestion of a core or more was rounded as bytes and came out as ~10
 // million millicores. Each resource has its own rounding now.
 func TestEvaluateResource_CPUAboveOneCoreStaysInMillicores(t *testing.T) {
-	f := EvaluateResource(1000, 1000, 960, CPUAbsFloorMilli, roundCPU) // near limit → 960 × 1.5
+	f := EvaluateResource(1000, 1000, 960, CPUAbsFloorMilli, true, roundCPU) // near limit → 960 × 1.5
 	if f.State != NearLimit || f.Suggest != 1440 {
 		t.Errorf("suggest = %d (%s), want 1440m", f.Suggest, f.State)
 	}
-	m := EvaluateResource(0, 512*mi, 480*mi, MemAbsFloorBytes, roundMem)
+	m := EvaluateResource(0, 512*mi, 480*mi, MemAbsFloorBytes, true, roundMem)
 	if m.Suggest%(10*mi) != 0 || m.Suggest < 700*mi {
 		t.Errorf("memory suggest = %d, want 720Mi rounded to 10Mi", m.Suggest)
 	}
 }
 
-func TestEvaluate_OrderTotalsAndPreliminary(t *testing.T) {
+// wasteFixture is the workload set + P95 index the ordering/totals test uses.
+// Every workload carries a P95 sample, so only the window gate and ordering are
+// under test here.
+func wasteFixture() ([]models.NamespaceWorkload, map[string]int64) {
 	wls := []models.NamespaceWorkload{{Namespace: "shop", Workloads: []models.WorkloadSummary{
 		wl("shop", "Deployment", "small-waste", 200, 0, 0, 0),
 		wl("shop", "Deployment", "big-waste", 4000, 0, 0, 0),
@@ -68,7 +88,12 @@ func TestEvaluate_OrderTotalsAndPreliminary(t *testing.T) {
 		Key("shop", "StatefulSet", "no-specs"):   300,
 		Key("shop", "Deployment", "fine"):        300,
 	}
-	days := 1.5
+	return wls, cpu
+}
+
+func TestEvaluate_OrderAndTotals(t *testing.T) {
+	wls, cpu := wasteFixture()
+	days := 3.0 // past ConfidenceDays, so the engine operates
 	res := Evaluate(wls, cpu, nil, &days)
 	var got []string
 	for _, r := range res.Recs {
@@ -87,10 +112,59 @@ func TestEvaluate_OrderTotalsAndPreliminary(t *testing.T) {
 	if res.Totals.Count != 4 || res.Totals.ReclaimCPUMilli != 3880+180 {
 		t.Errorf("totals = %+v", res.Totals)
 	}
-	if !res.Preliminary {
-		t.Error("1.5 days of history must read as preliminary")
-	}
-	if Evaluate(wls, cpu, nil, nil).Preliminary {
-		t.Error("an unknown window must not cry preliminary")
+	if res.InsufficientHistory {
+		t.Error("3 days of history is enough — must not read as insufficient")
 	}
 }
+
+// Finding #74: below ConfidenceDays of history — or with no samples at all —
+// right-sizing emits NO recommendations and flags InsufficientHistory, instead
+// of recommending shrinks built on a quiet snapshot of a barely-run cluster.
+func TestEvaluate_InsufficientHistoryGate(t *testing.T) {
+	wls, cpu := wasteFixture() // these WOULD produce 4 recs with enough history
+	for _, tc := range []struct {
+		name string
+		days *float64
+	}{
+		{"half a day", f64(0.5)},
+		{"just under the bar", f64(1.9)},
+		{"no window at all", nil},
+	} {
+		res := Evaluate(wls, cpu, nil, tc.days)
+		if len(res.Recs) != 0 || res.Totals.Count != 0 {
+			t.Errorf("%s: got %d recs, want 0 (still collecting)", tc.name, len(res.Recs))
+		}
+		if !res.InsufficientHistory {
+			t.Errorf("%s: InsufficientHistory=false, want true", tc.name)
+		}
+	}
+	// At exactly ConfidenceDays the engine operates (the gate is a strict <).
+	at := 2.0
+	if Evaluate(wls, cpu, nil, &at).InsufficientHistory {
+		t.Error("exactly ConfidenceDays must operate, not collect")
+	}
+}
+
+// Finding #74: with enough cluster history, a workload still absent from the
+// P95 index (just deployed, never sampled) gets no recommendation — while an
+// idle workload genuinely measured at zero stays flagged over-provisioned.
+func TestEvaluate_UnsampledWorkloadIsNotRecommended(t *testing.T) {
+	wls := []models.NamespaceWorkload{{Namespace: "shop", Workloads: []models.WorkloadSummary{
+		wl("shop", "Deployment", "just-deployed", 1000, 0, 0, 0), // absent from cpu → no sample
+		wl("shop", "Deployment", "truly-idle", 1000, 0, 0, 0),    // present at 0 → measured idle
+	}}}
+	cpu := map[string]int64{
+		Key("shop", "Deployment", "truly-idle"): 0, // a real measured zero
+	}
+	days := 3.0
+	res := Evaluate(wls, cpu, nil, &days)
+	var got []string
+	for _, r := range res.Recs {
+		got = append(got, r.Name)
+	}
+	if len(got) != 1 || got[0] != "truly-idle" {
+		t.Fatalf("recs = %v, want only [truly-idle] (the unsampled one is no opinion)", got)
+	}
+}
+
+func f64(v float64) *float64 { return &v }
