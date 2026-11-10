@@ -1,6 +1,11 @@
 package api
 
-import "testing"
+import (
+	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
 
 // mkFlowRow builds a pod-to-pod L4 event row for the given pair + verdict.
 func mkFlowRow(src, dst, verdict string, val float64) vmRow {
@@ -205,5 +210,54 @@ func TestBuildPodFlowEdges_IdlePairsAreNotEdges(t *testing.T) {
 	}
 	if e, ok := got[pk("web", "audit")]; !ok || e.Verdict != "dropped" {
 		t.Errorf("web→audit: %+v", e)
+	}
+}
+
+// A node's address is the node, not whichever hostNetwork pod on it the lister
+// returned last: Prometheus → kubelet :10250 was drawn as traffic to aws-node or
+// kube-proxy. The API server keeps its name when it sits on a node's address
+// (kind, kubeadm).
+func TestExternalPeersEdges_NodeAddresses(t *testing.T) {
+	pods := []*corev1.Pod{
+		{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "aws-node-x"},
+			Spec: corev1.PodSpec{HostNetwork: true}, Status: corev1.PodStatus{PodIP: "10.42.1.5"}},
+		{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "api-1"},
+			Status: corev1.PodStatus{PodIP: "10.42.7.9"}},
+	}
+	nodes := []*corev1.Node{
+		{ObjectMeta: metav1.ObjectMeta{Name: "ip-10-42-1-5.us-east-2.compute.internal"},
+			Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{
+				{Type: corev1.NodeInternalIP, Address: "10.42.1.5"},
+				{Type: corev1.NodeHostName, Address: "ip-10-42-1-5"},
+			}}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "kind-control-plane"},
+			Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "172.18.0.2"}}}},
+	}
+	byIP := podIndexByIP(pods)
+	if _, ok := byIP["10.42.1.5"]; ok {
+		t.Fatal("a hostNetwork pod must not own its node's address")
+	}
+	p := externalPeers{
+		podByIP:   byIP,
+		apiServer: map[string]bool{"172.18.0.2": true},
+		nodeByIP:  nodeIndexByIP(nodes),
+	}
+	got := p.edges([]vmRow{
+		externalFlowRow("prometheus-0", "10.42.1.5", "forwarded", 1),  // kubelet on the node
+		externalFlowRow("prometheus-0", "10.42.7.9", "forwarded", 1),  // a pod
+		externalFlowRow("prometheus-0", "172.18.0.2", "forwarded", 1), // API server on a node
+	})
+	want := []FlowEdge{
+		{SrcNamespace: "shop", SrcPod: "prometheus-0", DstIP: "10.42.1.5", DstFqdn: "ip-10-42-1-5.us-east-2.compute.internal", Verdict: "forwarded", RatePerSec: 1},
+		{SrcNamespace: "shop", SrcPod: "prometheus-0", DstNamespace: "shop", DstPod: "api-1", Verdict: "forwarded", RatePerSec: 1},
+		{SrcNamespace: "shop", SrcPod: "prometheus-0", DstIP: "172.18.0.2", DstFqdn: apiServerFQDN, Verdict: "forwarded", RatePerSec: 1},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d edges, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("edge %d:\n got %+v\nwant %+v", i, got[i], want[i])
+		}
 	}
 }

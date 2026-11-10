@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
@@ -288,6 +289,7 @@ func computeFlowEdgesIn(ctx context.Context, sc flowScope, windowMin int, ns str
 	// recover the mapping without an extra round trip. Built once per
 	// request — the lister is in-memory and the index is GC'd after.
 	podByIP := map[string]podRef{}
+	nodeByIP := map[string]string{}
 	// Pod CIDR ranges (one per node) let us distinguish a stale internal
 	// IP — pod that died inside the metric rate window so the lister no
 	// longer has it — from a genuinely external destination. Stale
@@ -297,15 +299,12 @@ func computeFlowEdgesIn(ctx context.Context, sc flowScope, windowMin int, ns str
 	if conn := sc.conn; conn != nil {
 		if pl := conn.PodLister(); pl != nil {
 			if pods, err := pl.List(labels.Everything()); err == nil {
-				for _, p := range pods {
-					if ip := p.Status.PodIP; ip != "" {
-						podByIP[ip] = podRef{namespace: p.Namespace, name: p.Name}
-					}
-				}
+				podByIP = podIndexByIP(pods)
 			}
 		}
 		if nl := conn.NodeLister(); nl != nil {
 			if nodes, err := nl.List(labels.Everything()); err == nil {
+				nodeByIP = nodeIndexByIP(nodes)
 				for _, n := range nodes {
 					cidrs := n.Spec.PodCIDRs
 					if len(cidrs) == 0 && n.Spec.PodCIDR != "" {
@@ -341,6 +340,7 @@ func computeFlowEdgesIn(ctx context.Context, sc flowScope, windowMin int, ns str
 		podByIP:   podByIP,
 		inPodCIDR: isClusterInternalIP,
 		apiServer: apiServer,
+		nodeByIP:  nodeByIP,
 		dns:       dnsByPodIP,
 	}.edges(externalRows)...)
 
@@ -387,7 +387,12 @@ type externalPeers struct {
 	// plane (EKS, AKS, GKE) they are neither a pod nor outside the cluster,
 	// and without a name they showed up in "(external)" as bare VPC IPs.
 	apiServer map[string]bool
-	dns       map[dnsKey]dnsValue
+	// nodeByIP names the nodes' addresses. Traffic to a node (the kubelet, or
+	// a hostNetwork pod listening on it) arrives as an external row with the
+	// node's IP, and the map drew it to whichever hostNetwork pod on that node
+	// the lister returned last (finding #76).
+	nodeByIP map[string]string
+	dns      map[dnsKey]dnsValue
 }
 
 // edges skips non-unicast destinations (isExternalPeer) and rows with no
@@ -396,7 +401,8 @@ type externalPeers struct {
 //  2. IP is in a pod CIDR but no match → dropped (orphan from the rate
 //     window: the pod died and its IP is not recycled yet)
 //  3. anything else                   → external edge, named by this pod's
-//     recent DNS answer, else apiServerFQDN when it is the API server
+//     recent DNS answer, else apiServerFQDN when it is the API server (on
+//     kind or kubeadm a control-plane node's address), else the node's name
 func (p externalPeers) edges(rows []vmRow) []FlowEdge {
 	var out []FlowEdge
 	for _, row := range rows {
@@ -434,9 +440,39 @@ func (p externalPeers) edges(rows []vmRow) []FlowEdge {
 				edge.DstFqdn = v.fqdn
 			} else if p.apiServer[ip] {
 				edge.DstFqdn = apiServerFQDN
+			} else if node, ok := p.nodeByIP[ip]; ok {
+				edge.DstFqdn = node
 			}
 		}
 		out = append(out, edge)
+	}
+	return out
+}
+
+// podIndexByIP maps each pod's IP to the pod, for external rows whose address is
+// really a pod. hostNetwork pods are left out: their IP is the node's, shared by
+// every hostNetwork pod on it, so the last one listed won traffic meant for the
+// node or for another of them. Their node's address is named by nodeIndexByIP.
+func podIndexByIP(pods []*corev1.Pod) map[string]podRef {
+	out := make(map[string]podRef, len(pods))
+	for _, p := range pods {
+		if p.Spec.HostNetwork || p.Status.PodIP == "" {
+			continue
+		}
+		out[p.Status.PodIP] = podRef{namespace: p.Namespace, name: p.Name}
+	}
+	return out
+}
+
+// nodeIndexByIP maps each node's internal and external addresses to its name.
+func nodeIndexByIP(nodes []*corev1.Node) map[string]string {
+	out := map[string]string{}
+	for _, n := range nodes {
+		for _, a := range n.Status.Addresses {
+			if (a.Type == corev1.NodeInternalIP || a.Type == corev1.NodeExternalIP) && a.Address != "" {
+				out[a.Address] = n.Name
+			}
+		}
 	}
 	return out
 }
