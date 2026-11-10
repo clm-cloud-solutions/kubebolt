@@ -103,7 +103,9 @@ To enable Hubble flow collection (requires Cilium with Hubble relay
 reachable at hubble-relay.kube-system.svc.cluster.local:80 — or a
 custom hubble.relay.address override):
 
-  helm upgrade --reuse-values --set hubble.enabled=true ...
+  helm upgrade {{ .Release.Name }} oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
+    -n {{ .Release.Namespace }} --version {{ .Chart.Version }} \
+    --reset-then-reuse-values --set hubble.enabled=true
 
 Quick check whether Cilium is present in your cluster:
 

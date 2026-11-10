@@ -406,12 +406,16 @@ the database lock is released cleanly during the rollover.
 
 ```bash
 helm upgrade kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
-  --reuse-values --set auth.resetAdminPassword=NEWPASS
+  -n kubebolt --reset-then-reuse-values --set auth.resetAdminPassword=NEWPASS
 
 # log in with NEWPASS, change to your real password from the Account menu, then:
 helm upgrade kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
-  --reuse-values --set auth.resetAdminPassword=
+  -n kubebolt --reset-then-reuse-values --set auth.resetAdminPassword=
 ```
+
+Without `--version` these commands also move the release to the latest chart;
+add `--version` with the chart version `helm list -n kubebolt` shows to stay on
+it (the install's own notes print the commands with it filled in).
 
 **Path B — one-shot `Job` (when Helm isn't available, or for a runbook).**
 Scale the API to zero (the database is single-writer), run a Job with the same
@@ -521,7 +525,7 @@ token — and name it in `metrics.storage.existingSecret`:
 kubectl -n kubebolt create secret generic kubebolt-vm-credentials \
   --from-literal=token=<token>
 helm upgrade kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
-  --reuse-values --set metrics.storage.existingSecret=kubebolt-vm-credentials
+  -n kubebolt --reset-then-reuse-values --set metrics.storage.existingSecret=kubebolt-vm-credentials
 ```
 
 Plain Prometheus remote-write isn't enough — KubeBolt also queries the

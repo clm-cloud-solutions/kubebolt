@@ -44,12 +44,14 @@ path below.)
 
 If you've forgotten the admin password, reset it via helm:
 
-  helm upgrade kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
-    --reuse-values --set auth.resetAdminPassword=NEWPASS
+  helm upgrade {{ .Release.Name }} oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+    -n {{ .Release.Namespace }} --version {{ .Chart.Version }} \
+    --reset-then-reuse-values --set auth.resetAdminPassword=NEWPASS
 
   # log in with NEWPASS, change to your real password in the Account menu, then:
-  helm upgrade kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
-    --reuse-values --set auth.resetAdminPassword=
+  helm upgrade {{ .Release.Name }} oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+    -n {{ .Release.Namespace }} --version {{ .Chart.Version }} \
+    --reset-then-reuse-values --set auth.resetAdminPassword=
 
 (Min 8 chars. The reset runs on next pod start and clears the in-memory
 password — leaving the value in your release values is safe but not
