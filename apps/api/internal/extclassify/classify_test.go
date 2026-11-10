@@ -113,7 +113,7 @@ func TestClassify_AWS(t *testing.T) {
 		{name: "vpc endpoint sqs", fqdn: "vpce-0a1b2c3d4e5f-abcdefgh.sqs.us-east-1.vpce.amazonaws.com",
 			want: want{"aws", "sqs", KindQueue, "", "us-east-1", false, ConfidenceFQDN, ""}},
 		{name: "ecr", fqdn: "123456789012.dkr.ecr.us-east-1.amazonaws.com",
-			want: want{"aws", "ecr", KindRegistry, "123456789012", "us-east-1", false, ConfidenceFQDN, "call ecr DescribeRepositories"}},
+			want: want{"aws", "ecr", KindRegistry, "123456789012", "us-east-1", false, ConfidenceFQDN, "call ecr DescribeImages"}},
 		{name: "efs", fqdn: "fs-0123abcd.efs.us-east-1.amazonaws.com",
 			want: want{"aws", "efs", KindStorage, "fs-0123abcd", "us-east-1", false, ConfidenceFQDN, ""}},
 		{name: "msk broker", fqdn: "b-1.events.a1b2c3.c2.kafka.us-east-1.amazonaws.com",
