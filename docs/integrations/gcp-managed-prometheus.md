@@ -520,7 +520,7 @@ Three modes are available:
 helm upgrade kubebolt-agent \
   ./deploy/helm/kubebolt-agent \
   -n kubebolt \
-  --reuse-values \
+  --reset-then-reuse-values \
   --set rbac.mode=operator
 ```
 
@@ -540,7 +540,7 @@ etc.).
 > switch to operator if you've disabled auth.
 
 > **Downgrade is symmetric.** `--set rbac.mode=reader` (or
-> `=metrics`) on a subsequent `helm upgrade --reuse-values` shrinks
+> `=metrics`) on a subsequent `helm upgrade --reset-then-reuse-values` shrinks
 > the ClusterRole back. K8s revokes the dropped verbs immediately.
 
 ---

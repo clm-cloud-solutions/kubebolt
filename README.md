@@ -240,7 +240,8 @@ driver add-on first.
 The chart deploys the API, the web UI and a single-node VictoriaMetrics
 (10 GiB PVC, 30-day retention). A first-run wizard walks you through the
 password, Kobi, the agent and notifications — every step can be skipped.
-Chart reference: [deploy/helm/kubebolt](deploy/helm/kubebolt/README.md).
+Chart reference: [deploy/helm/kubebolt](deploy/helm/kubebolt/README.md);
+upgrading an existing install: [Upgrade](deploy/helm/kubebolt/README.md#upgrade).
 
 **Live metrics vs. history.** Out of the box you get **live** CPU and memory,
 read from metrics-server — the current value only. Everything **over time**

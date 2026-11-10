@@ -37,7 +37,7 @@ scrape at the same time — plus the Prometheus OpenCost itself needs (see
 helm upgrade --install kubebolt-agent \
   oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
   -n kubebolt --create-namespace \
-  --reuse-values \
+  --reset-then-reuse-values \
   --set opencost.enabled=true \
   --set opencost.opencost.prometheus.internal.serviceName=kube-prometheus-stack-prometheus \
   --set opencost.opencost.prometheus.internal.namespaceName=monitoring \
@@ -60,7 +60,7 @@ If you already run one, point the agent's scraper at it instead:
 ```bash
 helm upgrade --install kubebolt-agent \
   oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
-  -n kubebolt --reuse-values \
+  -n kubebolt --reset-then-reuse-values \
   --set-string collectors.exporters.opencost=http://opencost.opencost.svc.cluster.local:9003/metrics
 ```
 

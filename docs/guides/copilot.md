@@ -516,7 +516,7 @@ Remove the key from both places Kobi reads it:
 
    ```bash
    helm upgrade kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
-     --reuse-values --set copilot.enabled=false
+     -n kubebolt --reset-then-reuse-values --set copilot.enabled=false
    ```
 
 With no key left, the launcher and `⌘J` disappear from the UI. To keep Kobi but make it

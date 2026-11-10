@@ -340,7 +340,7 @@ Option A — install the missing piece as a sidecar to KubeBolt:
 ```bash
 # Add KSM if missing:
 helm install kube-state-metrics prometheus-community/kube-state-metrics \
-  -n kubebolt --reuse-values
+  -n kubebolt
 # Add node-exporter if missing:
 helm install node-exporter prometheus-community/prometheus-node-exporter \
   -n kubebolt --set nameOverride=node-exporter

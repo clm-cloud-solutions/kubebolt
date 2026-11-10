@@ -911,9 +911,13 @@ jobs:
 
           ### Helm (recommended for Kubernetes)
           \`\`\`bash
-          helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt
-          kubectl port-forward svc/kubebolt 3000:80
+          helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \\
+            --namespace kubebolt --create-namespace
+          kubectl -n kubebolt port-forward svc/kubebolt 3000:80
           \`\`\`
+
+          Upgrading an existing install: see **Upgrading** above and the chart's
+          [Upgrade](https://github.com/${{ github.repository }}/blob/main/deploy/helm/kubebolt/README.md#upgrade) guide.
 
           ### Single Binary (download below)
           \`\`\`bash
