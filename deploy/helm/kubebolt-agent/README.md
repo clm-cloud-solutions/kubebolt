@@ -240,10 +240,32 @@ trade off coverage vs cluster policy strictness:
 
 ## Upgrade
 
+Upgrade the KubeBolt backend first
+([chart → Upgrade](https://github.com/clm-cloud-solutions/kubebolt/blob/main/deploy/helm/kubebolt/README.md#upgrade)),
+then the agent in **every cluster that runs one**, each with that cluster's
+kubectl context:
+
 ```bash
 helm upgrade kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
-  --namespace kubebolt-system \
-  --reuse-values
+  --namespace kubebolt-system --reset-then-reuse-values
+```
+
+That takes the latest release; add `--version X.Y.Z` to pick one. Use the
+namespace you installed into: `kubebolt-system` here and in KubeBolt's Add
+cluster wizard, `kubebolt` when the agent sits next to the backend as in the
+main README's quick start. `helm list -A | grep kubebolt-agent` shows it.
+
+`--reset-then-reuse-values` (Helm 3.14+) starts from the new chart's defaults
+and lays your values over them; a values file (`-f`) does the same. **Do not
+use `--reuse-values`:** it keeps the previous chart's defaults, so the vmagent
+sidecar stays on its old image tag — the one a security release replaced.
+
+An agent installed from the KubeBolt UI (Administration → Agents & Ingest →
+Integrations → KubeBolt Agent) is not a Helm release. It runs the `latest`
+image unless a tag was chosen at install, so a restart pulls the new one:
+
+```bash
+kubectl -n kubebolt-system rollout restart daemonset/kubebolt-agent
 ```
 
 Cilium users upgrading from a 1.12.x chart: `hubble.enabled` now defaults to

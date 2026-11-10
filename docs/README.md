@@ -20,6 +20,7 @@ with the code, so they are versioned with each release.
 |---|---|
 | [Helm chart — kubebolt](../deploy/helm/kubebolt/README.md) | Values reference for the backend, web UI and bundled VictoriaMetrics |
 | [Helm chart — kubebolt-agent](../deploy/helm/kubebolt-agent/README.md) | Values reference for the agent |
+| [Upgrading](../deploy/helm/kubebolt/README.md#upgrade) | Upgrade the backend, then every agent; keep your values, roll back, skip versions |
 | [Agent guide](../deploy/agent/README.md) | When you need the agent, RBAC tiers, install paths |
 | [Deployment scenarios](deployment-scenarios.md) | What to install given what the cluster already runs |
 | [Agent scraping](agent-scraping.md) | The optional vmagent sidecar: scrape Prometheus-style endpoints without running Prometheus |
