@@ -274,8 +274,17 @@ func (h *handlers) requireClusterAccess(next http.Handler) http.Handler {
 		// An agent-proxy context name the manager cannot resolve is a ROUTING
 		// failure, not an authorization one: 503 "waiting for agent", which the
 		// frontend renders and retries, instead of a permissions dead end.
+		//
+		// Finding #73: a metrics-only cluster is the exception. Its agent:<uid>
+		// context lives in metricsOnlyContexts, not agentProxyContexts, so
+		// ClusterIDForContext returns "" for it too — but it IS a valid,
+		// connector-less cluster whose Overview getClusterOverview serves from VM.
+		// Without the IsMetricsOnlyContext guard a metrics-only cluster that was
+		// never agent-proxy (a Mode C / rbac.mode=metrics install) 503s here forever
+		// and is unreachable.
 		if strings.HasPrefix(ctxName, cluster.AgentProxyContextPrefix) &&
-			h.manager.ClusterIDForContext(ctxName) == "" {
+			h.manager.ClusterIDForContext(ctxName) == "" &&
+			!h.manager.IsMetricsOnlyContext(ctxName) {
 			respondError(w, http.StatusServiceUnavailable,
 				"no agent connected yet for this cluster — waiting for agent to register")
 			return

@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -144,8 +145,11 @@ func (h *handlers) purgeClusterSecurityData(r *http.Request, ids ...string) {
 }
 
 func (h *handlers) handleDeleteCluster(w http.ResponseWriter, r *http.Request) {
-	contextName := chi.URLParam(r, "context")
-	if contextName == "" {
+	// chi returns the raw (still percent-encoded) path segment, so an
+	// agent-proxy context ("agent:<id>") arrives as "agent%3A<id>" and
+	// never matches a stored context. Decode it before use (finding #73).
+	contextName, err := url.PathUnescape(chi.URLParam(r, "context"))
+	if err != nil || contextName == "" {
 		respondError(w, http.StatusBadRequest, "context name is required")
 		return
 	}
@@ -184,8 +188,11 @@ type renameClusterRequest struct {
 }
 
 func (h *handlers) handleRenameCluster(w http.ResponseWriter, r *http.Request) {
-	contextName := chi.URLParam(r, "context")
-	if contextName == "" {
+	// chi returns the raw (still percent-encoded) path segment, so an
+	// agent-proxy context ("agent:<id>") arrives as "agent%3A<id>" and
+	// never matches a stored context. Decode it before use (finding #73).
+	contextName, err := url.PathUnescape(chi.URLParam(r, "context"))
+	if err != nil || contextName == "" {
 		respondError(w, http.StatusBadRequest, "context name is required")
 		return
 	}
