@@ -40,6 +40,75 @@ kubectl -n kubebolt get secret kubebolt-admin-password -o jsonpath='{.data.passw
 
 See [Authentication](#authentication) for details and password recovery.
 
+## Upgrade
+
+Upgrade this chart first, then the agent in every cluster that runs one
+([agent chart → Upgrade](https://github.com/clm-cloud-solutions/kubebolt/blob/main/deploy/helm/kubebolt-agent/README.md#upgrade)).
+
+```bash
+# 1. Where it runs and which version it is on
+helm list -A | grep kubebolt
+
+# 2. Keep a copy of the values you set
+helm get values kubebolt -n kubebolt -o yaml > kubebolt-values.yaml
+
+# 3. Upgrade to the latest release (add --version X.Y.Z to pick one)
+helm upgrade kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  -n kubebolt --reset-then-reuse-values
+kubectl -n kubebolt get pods -w
+```
+
+The commands assume the release name and namespace from [Install](#install);
+use the ones `helm list` shows.
+
+**Keep your values, take the new defaults.** `--reset-then-reuse-values`
+(Helm 3.14+) starts from the new chart's defaults and lays the values you set
+over them; passing your values file (`-f kubebolt-values.yaml`) does the same.
+**Do not use `--reuse-values`:** it keeps the *previous* chart's defaults, so
+the images the chart pins (VictoriaMetrics, the Azure MCP sidecar) stay on the
+old tag — the one a security release replaced — and a value block added since
+can fail to render. With no values flag at all Helm carries your previous
+values only while you pass none: a single `--set` on that command drops the
+rest.
+
+**What to expect.** The API pod is replaced, not rolled (`Recreate`: its
+volume is never mounted twice), so the UI is down while the new pod starts;
+connected agents reconnect on their own. VictoriaMetrics restarts over the
+same volume. Users, settings, registered clusters, insight history and Kobi's
+conversations live on the `auth.persistence` volume (on by default) and
+survive the upgrade — with `auth.persistence.enabled=false` they are lost on
+every restart, upgrade included. Once the new version runs, the **Update** chip
+leaves the top bar and **About** shows the new version.
+
+**Skipping versions.** Every release's notes
+([`docs/releases`](https://github.com/clm-cloud-solutions/kubebolt/tree/main/docs/releases))
+end with an *Upgrading* section: read each one between your version and the
+target. In 2.x, these ask something of you:
+
+| Version | What to check |
+| --- | --- |
+| 2.0.0 | Upgrade the chart, not only the image: the ClusterRole gains the rules the security scanners' CRDs need. |
+| 2.2.0 | An MCP host set up with an **Everything** API token: replace it with an **MCP only** one. |
+| 2.3.0 | `api.resources` pinned in your values: the chart's default memory limit is now 1Gi. |
+| 2.4.0 | A cluster whose agent stops stays listed, out of contact, until you delete it. Agent records the previous version left "connected" start to expire. |
+| 2.5.0 | `copilot.maxTokens: 4096` in your values keeps cutting long answers: remove it to use the per-model cap. Behind an egress firewall, Kobi's cloud connectors need the endpoints the notes list. |
+| 2.5.2 | OpenShift: the web runs under its own ServiceAccount (`<release>-web`), which needs no SCC. |
+| 2.6.0 | A VictoriaMetrics you run yourself needs `-maxLabelsPerTimeseries=60`. |
+
+Coming from 1.x, read
+[COMPATIBILITY.md](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/COMPATIBILITY.md)
+first: agents older than 1.0 need upgrading too.
+
+**Rolling back.**
+
+```bash
+helm history kubebolt -n kubebolt
+helm rollback kubebolt <REVISION> -n kubebolt
+```
+
+A rollback restores the previous chart and images; what the newer version
+wrote stays on the volumes.
+
 ## Configuration model — values are boot defaults
 
 Most runtime settings can be edited in the **Administration** area of the UI
@@ -337,12 +406,16 @@ the database lock is released cleanly during the rollover.
 
 ```bash
 helm upgrade kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
-  --reuse-values --set auth.resetAdminPassword=NEWPASS
+  -n kubebolt --reset-then-reuse-values --set auth.resetAdminPassword=NEWPASS
 
 # log in with NEWPASS, change to your real password from the Account menu, then:
 helm upgrade kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
-  --reuse-values --set auth.resetAdminPassword=
+  -n kubebolt --reset-then-reuse-values --set auth.resetAdminPassword=
 ```
+
+Without `--version` these commands also move the release to the latest chart;
+add `--version` with the chart version `helm list -n kubebolt` shows to stay on
+it (the install's own notes print the commands with it filled in).
 
 **Path B — one-shot `Job` (when Helm isn't available, or for a runbook).**
 Scale the API to zero (the database is single-writer), run a Job with the same
@@ -452,7 +525,7 @@ token — and name it in `metrics.storage.existingSecret`:
 kubectl -n kubebolt create secret generic kubebolt-vm-credentials \
   --from-literal=token=<token>
 helm upgrade kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
-  --reuse-values --set metrics.storage.existingSecret=kubebolt-vm-credentials
+  -n kubebolt --reset-then-reuse-values --set metrics.storage.existingSecret=kubebolt-vm-credentials
 ```
 
 Plain Prometheus remote-write isn't enough — KubeBolt also queries the

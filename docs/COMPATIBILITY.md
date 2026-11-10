@@ -19,7 +19,7 @@ empty, even though the agent is online and samples are reaching VictoriaMetrics.
 
 | KubeBolt | kubebolt-agent | Schema | Notes |
 |---|---|---|---|
-| **1.10.x → 2.1.x** | **1.0.x → 1.4.x** ✅ | v1.0 (Prom-canonical) | Current. 2.0.x and 2.1.0 change nothing on the wire — the agent channel, the metric names and the Falco/Prom ingest paths are unchanged, so any 1.x agent ≥ 1.0 pairs with KubeBolt 2.0. Both sides consume / emit the canonical schema. Agent 1.1–1.4 are reliability / cardinality / OpenCost-sourcing releases on the same schema (1.4.0 only widens the default `dropNetworkInterfaces` list); pair any 1.x agent ≥ 1.0 with any KubeBolt ≥ 1.10. |
+| **1.10.x and later** | **1.x (≥ 1.0)** ✅ | v1.0 (Prom-canonical) | Current (KubeBolt 2.6.0, agent 1.4.8). 2.x changes nothing on the wire — the agent channel, the metric names and the Falco/Prom ingest paths are unchanged, so any 1.x agent ≥ 1.0 pairs with any KubeBolt ≥ 1.10. Agent 1.1–1.4 are reliability / cardinality / OpenCost-sourcing releases on the same schema (1.4.0 only widens the default `dropNetworkInterfaces` list). Agent 1.4.8 stores each pod's network once and sends none for `hostNetwork` pods; KubeBolt 2.6.0 reads such a pod's network from its node, while an older backend shows it empty. |
 | 1.10.x | 0.2.x ❌ | mismatch | Agent emits the legacy schema but kubebolt's queries look for canonical names → empty dashboards. Backend logs `WARN msg="agent below minimum version — legacy schema"` on registration. |
 | 1.9.x and earlier | 1.0.x ❌ | mismatch | Agent emits canonical names but kubebolt's queries still look for legacy → empty dashboards. **Don't run this combination.** |
 | 1.9.x and earlier | 0.2.x ✅ | legacy v0.x | Pre-canonical era. Both sides on the legacy schema. Supported as-is, but new features (right-sizing P95, network drops, external endpoints with FQDN) only land in the canonical pair. |
@@ -89,7 +89,9 @@ Insights backend's metric paths) all consult these canonical names.
   CPU/Memory bars show "no data"; everything else works, and historical
   CPU/Memory comes from the agent.
 - **Upgrade order:** upgrade the backend (`kubebolt` chart) first, then
-  the agents (`kubebolt-agent` chart) in every connected cluster.
+  the agents (`kubebolt-agent` chart) in every connected cluster. Step by
+  step, rollback and what each 2.x version asks of you:
+  [chart → Upgrade](../deploy/helm/kubebolt/README.md#upgrade).
 
 See [`deployment-scenarios.md`](deployment-scenarios.md) for which
 optional components (kube-state-metrics, node-exporter, Cilium/Hubble,
@@ -101,16 +103,14 @@ an existing Prometheus) unlock which features.
 
 ### Greenfield install
 
-Just install both at the latest matching version:
+Just install both at the latest version (add `--version X.Y.Z` to pick one):
 
 ```bash
 helm upgrade --install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
-    --version 2.1.0 \
     -n kubebolt --create-namespace
 
 helm upgrade --install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
-    --version 1.4.0 \
-    -n kubebolt-agent --create-namespace \
+    -n kubebolt-system --create-namespace \
     --set backendUrl=<your-backend-grpc-host:9090>
 ```
 
@@ -122,19 +122,19 @@ flow) but the canonical pattern is to roll the backend first since
 the agent reconnects at registration:
 
 ```bash
-# --reset-then-reuse-values (Helm 3.13+) merges the new chart defaults
-# under your existing overrides; plain --reuse-values can fail to render
-# when the chart gained value blocks since your last install.
+# --reset-then-reuse-values (Helm 3.14+) merges the new chart defaults
+# under your existing overrides. Plain --reuse-values keeps the OLD chart's
+# defaults (pinned images included) and can fail to render when the chart
+# gained value blocks since your last install.
 
 # 1. Backend first
 helm upgrade kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
-    --version 2.1.0 \
     -n kubebolt --reset-then-reuse-values
 
-# 2. Agent next, in any cluster connected to it
+# 2. Agent next, in every cluster connected to it (use the namespace you
+#    installed into: helm list -A | grep kubebolt-agent)
 helm upgrade kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
-    --version 1.4.0 \
-    -n kubebolt-agent --reset-then-reuse-values
+    -n kubebolt-system --reset-then-reuse-values
 
 # 3. Verify the WARN is gone
 kubectl logs -n kubebolt deployment/kubebolt-api --tail=200 | grep "agent below minimum"
@@ -210,6 +210,7 @@ additions only, never renames.
 
 - [`packages/agent/CHANGELOG.md`](../packages/agent/CHANGELOG.md) — agent release history with full schema migration table
 - [`docs/releases/v1.10.0.md`](releases/v1.10.0.md) — kubebolt 1.10.0 release notes
-- [`docs/releases/v2.1.0.md`](releases/v2.1.0.md) — kubebolt 2.1.0 release notes
+- [`docs/releases/`](releases/) — every release's notes, each ending with what upgrading to it asks of you
+- [`deploy/helm/kubebolt/README.md#upgrade`](../deploy/helm/kubebolt/README.md#upgrade) — how to upgrade, roll back and skip versions
 - [`docs/agent-scraping.md`](agent-scraping.md) — operator guide for the vmagent sidecar: quickstart, config reference, troubleshooting
 - [`deploy/helm/kubebolt-agent/README.md`](../deploy/helm/kubebolt-agent/README.md) — agent chart: RBAC tiers, auth modes, metric footprint

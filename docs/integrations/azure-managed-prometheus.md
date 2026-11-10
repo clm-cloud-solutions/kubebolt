@@ -674,7 +674,7 @@ Three modes are available:
 helm upgrade kubebolt-agent \
   oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
   -n kubebolt \
-  --reuse-values \
+  --reset-then-reuse-values \
   --set rbac.mode=operator
 ```
 
@@ -694,7 +694,7 @@ etc.).
 > switch to operator if you've disabled auth.
 
 > **Downgrade is symmetric.** `--set rbac.mode=reader` (or
-> `=metrics`) on a subsequent `helm upgrade --reuse-values` shrinks
+> `=metrics`) on a subsequent `helm upgrade --reset-then-reuse-values` shrinks
 > the ClusterRole back. K8s revokes the dropped verbs immediately.
 
 > **Workload Identity is orthogonal to `rbac.mode`.** The UAMI from
@@ -852,7 +852,7 @@ for your workspace's volume.
 | KSA annotation missing | Forgot the `serviceAccount.annotations` chart flag | `kubectl describe sa kubebolt-agent -n kubebolt` — must show `azure.workload.identity/client-id: <UAMI client_id>` |
 | Card still says `Not installed` after 5 min | Cluster UID not stamped on the leader gauge | Check `kubectl -n kubebolt logs -l kubebolt.dev/role=promread \| grep cluster_id` — should show a UUID. If empty, set `--set cluster.id=<kube-system UID>` explicitly |
 | Pod logs show `Server returned 401 InvalidAuthenticationToken` | Token resource scope is wrong (Azure SDK picked the default scope, not `prometheus.monitor.azure.com`) | This shouldn't happen with the chart's wired `azureWorkloadIdentity` provider — file an issue if it does, with the full log line |
-| Load average panel renders 6 lines instead of 3 (1m + 1m', 5m + 5m', 15m + 15m') | Pre-1.13.0 agent OR chart auto-defer didn't kick in | Upgrade to agent >= 1.1.0 (ships with kubebolt-agent chart >= 1.1.0). Workaround on older versions: `helm upgrade kubebolt-agent ... --reuse-values --set agent.deferNodeStress=true --set agent.deferNodeNetwork=true` |
+| Load average panel renders 6 lines instead of 3 (1m + 1m', 5m + 5m', 15m + 15m') | Pre-1.13.0 agent OR chart auto-defer didn't kick in | Upgrade to agent >= 1.1.0 (ships with kubebolt-agent chart >= 1.1.0). Workaround on older versions: `helm upgrade kubebolt-agent ... --reset-then-reuse-values --set agent.deferNodeStress=true --set agent.deferNodeNetwork=true` |
 
 ---
 
