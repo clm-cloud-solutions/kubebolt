@@ -24,6 +24,21 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   reached long ago but not in the window, and names the API server's addresses
   `kubernetes.default.svc` instead of showing them as bare IPs. Kobi's
   `get_external_connections` reads the same edges.
+- **An optional CRD installed after the cluster connected becomes available**
+  within two minutes: Cilium installed after the agent used to stay "not
+  detected" on the Overview, and Kobi said its policy CRDs were not installed,
+  until the API restarted.
+- **The traffic map** draws no pod pair without traffic in the window, and
+  traffic to a node's address (the kubelet) goes to the node, not to whichever
+  hostNetwork pod on it was listed last.
+- **Kobi's first ECR suggestion** is `DescribeImages` with the image's
+  repository, not an unfiltered `DescribeRepositories` that a role scoped to some
+  repositories refuses.
+- **Agent 1.4.9**: Hubble flow keys idle for 15 minutes are forgotten (active
+  series no longer only grow), and the node-exporter discovery finds
+  kube-prometheus-stack's node-exporter by default.
+- **Falco guide**: the ingest token goes in a Secret rather than the Helm values,
+  and kernel 6.18 needs Falco 0.45.1 (chart 9.2.1) or later.
 
 ## [2.6.0] — 2026-11-10
 
