@@ -79,6 +79,31 @@ interface RightSizingResponse {
 
 const EMPTY_TOTALS: RightSizingTotals = { count: 0, reclaimCpuMilli: 0, reclaimMemBytes: 0 }
 
+// The states every right-sizing surface must tell apart. Only `clean` may say
+// "well sized": a failed read and a cluster still collecting have evaluated
+// nothing, and both used to fall through to that claim. Recommendations already
+// on screen win over a later failed refresh — they are still the last true answer.
+export type RightSizingState = 'loading' | 'recs' | 'error' | 'collecting' | 'clean'
+
+export function rightSizingState(
+  r: Pick<RightSizingResult, 'isLoading' | 'error' | 'insufficientHistory'>,
+  count: number,
+): RightSizingState {
+  if (r.isLoading) return 'loading'
+  if (count > 0) return 'recs'
+  if (r.error) return 'error'
+  if (r.insufficientHistory) return 'collecting'
+  return 'clean'
+}
+
+// How far a collecting cluster is towards the ~2 days the rules need.
+export function collectedLabel(windowDays?: number | null): string {
+  if (windowDays == null || windowDays <= 0) return 'no usage history yet'
+  return `${Math.max(1, Math.round(windowDays * 24))}h of ~48h collected`
+}
+
+export const RIGHT_SIZING_ERROR_COPY = 'couldn’t read usage history — tries again in 5 min'
+
 // `overview` is no longer read — the backend has the workloads' specs — and
 // stays in the signature so the eight consumers do not change.
 export function useRightSizing(installed: boolean, _overview?: ClusterOverview): RightSizingResult {

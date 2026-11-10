@@ -4299,13 +4299,13 @@ export function ResourceDetailPage() {
       case 'related': return <RelatedTab type={type} item={item!} />
       case 'events': return <EventsTab type={type} namespace={namespace} name={name} />
       case 'monitor': return <MonitorTab type={type} item={item!} />
-      case 'deploy-pods': return <DeploymentPodsTab namespace={namespace} name={name} />
+      case 'deploy-pods': return <DeploymentPodsTab key={`${namespace}/${name}`} namespace={namespace} name={name} />
       case 'deploy-logs': return <DeploymentLogsTab namespace={namespace} name={name} />
-      case 'sts-pods': return <StatefulSetPodsTab namespace={namespace} name={name} />
+      case 'sts-pods': return <StatefulSetPodsTab key={`${namespace}/${name}`} namespace={namespace} name={name} />
       case 'sts-logs': return <StatefulSetLogsTab namespace={namespace} name={name} />
-      case 'ds-pods': return <DaemonSetPodsTab namespace={namespace} name={name} />
+      case 'ds-pods': return <DaemonSetPodsTab key={`${namespace}/${name}`} namespace={namespace} name={name} />
       case 'ds-logs': return <DaemonSetLogsTab namespace={namespace} name={name} />
-      case 'job-pods': return <JobPodsTab namespace={namespace} name={name} />
+      case 'job-pods': return <JobPodsTab key={`${namespace}/${name}`} namespace={namespace} name={name} />
       case 'node-pods': return <NodePodsTab nodeName={name} />
       case 'np-matched-pods': return <NetworkPolicyMatchedPodsTab item={item!} />
       case 'job-logs': return <JobLogsTab namespace={namespace} name={name} />

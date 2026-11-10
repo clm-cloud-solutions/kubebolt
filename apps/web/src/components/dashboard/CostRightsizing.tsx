@@ -4,7 +4,7 @@ import { HoverTooltip, TooltipHeader, TooltipRow, TooltipNote } from '@/componen
 import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
 import { formatMoney, formatCPU, formatMemory } from '@/utils/formatters'
 import { estimateMonthlySavings, type NodeRates } from '@/hooks/useClusterCost'
-import type { Recommendation } from '@/hooks/useRightSizing'
+import type { Recommendation, RightSizingState } from '@/hooks/useRightSizing'
 
 // CostRightsizing — the FinOps lens on the shared right-sizing engine
 // (design/kubebolt-cost-redesign.html "Rightsizing recommendations").
@@ -25,9 +25,10 @@ interface Props {
   recs: Recommendation[]
   rates: NodeRates
   savingsMonthly: number
-  // True while right-sizing is still collecting history (under ~2 days): there
-  // are no recommendations yet, so the card says so instead of "well sized".
-  insufficientHistory?: boolean
+  // What right-sizing could evaluate (useRightSizing's rightSizingState): only
+  // `clean` may say "well sized" — while loading, after a failed read or while
+  // collecting the list is empty for a reason that is not "nothing to hand back".
+  rightSizing: RightSizingState
 }
 
 const KIND_TO_PATH: Record<string, string> = {
@@ -55,7 +56,7 @@ function priceRecs(recs: Recommendation[], rates: NodeRates): Priced[] {
     .sort((a, b) => b.savings - a.savings)
 }
 
-export function CostRightsizing({ recs, rates, savingsMonthly, insufficientHistory }: Props) {
+export function CostRightsizing({ recs, rates, savingsMonthly, rightSizing }: Props) {
   const priced = priceRecs(recs, rates)
 
   // Kobi payload — the priced recommendations the user sees, so the
@@ -139,11 +140,15 @@ export function CostRightsizing({ recs, rates, savingsMonthly, insufficientHisto
 
       {priced.length === 0 ? (
         <div className="py-8 text-center text-xs text-kb-text-tertiary">
-          {insufficientHistory
-            ? 'Collecting samples — right-sizing needs about 2 days of usage history'
-            : rates.available
-              ? 'No over-provisioned workloads — well sized'
-              : 'Cost rates unavailable — savings can’t be priced'}
+          {rightSizing === 'loading'
+            ? 'Computing from 7d P95…'
+            : rightSizing === 'error'
+              ? 'Couldn’t read usage history — right-sizing tries again in 5 min'
+              : rightSizing === 'collecting'
+                ? 'Collecting samples — right-sizing needs about 2 days of usage history'
+                : rates.available
+                  ? 'No over-provisioned workloads — well sized'
+                  : 'Cost rates unavailable — savings can’t be priced'}
         </div>
       ) : (
         <>

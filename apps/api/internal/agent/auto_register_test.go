@@ -29,6 +29,11 @@ type fakeRegistrar struct {
 	removed       []string
 	addErr        error
 	proxyClusters map[string]bool // clusterID -> currently agent-proxy (IsAgentProxyCluster)
+	// becomesProxy: a proxy-capable agent's registration lands between the
+	// caller's IsAgentProxyCluster look and its write (finding #71's residual race).
+	becomesProxy map[string]bool
+	// deleted: the operator removed the cluster (DemoteRegisteredCluster refuses).
+	deleted map[string]bool
 }
 
 type addCall struct {
@@ -45,14 +50,30 @@ func (r *fakeRegistrar) AddAgentProxyCluster(clusterID, displayName string) (str
 	return "agent:" + clusterID, nil
 }
 
-func (r *fakeRegistrar) AddMetricsOnlyCluster(clusterID, displayName string) (string, error) {
+func (r *fakeRegistrar) AddMetricsOnlyClusterUnlessProxy(clusterID, displayName string) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.addErr != nil {
-		return "", r.addErr
+		return false, r.addErr
+	}
+	if r.proxyClusters[clusterID] || r.becomesProxy[clusterID] {
+		return false, nil
 	}
 	r.metricsAdded = append(r.metricsAdded, addCall{clusterID, displayName})
-	return "metrics:" + clusterID, nil
+	return true, nil
+}
+
+func (r *fakeRegistrar) DemoteRegisteredCluster(clusterID, displayName string) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.addErr != nil {
+		return false, r.addErr
+	}
+	if r.deleted[clusterID] {
+		return false, nil
+	}
+	r.metricsAdded = append(r.metricsAdded, addCall{clusterID, displayName})
+	return true, nil
 }
 
 func (r *fakeRegistrar) RemoveAgentProxyCluster(clusterID string) {
@@ -411,5 +432,45 @@ func TestMaybeAutoRegister_NewMetricsOnlyInstallRegistersImmediately(t *testing.
 	}
 	if len(reg.metricsAdded) != 1 {
 		t.Errorf("expected one immediate AddMetricsOnlyCluster, got %+v", reg.metricsAdded)
+	}
+}
+
+// The operator deletes the cluster during the grace window: the deferred
+// demotion must not bring it back as a monitored-only cluster with no agent.
+func TestMaybeAutoRegister_DeferredDemotionDropsADeletedCluster(t *testing.T) {
+	var captured func()
+	restore := swapScheduleAfter(func(_ time.Duration, fn func()) { captured = fn })
+	defer restore()
+
+	reg := &fakeRegistrar{proxyClusters: map[string]bool{"c-eks": true}}
+	maybeAutoRegisterCluster(reg, channel.NewAgentRegistry(), true, "c-eks", "eks", []string{"metrics"}, "")
+	if captured == nil {
+		t.Fatal("a deferred re-check must have been scheduled")
+	}
+	reg.deleted = map[string]bool{"c-eks": true} // DELETE /clusters/by-id during the window
+	captured()
+	if len(reg.metricsAdded) != 0 {
+		t.Errorf("a cluster deleted during the grace window came back as metrics-only: %+v", reg.metricsAdded)
+	}
+}
+
+// A proxy-capable agent's registration lands between the capability-less
+// agent's look (not agent-proxy) and its write: the write must not overwrite it
+// — it falls back to the deferred re-check instead (finding #71's residual race).
+func TestMaybeAutoRegister_ProxyRegistrationInTheWindowIsNotOverwritten(t *testing.T) {
+	scheduled := false
+	restore := swapScheduleAfter(func(_ time.Duration, _ func()) { scheduled = true })
+	defer restore()
+
+	reg := &fakeRegistrar{becomesProxy: map[string]bool{"c-new": true}}
+	got := maybeAutoRegisterCluster(reg, channel.NewAgentRegistry(), true, "c-new", "new", []string{"metrics"}, "")
+	if got {
+		t.Error("the cluster turned agent-proxy: the capability-less agent must not report a registration")
+	}
+	if len(reg.metricsAdded) != 0 {
+		t.Errorf("the demotion overwrote a proxy-capable registration: %+v", reg.metricsAdded)
+	}
+	if !scheduled {
+		t.Error("the race must fall back to the deferred re-check")
 	}
 }

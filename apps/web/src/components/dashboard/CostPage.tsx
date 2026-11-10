@@ -10,7 +10,7 @@ import {
   NETWORK_COST_QUERY,
   ALLOCATED_TOTAL_QUERY,
 } from '@/hooks/useClusterCost'
-import { useRightSizing } from '@/hooks/useRightSizing'
+import { useRightSizing, rightSizingState } from '@/hooks/useRightSizing'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { MetricChart } from '@/components/shared/MetricChart'
@@ -51,7 +51,8 @@ export function CostPage() {
   // right-sizing recommendations.
   const cost = useClusterCost(costAvailable)
   const rates = useNodeRates(costAvailable)
-  const { recs, totals, insufficientHistory } = useRightSizing(installed, overview)
+  const { recs, totals, isLoading: recsLoading, error: recsError, insufficientHistory, windowDays } = useRightSizing(installed, overview)
+  const rsState = rightSizingState({ isLoading: recsLoading, error: recsError, insufficientHistory }, totals.count)
   const savingsMonthly = estimateMonthlySavings(
     totals.reclaimCpuMilli,
     totals.reclaimMemBytes,
@@ -93,7 +94,8 @@ export function CostPage() {
             savingsMonthly={savingsMonthly}
             recCount={totals.count}
             ratesAvailable={rates.available}
-            insufficientHistory={insufficientHistory}
+            rightSizing={rsState}
+            windowDays={windowDays}
           />
 
           {/* Cost trends — one enclosing card for the two run-rate charts, the
@@ -182,7 +184,7 @@ export function CostPage() {
             <div id="cost-breakdown" className="min-w-0 scroll-mt-4 [&>*]:h-full">
               <CostBreakdown cost={cost} />
             </div>
-            <CostRightsizing recs={recs} rates={rates} savingsMonthly={savingsMonthly} insufficientHistory={insufficientHistory} />
+            <CostRightsizing recs={recs} rates={rates} savingsMonthly={savingsMonthly} rightSizing={rsState} />
           </div>
         </>
       )}

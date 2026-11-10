@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { resolveWindow, onsetSeconds, isStillOpen, type Preset } from './BurstHistory'
+import { resolveWindow, onsetSeconds, isStillOpen, burstsBackHref, type Preset } from './BurstHistory'
 import type { OperationalBurst } from '@/services/api'
 
 const NOW = new Date('2026-09-20T12:00:00Z')
@@ -97,5 +97,26 @@ describe('isStillOpen', () => {
     expect(isStillOpen(burst({ blast: { ...burst({}).blast, stillFiring: 3 } }))).toBe(true)
     // Expired is not firing: the cluster went silent, which is its own state.
     expect(isStillOpen(burst({ blast: { ...burst({}).blast, expired: 5 } }))).toBe(false)
+  })
+})
+
+describe('burstsBackHref — back to the bursts view the drill-down came from', () => {
+  it('keeps a live preset and the all-clusters scope', () => {
+    const href = burstsBackHref('view=bursts&range=7d&cluster=all', 'a', 'b')
+    expect(href).toBe('/insights?view=bursts&range=7d&cluster=all')
+  })
+
+  it('keeps a day', () => {
+    expect(burstsBackHref('view=bursts&day=2026-11-03', 'a', 'b')).toBe('/insights?view=bursts&day=2026-11-03')
+  })
+
+  it('drops anything that is not the bursts view’s own', () => {
+    expect(burstsBackHref('view=history&burst=x&severity=critical&range=30d', 'a', 'b')).toBe('/insights?view=bursts&range=30d')
+  })
+
+  it('falls back to the burst’s own window when the link carries no view', () => {
+    expect(burstsBackHref(null, '2026-11-09T00:00:00Z', '2026-11-10T00:00:00Z')).toBe(
+      '/insights?view=bursts&from=2026-11-09T00%3A00%3A00Z&to=2026-11-10T00%3A00%3A00Z',
+    )
   })
 })

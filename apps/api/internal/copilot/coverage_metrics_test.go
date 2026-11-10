@@ -117,6 +117,24 @@ func TestQueryMetrics_RefusesWhatItCannotAnswerHonestly(t *testing.T) {
 	}
 }
 
+// While right-sizing is collecting, the engine returns no recommendations. The
+// payload must then carry only the collecting note — "no workload breaks a
+// rule" next to it reads as "nothing is oversized".
+func TestRightSizing_CollectingSaysOnlyThat(t *testing.T) {
+	days := 0.4
+	var payload map[string]any
+	b, _ := json.Marshal(summarizeRightSizing(rightsizing.Result{
+		Recs: []rightsizing.Recommendation{}, WindowDays: &days, InsufficientHistory: true,
+	}, "", "", defaultRightSizingRows))
+	_ = json.Unmarshal(b, &payload)
+	if _, ok := payload["note"]; ok {
+		t.Errorf("a collecting result must not say no workload breaks a rule: %v", payload["note"])
+	}
+	if payload["insufficientHistoryNote"] == nil {
+		t.Error("a collecting result must carry insufficientHistoryNote")
+	}
+}
+
 func TestRightSizing_ReadableUnitsAndInsufficientHistory(t *testing.T) {
 	days := 1.2
 	res := rightsizing.Result{

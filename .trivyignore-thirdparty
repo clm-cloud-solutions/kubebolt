@@ -1,9 +1,10 @@
 # Trivy exceptions for THIRD-PARTY images KubeBolt bundles but does not build.
 #
-# Used ONLY by the two `preflight-third-party-scan` steps in
-# .github/workflows/release.yml (victoria-metrics and vmagent). KubeBolt's own
-# images — api, web, single-container — are scanned by `image-scan` against the strict
-# `.trivyignore`, which stays empty of entries.
+# Used ONLY by the third-party scans: the `preflight-third-party-scan` steps in
+# .github/workflows/release.yml (victoria-metrics, vmagent and the azure-mcp
+# sidecar) and their early-warning copy, .github/workflows/pr-image-scan.yml.
+# KubeBolt's own images — api, web, single-container — are scanned by
+# `image-scan` against the strict `.trivyignore`, which stays empty of entries.
 #
 # The split exists because the two cases are not the same problem. When a CVE
 # lands in a dependency we compile, the answer is to bump and rebuild, and the

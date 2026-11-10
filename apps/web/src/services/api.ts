@@ -570,12 +570,28 @@ export const api = {
       `${API_BASE}/insights/episodes?${q.toString()}`,
     )
   },
+
+  // A burst's EXACT member episodes, by burst id — not a time window, so "See
+  // the N episodes" lands on the same N (finding #75). The id is deterministic;
+  // the backend recomputes the same window the Bursts tab used and returns the
+  // members, so the URL carries one id regardless of how many episodes a burst has.
+  getBurstEpisodes: (burstId: string, since?: string, until?: string) => {
+    const q = new URLSearchParams()
+    if (since) q.set('since', since)
+    if (until) q.set('until', until)
+    // missing: members the history no longer holds (pruned after the retention
+    // horizon). A burst that no longer forms in the window answers 404.
+    return fetchJSON<{ episodes: InsightEpisode[]; missing?: number; window: { since: string; until: string } }>(
+      `${API_BASE}/insights/operational-episodes/${encodeURIComponent(burstId)}/episodes?${q.toString()}`,
+    )
+  },
   // Bursts over an explicit window. Both bounds are RFC3339 so a link can
   // address a MOMENT ("what happened on the 16th at 03:00"), which is the one
   // question the shift report cannot answer — it is anchored to the reader's
   // own last visit, not to a date.
-  getOperationalBursts: (params: { since: string; until: string }) => {
+  getOperationalBursts: (params: { since: string; until: string; cluster?: string }) => {
     const q = new URLSearchParams({ since: params.since, until: params.until })
+    if (params.cluster) q.set('cluster', params.cluster)
     return fetchJSON<{
       episodes: OperationalBurst[] | null
       clusterNames?: Record<string, string>

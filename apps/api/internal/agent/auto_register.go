@@ -36,10 +36,17 @@ type ClusterRegistrar interface {
 	// agent-proxy transport. Returns the contextName under which the
 	// cluster is exposed in the manager's listing.
 	AddAgentProxyCluster(clusterID, displayName string) (string, error)
-	// AddMetricsOnlyCluster registers cluster_id as a metrics-only cluster (the agent
-	// ships metrics but advertises no kube-proxy, so there is no connector). Surfaces
-	// it in ListClusters flagged Mode="metrics-only"; never starts a connector.
-	AddMetricsOnlyCluster(clusterID, displayName string) (string, error)
+	// The two demotions register cluster_id as a metrics-only cluster (the agent
+	// ships metrics but advertises no kube-proxy, so there is no connector),
+	// surfaced in ListClusters flagged Mode="metrics-only". Each re-checks its
+	// condition and writes under ONE lock — a bare add, checked by the caller
+	// first, was the check-then-act finding #71 left:
+	//   - AddMetricsOnlyClusterUnlessProxy: a first registration; false when the
+	//     cluster is agent-proxy at that instant.
+	//   - DemoteRegisteredCluster: the grace window's deferred demotion; false
+	//     when the cluster is no longer registered (deleted during the window).
+	AddMetricsOnlyClusterUnlessProxy(clusterID, displayName string) (bool, error)
+	DemoteRegisteredCluster(clusterID, displayName string) (bool, error)
 	// RemoveAgentProxyCluster removes the agent-proxy registration.
 	// Idempotent — a no-op if cluster_id wasn't registered.
 	RemoveAgentProxyCluster(clusterID string)
@@ -161,12 +168,11 @@ func maybeAutoRegisterCluster(reg ClusterRegistrar, registry *channel.AgentRegis
 		//
 		// So tell the two cases apart by the cluster's state right now, not by the racy
 		// registry read:
-		if reg.IsAgentProxyCluster(clusterID) {
-			// The cluster is agent-proxy at this instant (boot restore, or a DaemonSet
-			// agent that registered earlier in this same burst). Demoting now would be
-			// the check-then-act race. Defer: let the burst settle, then re-check and
-			// demote only if there is STILL no proxy-capable agent. A proxy-capable
-			// agent arriving during the window cancels it.
+		// deferDemotion lets the burst settle, then re-checks: it demotes only if there
+		// is STILL no proxy-capable agent and the cluster is still registered — the
+		// operator may have deleted it during the window, and the timer must not
+		// bring it back. A proxy-capable agent arriving during the window cancels it.
+		deferDemotion := func() {
 			scheduleAfter(demotionGraceWindow, func() {
 				if registry.HasProxyCapableAgent("", clusterID) {
 					slog.Info("auto-register: demotion cancelled — a proxy-capable agent registered during the grace window",
@@ -175,10 +181,17 @@ func maybeAutoRegisterCluster(reg ClusterRegistrar, registry *channel.AgentRegis
 					)
 					return
 				}
-				if _, err := reg.AddMetricsOnlyCluster(clusterID, displayName); err != nil {
+				demoted, err := reg.DemoteRegisteredCluster(clusterID, displayName)
+				if err != nil {
 					slog.Warn("auto-register metrics-only cluster failed (after grace)",
 						slog.String("cluster_id", clusterID),
 						slog.String("error", err.Error()),
+					)
+					return
+				}
+				if !demoted {
+					slog.Info("auto-register: demotion dropped — the cluster was removed during the grace window",
+						slog.String("cluster_id", clusterID),
 					)
 					return
 				}
@@ -187,6 +200,12 @@ func maybeAutoRegisterCluster(reg ClusterRegistrar, registry *channel.AgentRegis
 					slog.String("display_name", displayName),
 				)
 			})
+		}
+		if reg.IsAgentProxyCluster(clusterID) {
+			// The cluster is agent-proxy at this instant (boot restore, or a DaemonSet
+			// agent that registered earlier in this same burst). Demoting now would be
+			// the check-then-act race: defer.
+			deferDemotion()
 			return false
 		}
 		// The cluster was never agent-proxy (a genuine metrics-only install, or a
@@ -196,11 +215,19 @@ func maybeAutoRegisterCluster(reg ClusterRegistrar, registry *channel.AgentRegis
 		// metrics reach VM independently of the proxy, so it gets a switchable,
 		// connector-less entry in the selector — the UI shows the metrics dashboards and
 		// degrades the resource views.
-		if _, err := reg.AddMetricsOnlyCluster(clusterID, displayName); err != nil {
+		added, err := reg.AddMetricsOnlyClusterUnlessProxy(clusterID, displayName)
+		if err != nil {
 			slog.Warn("auto-register metrics-only cluster failed",
 				slog.String("cluster_id", clusterID),
 				slog.String("error", err.Error()),
 			)
+			return false
+		}
+		if !added {
+			// A proxy-capable agent's registration made the cluster agent-proxy between
+			// the look above and the write (both start together on a fresh install):
+			// the deferred path's case after all.
+			deferDemotion()
 			return false
 		}
 		// WARN, not INFO: this is a state change that removes every resource view for

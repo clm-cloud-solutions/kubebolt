@@ -188,6 +188,38 @@ func (h *handlers) visibleInsights(r *http.Request, items []models.Insight) []mo
 	return applyMuteFilter(items, mutes)
 }
 
+// maxBurstWindow bounds what one bursts request may recompute. The clusterer
+// reads every episode in the window and rewrites the stored bursts, so an
+// unbounded since= let any viewer recompute (and rewrite) the org's whole
+// history in one GET. The UI's widest preset is 30 days and Kobi's tool stops
+// at 7.
+const maxBurstWindow = 31 * 24 * time.Hour
+
+// parseBurstWindow reads ?since=&until= (RFC3339; default the last 24h) for the
+// bursts endpoints and refuses an inverted or over-wide window.
+func parseBurstWindow(r *http.Request) (since, until time.Time, msg string) {
+	now := time.Now().UTC()
+	since, until = now.Add(-24*time.Hour), now
+	var err error
+	if raw := r.URL.Query().Get("since"); raw != "" {
+		if since, err = time.Parse(time.RFC3339, raw); err != nil {
+			return since, until, "since must be RFC3339"
+		}
+	}
+	if raw := r.URL.Query().Get("until"); raw != "" {
+		if until, err = time.Parse(time.RFC3339, raw); err != nil {
+			return since, until, "until must be RFC3339"
+		}
+	}
+	if !since.Before(until) {
+		return since, until, "since must be before until"
+	}
+	if until.Sub(since) > maxBurstWindow {
+		return since, until, "the window may span at most 31 days"
+	}
+	return since, until, ""
+}
+
 // handleOperationalEpisodes — GET /insights/operational-episodes?since=&until=
 // Fase 3 (PR 3.2): the org's bursts, recomputed on demand over the window
 // (deterministic ids — recomputing converges) and persisted for the shift
@@ -198,20 +230,10 @@ func (h *handlers) handleOperationalEpisodes(w http.ResponseWriter, r *http.Requ
 		respondError(w, http.StatusServiceUnavailable, "operational episodes are not enabled on this install")
 		return
 	}
-	now := time.Now().UTC()
-	since, until := now.Add(-24*time.Hour), now
-	var err error
-	if raw := r.URL.Query().Get("since"); raw != "" {
-		if since, err = time.Parse(time.RFC3339, raw); err != nil {
-			respondError(w, http.StatusBadRequest, "since must be RFC3339")
-			return
-		}
-	}
-	if raw := r.URL.Query().Get("until"); raw != "" {
-		if until, err = time.Parse(time.RFC3339, raw); err != nil {
-			respondError(w, http.StatusBadRequest, "until must be RFC3339")
-			return
-		}
+	since, until, msg := parseBurstWindow(r)
+	if msg != "" {
+		respondError(w, http.StatusBadRequest, msg)
+		return
 	}
 	ops, err := h.operational.ClusterAndStore(r.Context(), auth.ContextTenantID(r), since, until)
 	if err != nil {
@@ -223,6 +245,13 @@ func (h *handlers) handleOperationalEpisodes(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	ops = filterBursts(ops, h.readableCluster(r))
+	// Insights is cluster-scoped: by default show only bursts that touched the
+	// active cluster, so a burst entirely on another cluster does not surface
+	// under this one (finding #75). ?cluster=all opts back into the org-wide
+	// view. Home's shift report is a separate, deliberately org-wide path.
+	if active := h.activeClusterUID(r.Context()); active != "" && r.URL.Query().Get("cluster") != "all" {
+		ops = burstsTouchingCluster(ops, active)
+	}
 	respondJSON(w, http.StatusOK, map[string]any{
 		"episodes":     ops,
 		"clusterNames": h.burstClusterNames(r, ops),

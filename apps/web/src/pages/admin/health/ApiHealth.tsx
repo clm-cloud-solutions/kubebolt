@@ -283,15 +283,28 @@ function ApiHealthBody({ charts, rangeMinutes, perInterval, perPoint }: HealthFr
             {...charts}
             title="Memory against its limit"
             unit="bytes"
-            chartType="stacked"
+            // Not stacked: an OOM kill counts the anonymous memory, and the kernel
+            // reclaims file pages first. Stacked, the top line was their sum and
+            // read as file pages — and the total sat closer to the limit than the
+            // real risk.
+            chartType="area"
             queries={[
               { query: `max(process_resident_memory_anon_bytes{${VM}})`, prefix: 'anonymous', accent: '#a855f7' },
               { query: `max(process_resident_memory_file_bytes{${VM}})`, prefix: 'file pages', accent: '#c4b5fd' },
             ]}
             seriesLabel={(_l, prefix) => prefix ?? 'in use'}
+            // What each band means is read with the data on screen, so it lives in
+            // the hover tooltip; the empty-state hint says why there is no data.
+            seriesDetail={(_l, prefix) =>
+              prefix === 'anonymous'
+                ? 'caches and buffers — what an OOM kill counts'
+                : prefix === 'file pages'
+                  ? 'data files mapped into memory — the kernel takes them back first; a restart empties them'
+                  : undefined
+            }
             referenceLines={vmCap ? [{ y: vmCap, label: `limit ${gib(vmCap)} GiB`, shortLabel: 'limit', color: '#ef4056' }] : undefined}
             emptyMessage="VictoriaMetrics is not reporting on itself."
-            emptyHint="Anonymous memory (caches, buffers) is what an OOM kill counts. File pages are its data files mapped into memory: the kernel takes them back first, and a restart empties them."
+            emptyHint="It measures itself when started with --selfScrapeInterval (on in the bundled chart and compose file)."
             footnote={'process_resident_memory_anon_bytes · process_resident_memory_file_bytes · process_memory_limit_bytes{job="victoria-metrics"}'}
           />
           <MetricChart
