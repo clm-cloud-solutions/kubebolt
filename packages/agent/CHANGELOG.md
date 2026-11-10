@@ -11,6 +11,12 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.4.8] — 2026-11-10
+
+Metric correctness: each pod's network is stored once, and `hostNetwork` pods no
+longer report the node's network as their own. Same v1.0 metric/label schema —
+drop-in within 1.x.
+
 ### Fixed
 
 - **Every pod's network was stored twice.** The stats collector
