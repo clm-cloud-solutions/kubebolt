@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -26,16 +25,16 @@ func TestHandleRenameCluster_DecodesEncodedAgentContext(t *testing.T) {
 	}
 	h := &handlers{manager: m}
 
-	// chi route param set to the PERCENT-ENCODED context, exactly as the browser
-	// puts it in the URL path.
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("context", "agent%3A"+uid)
-	req := httptest.NewRequest(http.MethodPut, "/clusters/x/rename",
+	// Through a real chi router, with the PERCENT-ENCODED context exactly as the
+	// browser puts it in the URL path: the request carries a RawPath, chi matches
+	// it and hands the segment over still encoded.
+	router := chi.NewRouter()
+	router.Put("/clusters/{context}/rename", h.handleRenameCluster)
+	req := httptest.NewRequest(http.MethodPut, "/clusters/agent%3A"+uid+"/rename",
 		strings.NewReader(`{"displayName":"Prod EU"}`))
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 	rec := httptest.NewRecorder()
 
-	h.handleRenameCluster(rec, req)
+	router.ServeHTTP(rec, req)
 
 	// The fix decodes agent%3Auid-x → agent:uid-x, a registered context, so the
 	// handler gets PAST the "context not found" check (this bare manager then

@@ -502,6 +502,50 @@ func (m *Manager) AddMetricsOnlyCluster(clusterID, displayName string) (string, 
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.addMetricsOnlyLocked(clusterID, displayName), nil
+}
+
+// AddMetricsOnlyClusterUnlessProxy is the first-registration demotion of a
+// capability-less agent's cluster: re-checked and written under ONE lock. It
+// does nothing (false) when the cluster became agent-proxy between the caller's
+// look and this write — a proxy-capable agent's registration landing in that
+// window used to be overwritten, the cluster left monitored-only until a
+// DaemonSet agent reconnected (the check-then-act left by finding #71).
+func (m *Manager) AddMetricsOnlyClusterUnlessProxy(clusterID, displayName string) (bool, error) {
+	if clusterID == "" {
+		return false, fmt.Errorf("clusterID is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	contextName := AgentProxyContextName(clusterID)
+	_, proxy := m.agentProxyContexts[contextName]
+	_, metricsOnly := m.metricsOnlyContexts[contextName]
+	if proxy && !metricsOnly {
+		return false, nil
+	}
+	m.addMetricsOnlyLocked(clusterID, displayName)
+	return true, nil
+}
+
+// DemoteRegisteredCluster is the grace window's deferred demotion: it demotes
+// only while the cluster is still registered. It does nothing (false) when the
+// operator deleted the cluster during the window — the timer re-creating it was
+// a deleted cluster coming back, monitored-only, with no agent behind it.
+func (m *Manager) DemoteRegisteredCluster(clusterID, displayName string) (bool, error) {
+	if clusterID == "" {
+		return false, fmt.Errorf("clusterID is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, registered := m.agentProxyContexts[AgentProxyContextName(clusterID)]; !registered {
+		return false, nil
+	}
+	m.addMetricsOnlyLocked(clusterID, displayName)
+	return true, nil
+}
+
+// addMetricsOnlyLocked is AddMetricsOnlyCluster's body. Assumes m.mu held.
+func (m *Manager) addMetricsOnlyLocked(clusterID, displayName string) string {
 	contextName := AgentProxyContextName(clusterID)
 	if m.metricsOnlyContexts == nil {
 		m.metricsOnlyContexts = make(map[string]string)
@@ -546,7 +590,7 @@ func (m *Manager) AddMetricsOnlyCluster(clusterID, displayName string) (string, 
 		slog.String("context", contextName),
 		slog.String("display_name", displayName),
 	)
-	return contextName, nil
+	return contextName
 }
 
 // retryAgentProxyConnect re-runs connectToContextLocked for an agent-
@@ -661,8 +705,16 @@ func (m *Manager) RemoveAgentProxyCluster(clusterID string) {
 		}
 	}
 
-	// In-memory teardown — nothing to do if the context isn't registered.
-	if _, ok := m.agentProxyContexts[contextName]; !ok {
+	// The cluster is no longer metrics-only either. Without it a metrics-only
+	// cluster could not be deleted (the call answered 200 and the cluster stayed
+	// listed), and the leftover flag kept a stale header for it reachable through
+	// requireClusterAccess.
+	delete(m.metricsOnlyContexts, contextName)
+
+	// In-memory teardown — nothing to do if the context isn't registered. A
+	// cluster that was only ever metrics-only has no agentProxyContexts entry but
+	// does have the kubeconfig context AddMetricsOnlyCluster wrote.
+	if _, ok := m.agentProxyContexts[contextName]; !ok && m.kubeConfig.Contexts[contextName] == nil {
 		return
 	}
 	if m.activeContext == contextName {
