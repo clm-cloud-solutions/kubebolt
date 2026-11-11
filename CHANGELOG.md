@@ -6,6 +6,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.6.1] — 2026-11-11
+
+Kobi reads more of ECR, and the traffic map shows only what is talking. Drop-in,
+no migration; the agent moves to 1.4.9. AWS connector roles need two more
+actions. Full note: [docs/releases/v2.6.1.md](docs/releases/v2.6.1.md).
+
 ### Added
 
 - **Kobi reads more of ECR through the AWS connector**: an image's scan findings

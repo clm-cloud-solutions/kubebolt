@@ -11,6 +11,11 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.4.9] — 2026-11-11
+
+Flow keys stop growing, and the node-exporter discovery finds
+kube-prometheus-stack's. Same v1.0 metric/label schema — drop-in within 1.x.
+
 ### Fixed
 
 - **Hubble flow keys are forgotten after 15 minutes without a new event.** The
