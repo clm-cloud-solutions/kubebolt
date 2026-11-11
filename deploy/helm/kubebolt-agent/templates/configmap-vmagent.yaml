@@ -63,7 +63,7 @@ we wire `-promscrape.config.fileWatchInterval` (Day 4 or later).
        correctly. Pre-1.10.0 the regex/value were hardcoded and the
        labelSelector value was silently ignored — kube-prometheus-stack
        users had to rename their node-exporter pods or patch the chart. */ -}}
-{{- $neLabel := .Values.scrape.discovery.nodeExporter.labelSelector | default "app.kubernetes.io/name=node-exporter" -}}
+{{- $neLabel := .Values.scrape.discovery.nodeExporter.labelSelector | default "app.kubernetes.io/name=node-exporter|prometheus-node-exporter" -}}
 {{- if .Values.scrape.discovery.nodeExporter.enabled -}}
   {{- if not (contains "=" $neLabel) -}}
     {{- fail (printf "scrape.discovery.nodeExporter.labelSelector must be in 'key=value' form, got: %q" $neLabel) -}}
@@ -179,7 +179,7 @@ data:
           # > annotation-driven > nothing. We drop the lower-priority
           # annotation path here when the dedicated path is enabled.
 {{- if .Values.scrape.discovery.nodeExporter.enabled }}
-          - if: '{__meta_kubernetes_pod_label_{{ $neKey }}="{{ $neVal }}"}'
+          - if: '{__meta_kubernetes_pod_label_{{ $neKey }}=~"{{ $neVal }}"}'
             action: drop
 {{- end }}
 {{- if .Values.scrape.discovery.kubeStateMetrics.enabled }}

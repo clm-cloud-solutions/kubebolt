@@ -657,17 +657,28 @@ func clusterAddresses(conn *cluster.Connector) (internal, apiServer map[netip.Ad
 			add(internal, ip)
 		}
 	}
+	for _, a := range apiServerAddresses(conn) {
+		add(apiServer, a)
+	}
+	return internal, apiServer
+}
+
+// apiServerAddresses returns the kubernetes Service's endpoint addresses, from
+// the informer cache: where the API server answers.
+func apiServerAddresses(conn *cluster.Connector) []string {
+	if conn == nil {
+		return nil
+	}
+	var out []string
 	for _, item := range conn.GetResources("endpoints", "default", "kubernetes", "", "", "", "", 1, allRows).Items {
 		if item["name"] != "kubernetes" {
 			continue
 		}
 		if addrs, ok := item["addresses"].([]string); ok {
-			for _, a := range addrs {
-				add(apiServer, a)
-			}
+			out = append(out, addrs...)
 		}
 	}
-	return internal, apiServer
+	return out
 }
 
 // podOwnerResolver maps a pod to its workload through the informer caches,

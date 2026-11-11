@@ -94,6 +94,7 @@ target. In 2.x, these ask something of you:
 | 2.5.0 | `copilot.maxTokens: 4096` in your values keeps cutting long answers: remove it to use the per-model cap. Behind an egress firewall, Kobi's cloud connectors need the endpoints the notes list. |
 | 2.5.2 | OpenShift: the web runs under its own ServiceAccount (`<release>-web`), which needs no SCC. |
 | 2.6.0 | A VictoriaMetrics you run yourself needs `-maxLabelsPerTimeseries=60`. |
+| 2.6.1 | An AWS connector role created earlier needs `ecr:GetLifecyclePolicy` and `ecr:List*` for Kobi's new ECR reads (the drawer prints the updated policy). |
 
 Coming from 1.x, read
 [COMPATIBILITY.md](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/COMPATIBILITY.md)

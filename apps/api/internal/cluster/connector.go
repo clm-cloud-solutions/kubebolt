@@ -121,8 +121,14 @@ type Connector struct {
 	platform      string // cached, derived from k8sVersion
 	collector     metricsCollector
 	topologyTimer *time.Timer
-	permissions   ResourcePermissions
-	canWrite      atomic.Bool // SA has write RBAC (operator tier) vs read-only (reader); probed at Start + refreshed on the reachability TTL (warmServerVersion) so the badge tracks the agent's CURRENT RBAC
+	// permissions is read through Permissions() and replaced whole, never edited
+	// in place: RefreshOptionalCRDs swaps in a new map when an optional CRD is
+	// installed or removed after the connector was built, while handlers and
+	// Kobi keep reading the one they were handed.
+	permissions ResourcePermissions
+	permsMu     sync.RWMutex
+	probeClient kubernetes.Interface // the permission probe's own rate-limited client; RefreshOptionalCRDs asks discovery through it
+	canWrite    atomic.Bool          // SA has write RBAC (operator tier) vs read-only (reader); probed at Start + refreshed on the reachability TTL (warmServerVersion) so the badge tracks the agent's CURRENT RBAC
 
 	// k8sVersionFetching guards the async ServerVersion() warm (Finding #4) so the
 	// overview never blocks on the slow agent-proxy round-trip; the same warm also
@@ -313,6 +319,7 @@ func newConnectorFromConfig(restConfig *rest.Config, clusterName string, wsHub *
 	// throttles the probe's own SSAR burst hard enough that queueing waits blow
 	// past checkSSAR's deadline and get recorded as denials. See newProbeClientset.
 	probeClient := newProbeClientset(restConfig, clientset)
+	c.probeClient = probeClient
 	c.permissions = probePermissions(probeClient)
 	c.canWrite.Store(probeCanWrite(probeClient))
 	c.setupInformers()
@@ -438,6 +445,8 @@ func (c *Connector) EnsureClusterUID(onResolved func(uid string)) {
 
 // Permissions returns the probed resource permissions for this cluster.
 func (c *Connector) Permissions() ResourcePermissions {
+	c.permsMu.RLock()
+	defer c.permsMu.RUnlock()
 	return c.permissions
 }
 
@@ -532,9 +541,10 @@ func (c *Connector) NodeLister() corelisters.NodeLister {
 }
 
 func (c *Connector) setupInformers() {
-	can := c.permissions.CanListWatch
+	perms := c.Permissions()
+	can := perms.CanListWatch
 	isNS := func(key string) bool {
-		if p, ok := c.permissions[key]; ok {
+		if p, ok := perms[key]; ok {
 			return p.NamespaceScoped
 		}
 		return false
@@ -543,7 +553,7 @@ func (c *Connector) setupInformers() {
 	// Determine if we need namespace-scoped factories
 	var nsFactories map[string]informers.SharedInformerFactory
 	var nsNamespaces []string
-	for _, p := range c.permissions {
+	for _, p := range perms {
 		if p.NamespaceScoped && len(p.Namespaces) > 0 {
 			nsNamespaces = p.Namespaces
 			break
@@ -1330,6 +1340,9 @@ func (c *Connector) Start() error {
 	// reported over a cache short by one object, which then served short lists
 	// for the connector's whole life. See cache_audit.go.
 	c.StartCacheAudit()
+	// An optional CRD installed after this point (Cilium after the agent) must
+	// not stay "not installed" for the connector's life. See optional_crds.go.
+	c.StartOptionalCRDRefresh()
 	c.rebuildTopology()
 	return nil
 }
@@ -1836,9 +1849,9 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 	overview.NamespaceWorkloads = c.buildNamespaceWorkloads(pods, deployments, statefulSets, daemonSets)
 
 	// Permissions
-	if c.permissions != nil {
-		overview.Permissions = make(map[string]bool, len(c.permissions))
-		for key, perm := range c.permissions {
+	if perms := c.Permissions(); perms != nil {
+		overview.Permissions = make(map[string]bool, len(perms))
+		for key, perm := range perms {
 			overview.Permissions[key] = perm.CanList && perm.CanWatch
 			// Absent optional CRDs are CanList=false (so the UI dims them as "not
 			// available") but they're not a permission restriction — surface them
@@ -2464,9 +2477,9 @@ func (c *Connector) GetResources(resourceType, namespace, search, status, node, 
 	} else if permKey == "horizontalpodautoscalers" {
 		permKey = "hpas"
 	}
-	if permKey != "gateways" && permKey != "httproutes" && !c.permissions.CanListWatch(permKey) {
+	if perms := c.Permissions(); permKey != "gateways" && permKey != "httproutes" && !perms.CanListWatch(permKey) {
 		return models.ResourceList{Kind: resourceType, Items: []map[string]interface{}{}, Total: 0, Forbidden: true,
-			NotInstalled: c.permissions.Absent(permKey)}
+			NotInstalled: perms.Absent(permKey)}
 	}
 
 	if page < 1 {
@@ -2671,7 +2684,7 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 	} else if permKey == "horizontalpodautoscalers" {
 		permKey = "hpas"
 	}
-	if permKey != "gateways" && permKey != "httproutes" && !c.permissions.CanListWatch(permKey) {
+	if permKey != "gateways" && permKey != "httproutes" && !c.Permissions().CanListWatch(permKey) {
 		return nil, &PermissionDeniedError{Resource: resourceType}
 	}
 

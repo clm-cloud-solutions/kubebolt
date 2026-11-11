@@ -52,7 +52,28 @@ type httpLatKey struct {
 type latSummary struct {
 	sumNs uint64
 	count uint64
+	last  time.Time // the flush clock when it last moved; see evictIdle
 }
+
+// counter is a cumulative count and the flush clock at which it last moved.
+type counter struct {
+	n    uint64
+	last time.Time
+}
+
+// defaultFlowIdleTTL is how long a key may go without a new event before the
+// aggregator forgets it. It must outlast the widest window anything reads these
+// series with as "live" (the Cluster Map's traffic windows top out at 10 min).
+//
+// WHY. Every key used to live as long as the agent pod: the pod name is in the
+// key, so each pod restart added keys, and a destination that answers each DNS
+// lookup with a new address (S3, SQS, CloudWatch) added one per address. Flush
+// sent all of them every 5 s, so active series only grew, and the backend read
+// keys idle for hours as edges at rate 0 (finding #76: over 60 addresses in a
+// 1-minute window). A forgotten key stops being sent and its series goes stale;
+// if it comes back it restarts from 0, which rate() reads as a counter reset.
+// Nothing already sent is lost, so a longer query window still sees it.
+const defaultFlowIdleTTL = 15 * time.Minute
 
 // externalFlowKey tracks flows where the source is a pod and the
 // destination is outside the cluster (empty pod name, non-empty IP).
@@ -85,11 +106,18 @@ type dnsKey struct {
 // use.
 type Aggregator struct {
 	mu        sync.Mutex
-	totals    map[flowKey]uint64
-	httpReqs  map[httpKey]uint64
+	totals    map[flowKey]counter
+	httpReqs  map[httpKey]counter
 	httpLat   map[httpLatKey]*latSummary
-	externals map[externalFlowKey]uint64
-	dns       map[dnsKey]uint64
+	externals map[externalFlowKey]counter
+	dns       map[dnsKey]counter
+
+	// clock is the time of the last Flush, stamped on every key Record moves
+	// (one time.Now per flush, not per Hubble event). idleTTL > 0 makes Flush
+	// forget keys that have not moved for that long. now is a test seam.
+	clock   time.Time
+	idleTTL time.Duration
+	now     func() time.Time
 
 	buffer      *buffer.Ring
 	clusterID   string
@@ -103,11 +131,14 @@ type Aggregator struct {
 
 func NewAggregator(buf *buffer.Ring, clusterID, clusterName, node, tenantID string) *Aggregator {
 	return &Aggregator{
-		totals:      make(map[flowKey]uint64),
-		httpReqs:    make(map[httpKey]uint64),
+		totals:      make(map[flowKey]counter),
+		httpReqs:    make(map[httpKey]counter),
 		httpLat:     make(map[httpLatKey]*latSummary),
-		externals:   make(map[externalFlowKey]uint64),
-		dns:         make(map[dnsKey]uint64),
+		externals:   make(map[externalFlowKey]counter),
+		dns:         make(map[dnsKey]counter),
+		clock:       time.Now(),
+		idleTTL:     defaultFlowIdleTTL,
+		now:         time.Now,
 		buffer:      buf,
 		clusterID:   clusterID,
 		clusterName: clusterName,
@@ -191,12 +222,12 @@ func (a *Aggregator) Record(f *flowpb.Flow) {
 					if ip == "" {
 						continue
 					}
-					a.dns[dnsKey{
+					bump(a, a.dns, dnsKey{
 						srcNs:      askerNs,
 						srcPod:     askerPod,
 						fqdn:       fqdn,
 						resolvedIP: ip,
-					}]++
+					})
 				}
 				a.mu.Unlock()
 			}
@@ -226,12 +257,12 @@ func (a *Aggregator) Record(f *flowpb.Flow) {
 			return
 		}
 		a.mu.Lock()
-		a.externals[externalFlowKey{
+		bump(a, a.externals, externalFlowKey{
 			srcNs:   src.GetNamespace(),
 			srcPod:  src.GetPodName(),
 			dstIP:   dstIP,
 			verdict: strings.ToLower(f.GetVerdict().String()),
-		}]++
+		})
 		a.mu.Unlock()
 		return
 	}
@@ -267,7 +298,7 @@ func (a *Aggregator) Record(f *flowpb.Flow) {
 				method: method,
 			}
 			a.mu.Lock()
-			a.httpReqs[hk]++
+			bump(a, a.httpReqs, hk)
 			s := a.httpLat[lk]
 			if s == nil {
 				s = &latSummary{}
@@ -275,6 +306,7 @@ func (a *Aggregator) Record(f *flowpb.Flow) {
 			}
 			s.sumNs += l7.GetLatencyNs()
 			s.count++
+			s.last = a.clock
 			a.mu.Unlock()
 		}
 		// L7 events are not L4 — don't double-count into pod_flow_events_total.
@@ -310,8 +342,29 @@ func (a *Aggregator) Record(f *flowpb.Flow) {
 		verdict: verdict,
 	}
 	a.mu.Lock()
-	a.totals[key]++
+	bump(a, a.totals, key)
 	a.mu.Unlock()
+}
+
+// bump counts one event for k and stamps it with the flush clock. Callers hold a.mu.
+func bump[K comparable](a *Aggregator, m map[K]counter, k K) {
+	c := m[k]
+	c.n++
+	c.last = a.clock
+	m[k] = c
+}
+
+// evictIdle forgets the keys of m that have not moved since cutoff and returns
+// how many it dropped. Callers hold a.mu.
+func evictIdle[K comparable](m map[K]counter, cutoff time.Time) int {
+	n := 0
+	for k, c := range m {
+		if c.last.Before(cutoff) {
+			delete(m, k)
+			n++
+		}
+	}
+	return n
 }
 
 // statusClassFor folds an HTTP status code into one of five buckets so
@@ -340,6 +393,21 @@ func statusClassFor(code uint32) string {
 // ring buffer. Safe to call concurrently with Record.
 func (a *Aggregator) Flush() {
 	a.mu.Lock()
+	a.clock = a.now()
+	if a.idleTTL > 0 {
+		cutoff := a.clock.Add(-a.idleTTL)
+		evicted := evictIdle(a.totals, cutoff) + evictIdle(a.httpReqs, cutoff) +
+			evictIdle(a.externals, cutoff) + evictIdle(a.dns, cutoff)
+		for k, s := range a.httpLat {
+			if s.last.Before(cutoff) {
+				delete(a.httpLat, k)
+				evicted++
+			}
+		}
+		if evicted > 0 {
+			slog.Debug("hubble aggregator forgot idle keys", slog.Int("keys", evicted), slog.Duration("idle", a.idleTTL))
+		}
+	}
 	if len(a.totals) == 0 && len(a.httpReqs) == 0 && len(a.httpLat) == 0 &&
 		len(a.externals) == 0 && len(a.dns) == 0 {
 		a.mu.Unlock()
@@ -347,11 +415,11 @@ func (a *Aggregator) Flush() {
 	}
 	flowSnap := make(map[flowKey]uint64, len(a.totals))
 	for k, v := range a.totals {
-		flowSnap[k] = v
+		flowSnap[k] = v.n
 	}
 	httpReqSnap := make(map[httpKey]uint64, len(a.httpReqs))
 	for k, v := range a.httpReqs {
-		httpReqSnap[k] = v
+		httpReqSnap[k] = v.n
 	}
 	httpLatSnap := make(map[httpLatKey]latSummary, len(a.httpLat))
 	for k, v := range a.httpLat {
@@ -359,11 +427,11 @@ func (a *Aggregator) Flush() {
 	}
 	externalSnap := make(map[externalFlowKey]uint64, len(a.externals))
 	for k, v := range a.externals {
-		externalSnap[k] = v
+		externalSnap[k] = v.n
 	}
 	dnsSnap := make(map[dnsKey]uint64, len(a.dns))
 	for k, v := range a.dns {
-		dnsSnap[k] = v
+		dnsSnap[k] = v.n
 	}
 	a.mu.Unlock()
 
