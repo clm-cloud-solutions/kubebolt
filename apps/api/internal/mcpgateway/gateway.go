@@ -117,7 +117,8 @@ type Options struct {
 	OrgRatePerMin       int
 	AutopilotRatePerMin int
 	// RateForPlan, when set, gives a consumer's per-minute budget for an
-	// org's plan (multi-tenant only); 0 falls back to the defaults above.
+	// org's plan, "" when the install has no plans (single-org); 0 falls
+	// back to the defaults above.
 	RateForPlan func(plan string, consumer mcpcatalog.Consumer) int
 	// PerBindingConcurrency caps concurrent calls on one binding (default 4),
 	// so one org cannot trip the provider's throttling on its own account.
@@ -1010,11 +1011,11 @@ type callLimiter struct {
 // ratePerMin is the consumer's budget for the org: its plan's when the
 // install resolves one, else the consumer's default.
 func (g *Gateway) ratePerMin(org string, consumer mcpcatalog.Consumer) int {
+	// Asked even without a plan (a single-org install answers ""), so an
+	// edition that sets a budget for that case gets it applied.
 	if g.o.RateForPlan != nil {
-		if plan := g.planOf(org); plan != "" {
-			if n := g.o.RateForPlan(plan, consumer); n > 0 {
-				return n
-			}
+		if n := g.o.RateForPlan(g.planOf(org), consumer); n > 0 {
+			return n
 		}
 	}
 	if consumer == mcpcatalog.ConsumerAutopilot {

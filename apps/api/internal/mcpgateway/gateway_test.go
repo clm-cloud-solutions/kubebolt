@@ -1251,3 +1251,25 @@ func TestCallRateLimitFollowsThePlan(t *testing.T) {
 		t.Fatalf("after the plan change the default budget did not apply: %+v", res)
 	}
 }
+
+// A single-org install has no plan, and the per-plan budget is still asked:
+// RateForPlan gets plan "" instead of being skipped.
+func TestCallRateLimitAsksForTheNoPlanBudget(t *testing.T) {
+	var asked []string
+	h := newHarness(t, func(o *Options) {
+		o.OrgRatePerMin = 6000
+		o.RateForPlan = func(p string, c mcpcatalog.Consumer) int {
+			asked = append(asked, p)
+			return 4 // one token of burst
+		}
+	})
+	ctx := orgCtx("org-a")
+	h.enable(ctx, regionFieldA)
+	h.gw.Call(ctx, mcpcatalog.ConsumerKobi, "mcp__fake__get_thing", nil)
+	if res := h.gw.Call(ctx, mcpcatalog.ConsumerKobi, "mcp__fake__get_thing", nil); !res.IsError || !strings.Contains(res.Content, "Rate limited") {
+		t.Fatalf("the no-plan budget of 4/min did not apply: %+v", res)
+	}
+	if len(asked) == 0 || asked[0] != "" {
+		t.Fatalf("RateForPlan asked with %q, want the empty plan of a single-org install", asked)
+	}
+}
