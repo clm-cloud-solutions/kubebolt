@@ -358,6 +358,10 @@ func TestCallRateLimitIsPerOrg(t *testing.T) {
 	if !res.IsError || !strings.Contains(res.Content, "Rate limited, try again later") {
 		t.Fatalf("second call: %+v", res)
 	}
+	// The chat shows it as held back, not as a failure (copilot.CallStatus).
+	if !res.RateLimited {
+		t.Fatalf("second call not marked RateLimited: %+v", res)
+	}
 	if res := h.gw.Call(b, mcpcatalog.ConsumerKobi, "mcp__fake__get_thing", nil); res.IsError {
 		t.Fatalf("another org shares the budget: %+v", res)
 	}

@@ -34,6 +34,7 @@ export function couldNotRead(result: CopilotToolResult | undefined): boolean {
     case 'denied':
     case 'not_sent':
     case 'agent_offline':
+    case 'rate_limited':
     case 'unsupported':
       return true
     case undefined:
