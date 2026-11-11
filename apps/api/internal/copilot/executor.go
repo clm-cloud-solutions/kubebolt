@@ -1230,6 +1230,11 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 		involvedName := stringArg(args, "involvedName")
 		limit := intArg(args, "limit", 100)
 		events := conn.GetEvents(eventType, ns, involvedKind, involvedName, limit)
+		if events.Forbidden {
+			res.Content = eventsForbiddenContent
+			res.IsError = true
+			return res
+		}
 		res.Content = jsonString(eventsWithSpans(events))
 
 	case "search_resources":

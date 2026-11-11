@@ -2977,8 +2977,14 @@ func (c *Connector) GetTopology() models.Topology {
 	return c.graph.GetTopology()
 }
 
-// GetEvents returns filtered events.
+// GetEvents returns filtered events. Without access to events there is no
+// lister (the informer starts only when the probe grants it): the list says
+// Forbidden rather than empty, so "no events" is never claimed for a cluster
+// whose events KubeBolt cannot read.
 func (c *Connector) GetEvents(eventType, namespace, involvedKind, involvedName string, limit int) models.ResourceList {
+	if c.eventLister == nil {
+		return models.ResourceList{Kind: "events", Items: []map[string]interface{}{}, Total: 0, Forbidden: true}
+	}
 	events, _ := c.eventLister.List(everythingSelector())
 	var items []map[string]interface{}
 	for _, event := range events {
@@ -6039,6 +6045,9 @@ func (c *Connector) listHPAs(namespace string) []map[string]interface{} {
 }
 
 func (c *Connector) listEventsAsResources(namespace string) []map[string]interface{} {
+	if c.eventLister == nil {
+		return nil
+	}
 	events, _ := c.eventLister.List(everythingSelector())
 	var items []map[string]interface{}
 	for _, event := range events {

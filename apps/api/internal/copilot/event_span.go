@@ -18,6 +18,10 @@ const eventSpanNoteAfter = 30 * time.Minute
 
 const eventSpanNote = "count and firstSeen add up every repetition of the same message on that object since its emitter first saw it, which can span separate episodes: an event with a span may have started long before the current one. Date the current episode from the object's logs (get_pod_logs reports their bursts) or its own conditions, not from firstSeen."
 
+// eventsForbiddenContent is get_events' answer when KubeBolt cannot list
+// events in the cluster. It is a permission gap, never "no events".
+const eventsForbiddenContent = `{"error":"forbidden: insufficient permissions to access events","forbidden":true,"note":"KubeBolt's access to this cluster does not include events, so their absence says nothing. Read the object's status, conditions and logs instead."}`
+
 // eventsWithSpans marks the events of a get_events answer whose first and
 // last occurrence are at least eventSpanNoteAfter apart, and adds the note
 // when any is. An answer with none goes out unchanged.
