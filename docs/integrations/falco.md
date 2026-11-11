@@ -151,7 +151,8 @@ The event lands in **Security → Runtime** (`/security/runtime`) in under a min
 
 | Symptom | Cause |
 |---|---|
-| `401 missing Bearer token` | the `falco-kubebolt` Secret is missing or was created after falcosidekick started (restart it); with the header in the values, lowercase `customheaders` |
+| `401 missing Bearer token` | `existingSecret` was left out of the install, or the Secret's key is not exactly `WEBHOOK_CUSTOMHEADERS`; with the header in the values, lowercase `customheaders` |
+| falcosidekick stuck in `CreateContainerConfigError` | the `falco-kubebolt` Secret does not exist in the `falco` namespace — create it and the pod starts on its own |
 | `403 not scoped to a cluster` | the token was issued without a cluster |
 | `403 cluster_id does not match` | the token belongs to a different cluster than `customfields` |
 | `connection refused` | the URL is not reachable from the cluster |
