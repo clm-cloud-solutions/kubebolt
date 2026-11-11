@@ -42,7 +42,10 @@ import (
 
 // Defaults for Options left at their zero value.
 const (
-	DefaultOrgRatePerMin         = 120
+	DefaultOrgRatePerMin = 120
+	// DefaultAutopilotRatePerMin is Autopilot's own budget, apart from Kobi's:
+	// a chat that spends its minute never holds back a remediation.
+	DefaultAutopilotRatePerMin   = 60
 	DefaultPerBindingConcurrency = 4
 	// DefaultBindTimeout bounds how long a request waits for a binding to be
 	// built (credentials exchanged, tool lists fetched). Kobi's first turn
@@ -108,9 +111,15 @@ type Options struct {
 	// 30s). BindTimeout bounds building a binding (default 10s).
 	CallTimeout time.Duration
 	BindTimeout time.Duration
-	// OrgRatePerMin is the per-org budget of tool calls per minute, shared by
-	// Kobi and Autopilot and by every connector (default 120).
-	OrgRatePerMin int
+	// OrgRatePerMin is Kobi's per-org budget of tool calls per minute,
+	// shared by every connector (default 120). AutopilotRatePerMin is
+	// Autopilot's, a bucket of its own (default 60).
+	OrgRatePerMin       int
+	AutopilotRatePerMin int
+	// RateForPlan, when set, gives a consumer's per-minute budget for an
+	// org's plan, "" when the install has no plans (single-org); 0 falls
+	// back to the defaults above.
+	RateForPlan func(plan string, consumer mcpcatalog.Consumer) int
 	// PerBindingConcurrency caps concurrent calls on one binding (default 4),
 	// so one org cannot trip the provider's throttling on its own account.
 	PerBindingConcurrency int
@@ -177,7 +186,7 @@ type Gateway struct {
 	mu        sync.Mutex
 	bindings  map[bindingKey]*entry
 	failures  map[bindingKey]*bindFailure
-	limiters  map[string]*rate.Limiter
+	limiters  map[string]*callLimiter
 	lastTest  map[string]time.Time
 	lastSweep time.Time
 	// stopped is set by Shutdown: from then on nothing new is built.
@@ -256,6 +265,9 @@ func New(cat *mcpcatalog.Catalog, st *settings.Runtime, o Options) *Gateway {
 	if o.OrgRatePerMin <= 0 {
 		o.OrgRatePerMin = DefaultOrgRatePerMin
 	}
+	if o.AutopilotRatePerMin <= 0 {
+		o.AutopilotRatePerMin = DefaultAutopilotRatePerMin
+	}
 	if o.PerBindingConcurrency <= 0 {
 		o.PerBindingConcurrency = DefaultPerBindingConcurrency
 	}
@@ -285,7 +297,7 @@ func New(cat *mcpcatalog.Catalog, st *settings.Runtime, o Options) *Gateway {
 		m:         newMetrics(o.Registerer, o.Logger),
 		bindings:  map[bindingKey]*entry{},
 		failures:  map[bindingKey]*bindFailure{},
-		limiters:  map[string]*rate.Limiter{},
+		limiters:  map[string]*callLimiter{},
 		lastTest:  map[string]time.Time{},
 		stopSweep: make(chan struct{}),
 	}
@@ -955,9 +967,9 @@ func (g *Gateway) sweepLocked(now time.Time) {
 			delete(g.lastTest, org)
 		}
 	}
-	for org, lim := range g.limiters {
+	for key, lim := range g.limiters {
 		if lim.TokensAt(now) >= float64(lim.Burst()) {
-			delete(g.limiters, org)
+			delete(g.limiters, key)
 		}
 	}
 }
@@ -989,19 +1001,47 @@ func (g *Gateway) liveBinding(org, id string, cfg settings.ResolvedConnector) *e
 }
 
 // allowCall spends one token of the org's call budget.
-func (g *Gateway) allowCall(org string) bool {
+// callLimiter is one (org, consumer) bucket and the per-minute rate it was
+// built for: a plan change rebuilds it.
+type callLimiter struct {
+	*rate.Limiter
+	perMin int
+}
+
+// ratePerMin is the consumer's budget for the org: its plan's when the
+// install resolves one, else the consumer's default.
+func (g *Gateway) ratePerMin(org string, consumer mcpcatalog.Consumer) int {
+	// Asked even without a plan (a single-org install answers ""), so an
+	// edition that sets a budget for that case gets it applied.
+	if g.o.RateForPlan != nil {
+		if n := g.o.RateForPlan(g.planOf(org), consumer); n > 0 {
+			return n
+		}
+	}
+	if consumer == mcpcatalog.ConsumerAutopilot {
+		return g.o.AutopilotRatePerMin
+	}
+	return g.o.OrgRatePerMin
+}
+
+// allowCall spends one call of the (org, consumer) bucket. Kobi and
+// Autopilot draw from separate buckets: the chat never holds back a
+// remediation, and a remediation loop never silences the chat.
+func (g *Gateway) allowCall(org string, consumer mcpcatalog.Consumer) bool {
+	perMin := g.ratePerMin(org, consumer)
+	key := org + "\x00" + string(consumer)
 	g.mu.Lock()
-	lim := g.limiters[org]
-	if lim == nil {
+	lim := g.limiters[key]
+	if lim == nil || lim.perMin != perMin {
 		// A quarter of the minute's budget may be spent at once: enough for
 		// a burst of parallel reads, not for draining the minute in a
 		// second against a provider that throttles per account.
-		burst := g.o.OrgRatePerMin / 4
+		burst := perMin / 4
 		if burst < 1 {
 			burst = 1
 		}
-		lim = rate.NewLimiter(rate.Limit(float64(g.o.OrgRatePerMin)/60), burst)
-		g.limiters[org] = lim
+		lim = &callLimiter{Limiter: rate.NewLimiter(rate.Limit(float64(perMin)/60), burst), perMin: perMin}
+		g.limiters[key] = lim
 	}
 	g.mu.Unlock()
 	return lim.AllowN(g.now(), 1)
