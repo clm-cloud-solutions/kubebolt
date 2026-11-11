@@ -2,7 +2,8 @@ import { createContext, useContext, useState, useCallback, useEffect, useRef, ty
 import { useLocation } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/services/api'
-import { compactCopilotSession, sendCopilotChat, serializeMessages } from '@/services/copilot/chat'
+import { compactCopilotSession, CopilotRefusal, sendCopilotChat, serializeMessages } from '@/services/copilot/chat'
+import { BUSY_AUTO_RETRIES, retryWhileBusy } from '@/services/copilot/busyRetry'
 import { useCopilotLayout } from '@/hooks/useCopilotLayout'
 import { useAuth } from '@/contexts/AuthContext'
 import type {
@@ -56,6 +57,11 @@ interface CopilotContextValue {
    * idle. The UI ticks against it to tell "actively streaming" from "stalled"
    * and to escalate a waiting hint. */
   lastActivityAt: number | null
+  /** While the in-flight question waits because Kobi already answers as many
+   * questions as the plan allows: the epoch ms it is asked again, then
+   * ASKED_AGAIN (0) until the answer starts; null otherwise. Stop ends the
+   * wait (busyRetry.ts). */
+  turnWaitUntil: number | null
   error: string | null
   messages: CopilotMessage[]
   pendingToolCalls: string[]
@@ -252,6 +258,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
   // "stalled" and surface a waiting/cancel affordance.
   const abortRef = useRef<AbortController | null>(null)
   const [lastActivityAt, setLastActivityAt] = useState<number | null>(null)
+  const [turnWaitUntil, setTurnWaitUntil] = useState<number | null>(null)
   const [messages, setMessages] = useState<CopilotMessage[]>([])
   const [pendingToolCalls, setPendingToolCalls] = useState<string[]>([])
   const [usedFallback, setUsedFallback] = useState(false)
@@ -527,9 +534,13 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
       // Set by an `error` event: the turn ends there, and its last row says
       // what failed (markLiveFailed) instead of a banner under the chat.
       let turnError: string | null = null
-      const failTurn = (message: string) =>
+      const failTurn = (message: string, kind?: 'busy' | 'credits') =>
         setMessages((prev) =>
-          markLiveFailed(prev, turnKey, round, { message, afterMs: Date.now() - userMsg.timestamp.getTime() }),
+          markLiveFailed(prev, turnKey, round, {
+            message,
+            afterMs: Date.now() - userMsg.timestamp.getTime(),
+            ...(kind ? { kind } : {}),
+          }),
         )
       setMessages((prev) => [
         ...prev,
@@ -545,15 +556,23 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
       const carriedLastRoundUsage = fresh ? null : lastRoundUsage
 
       try {
-        for await (const event of sendCopilotChat(
-          newMessages,
-          location.pathname,
-          ac.signal,
-          options?.trigger,
-          carriedLastRoundUsage,
-          turnConversationId,
-          options?.originatingInsightId,
-        )) {
+        // Refused because Kobi already answers as many questions as the plan
+        // allows: wait what the server says and ask once more on our own.
+        const openStream = () =>
+          sendCopilotChat(
+            newMessages,
+            location.pathname,
+            ac.signal,
+            options?.trigger,
+            carriedLastRoundUsage,
+            turnConversationId,
+            options?.originatingInsightId,
+          )
+        for await (const event of retryWhileBusy(openStream, {
+          retries: BUSY_AUTO_RETRIES,
+          signal: ac.signal,
+          onWait: setTurnWaitUntil,
+        })) {
           // Every event is a sign of life — bump so the UI can distinguish an
           // actively-streaming turn from a stalled one and escalate its hint.
           setLastActivityAt(Date.now())
@@ -700,10 +719,13 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         // or empty answer must not read as completed or hung).
         if (ac.signal.aborted) {
           setMessages((prev) => markLiveCancelled(prev, turnKey, round))
+        } else if (err instanceof CopilotRefusal) {
+          failTurn(err.message, err.kind)
         } else {
           failTurn(err instanceof Error ? err.message : 'Failed to reach copilot backend')
         }
       } finally {
+        setTurnWaitUntil(null)
         setIsLoading(false)
         setLastActivityAt(null)
         setPendingToolCalls([])
@@ -1042,6 +1064,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         isOpen,
         isLoading,
         lastActivityAt,
+        turnWaitUntil,
         error,
         messages,
         pendingToolCalls,

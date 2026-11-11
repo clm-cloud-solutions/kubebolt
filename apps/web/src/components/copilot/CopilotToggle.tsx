@@ -1,7 +1,7 @@
 import { useEffect, useId, useState, useSyncExternalStore } from 'react'
 import { useCopilot } from '@/contexts/CopilotContext'
 import { KobiFace, KobiStateDot } from '@/components/kobi'
-import { useKobiPresence } from './useKobiPresence'
+import { PRESENCE_LABEL, useKobiPresence } from './useKobiPresence'
 
 // CopilotToggle — the floating head at the bottom-right: Kobi's face at
 // 64 px, floating on its own shadow with a slow bob, no disc behind it (brand
@@ -29,7 +29,9 @@ export function CopilotToggle() {
   if (!config?.enabled) return null
   if (isOpen || held) return null
 
-  const busy = presence.state !== 'watching'
+  // The pill says any state but plain Watching, including the ones the brand
+  // draws as Watching with words (waiting for a free slot).
+  const busy = presence.label !== PRESENCE_LABEL.watching
 
   // Only the head takes the pointer. The box also holds the tooltip and the
   // pill, 180px wide or more: as a pointer target it ate clicks meant for
