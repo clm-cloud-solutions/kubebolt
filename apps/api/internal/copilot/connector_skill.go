@@ -47,6 +47,25 @@ func WithConnectorSkill(history []Message, round []ToolResult, call ToolCall, re
 	return result
 }
 
+// WithoutConnectorSkill is a result's content without the procedure
+// WithConnectorSkill put in front of it: what the call itself answered. How a
+// call ended is read from that, never from the procedure, whose own words
+// ("an AccessDenied names the action") made a failed first AWS call read as a
+// denial and named the procedure as the reason.
+func WithoutConnectorSkill(content string) string {
+	for _, name := range connectorSkills {
+		skill, ok := skills.Get(name)
+		if !ok {
+			continue
+		}
+		prefix := fmt.Sprintf(connectorSkillHeader, name, name) + "\n\n" + skill.Body + "\n\n"
+		if rest, ok := strings.CutPrefix(content, prefix); ok {
+			return rest
+		}
+	}
+	return content
+}
+
 // skillDelivered reports whether the conversation called load_skill for name
 // or holds a result that carried it.
 func skillDelivered(history []Message, round []ToolResult, name, header string) bool {

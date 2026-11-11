@@ -151,7 +151,7 @@ const ToolResultNotSent = "not_sent"
 // that is not installed says `"notInstalled": true`. Only the error message
 // and the top-level shape are read — never the rest of the content.
 func ClassifyToolResult(r ToolResult) string {
-	content := strings.TrimSpace(r.Content)
+	content := strings.TrimSpace(WithoutConnectorSkill(r.Content))
 	var obj map[string]any
 	isObj := json.Unmarshal([]byte(content), &obj) == nil
 
