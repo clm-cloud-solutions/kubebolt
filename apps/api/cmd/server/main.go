@@ -1297,10 +1297,14 @@ func main() {
 			}
 		}
 
-		// Prune disconnected records older than the horizon. Records
-		// for agents currently connected (DisconnectedAt zero) never
-		// expire. The horizon is configurable so SaaS operators can
-		// shorten it if they don't want stale orgs in their data set.
+		// Prune disconnected records older than the horizon. A record
+		// for an agent currently connected (DisconnectedAt zero) never
+		// expires — except in a store several replicas share, where each
+		// replica refreshes the records of the agents it holds and a
+		// connected record nobody refreshed for the horizon is pruned
+		// (channel.LivenessStore). The horizon is configurable so SaaS
+		// operators can shorten it if they don't want stale orgs in their
+		// data set.
 		//
 		// Spec #09 V2 — the horizon is hot-reloadable. The ticker
 		// re-reads `settingsRuntime.IngestChannel().AgentRegistryPruneHorizon`
@@ -1308,6 +1312,10 @@ func main() {
 		// pass without a restart. Falls back to the env-only baseline
 		// when the runtime isn't available (auth-disabled mode).
 		pruneJob := opsmetrics.NewJob("agent_registry_prune", time.Hour)
+		liveness, _ := agentStore.(channel.LivenessStore)
+		if liveness != nil {
+			go channel.RunLivenessHeartbeat(agentCtx, agentRegistry, liveness, channel.LivenessHeartbeat)
+		}
 		go func() {
 			ticker := time.NewTicker(1 * time.Hour)
 			defer ticker.Stop()
@@ -1333,11 +1341,22 @@ func main() {
 						slog.Warn("agent registry prune failed", slog.String("error", err.Error()))
 						continue
 					}
+					unseen := 0
+					if liveness != nil {
+						unseenHorizon := channel.UnseenHorizon(horizon)
+						unseen, err = liveness.PruneUnseen(time.Now().UTC().Add(-unseenHorizon))
+						if err != nil {
+							run.End()
+							slog.Warn("agent registry prune of unseen records failed", slog.String("error", err.Error()))
+							continue
+						}
+					}
 					run.OK()
 					run.End()
-					if removed > 0 {
+					if removed > 0 || unseen > 0 {
 						slog.Info("agent registry pruned",
 							slog.Int("removed", removed),
+							slog.Int("unseen", unseen),
 							slog.Duration("horizon", horizon),
 						)
 					}
