@@ -1071,7 +1071,10 @@ func main() {
 
 	// The agent ingest writes to the store the readers use, even when it did
 	// not answer at boot: a VictoriaMetrics started later starts receiving.
-	writer := agent.NewVMWriter(metricsStoreURL)
+	// A batch it fails to write for a passing reason (a restart) is held and
+	// written again once it answers (agent.SpoolingWriter).
+	writer := agent.NewSpoolingWriter(agent.NewVMWriter(metricsStoreURL), agent.DefaultIngestSpoolBytes, prometheus.DefaultRegisterer)
+	go writer.Run(agentCtx)
 	// AgentRegistry was created above NewRouter; wire it into the
 	// cluster.Manager here so AddAgentProxyCluster can resolve
 	// reachability via the live registry. Same effect as the

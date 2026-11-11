@@ -33,6 +33,16 @@ func NewVMWriter(endpoint string) *VMWriter {
 }
 
 func (w *VMWriter) Write(ctx context.Context, samples []*agentv2.Sample) error {
+	body := encodeSamples(samples)
+	if len(body) == 0 {
+		return nil
+	}
+	return w.post(ctx, body)
+}
+
+// encodeSamples renders samples in VictoriaMetrics' Prometheus import format,
+// one line per sample; nil when there is nothing to write.
+func encodeSamples(samples []*agentv2.Sample) []byte {
 	if len(samples) == 0 {
 		return nil
 	}
@@ -84,9 +94,23 @@ func (w *VMWriter) Write(ctx context.Context, samples []*agentv2.Sample) error {
 	if buf.Len() == 0 {
 		return nil
 	}
+	return buf.Bytes()
+}
 
+// vmStatusError is VictoriaMetrics answering a write with a non-2xx status.
+type vmStatusError struct {
+	code int
+	body string
+}
+
+func (e *vmStatusError) Error() string {
+	return fmt.Sprintf("vm write status %d: %s", e.code, e.body)
+}
+
+// post sends one encoded body to the import endpoint.
+func (w *VMWriter) post(ctx context.Context, body []byte) error {
 	url := w.endpoint + "/api/v1/import/prometheus"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, &buf)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -98,8 +122,8 @@ func (w *VMWriter) Write(ctx context.Context, samples []*agentv2.Sample) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("vm write status %d: %s", resp.StatusCode, string(body))
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return &vmStatusError{code: resp.StatusCode, body: string(b)}
 	}
 	return nil
 }
