@@ -17,6 +17,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Right-sizing's minimum history is a setting.** It was fixed at two days, so
+  a cluster connected for a trial or a proof of concept showed no
+  recommendations on its first day. Settings › General › *Right-sizing* sets it
+  (48 h by default, 12–168 h), for every cluster and for Kobi, with no restart.
+  Recommendations from under 48 h say so: the panel reads "early estimate" with
+  the history they rest on, and Kobi says how much history the numbers have.
+  The "collecting samples" texts name the configured minimum in days and hours.
 - **No more burst of 401s every 15 minutes.** The access token was renewed only
   after it had expired: the next requests in an open tab answered
   `401 {"error":"invalid or expired token"}`, then a refresh and a retry that

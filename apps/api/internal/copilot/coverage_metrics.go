@@ -411,7 +411,11 @@ func summarizeRightSizing(res rightsizing.Result, namespace, severity string, li
 	}
 	if res.InsufficientHistory {
 		out["insufficientHistory"] = true
-		out["insufficientHistoryNote"] = "under 2 days of usage history: right-sizing is still collecting and makes no recommendations yet — do not suggest resizing anything, and say the data is not ready"
+		out["insufficientHistoryNote"] = fmt.Sprintf("under %d hours of usage history (the minimum this platform sets): right-sizing is still collecting and makes no recommendations yet — do not suggest resizing anything, and say the data is not ready", res.MinHistoryHours)
+	}
+	if res.LowConfidence {
+		out["lowConfidence"] = true
+		out["lowConfidenceNote"] = "recommendations from under 2 days of usage history (the platform lowered the minimum): the P95 has not seen two daily peaks yet — give the numbers, say how much history they rest on, and suggest confirming them before resizing anything critical"
 	}
 	if len(rows) > limit {
 		out["truncated"] = true

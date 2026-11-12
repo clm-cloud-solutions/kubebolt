@@ -662,3 +662,48 @@ func TestStoreInterfaceCompiles(t *testing.T) {
 		_ = s.SetSetting("x", nil)
 	}
 }
+
+// TestGeneral_RightSizingMinHistoryIsPlatformWide: the right-sizing minimum is a
+// PLATFORM field — one value for every org, kept by an org reset, shown
+// resolved (48 by default) and refused outside its range.
+func TestGeneral_RightSizingMinHistoryIsPlatformWide(t *testing.T) {
+	rt := newTestRuntime(t)
+	ctxA := auth.WithTenantID(context.Background(), "org-a")
+	ctxB := auth.WithTenantID(context.Background(), "org-b")
+
+	m, err := rt.RenderMaskedGeneral(ctxA)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if m.Effective.RightSizingMinHistoryHours != 48 || m.Stored.RightSizingMinHistoryHours != nil {
+		t.Errorf("unset: effective=%d stored=%v, want 48 and nil", m.Effective.RightSizingMinHistoryHours, m.Stored.RightSizingMinHistoryHours)
+	}
+
+	if err := rt.PutGeneral(ctxA, &StoredGeneralSettings{RightSizingMinHistoryHours: intPtr(36)}); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	for name, ctx := range map[string]context.Context{"org A": ctxA, "org B": ctxB} {
+		if got := rt.General(ctx).RightSizingMinHistoryHours; got != 36 {
+			t.Errorf("%s: got %d want 36 (platform-wide)", name, got)
+		}
+	}
+	if err := rt.ResetGeneral(ctxA); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	if got := rt.General(ctxA).RightSizingMinHistoryHours; got != 36 {
+		t.Errorf("an org reset must keep the platform value: got %d", got)
+	}
+	if m, _ := rt.RenderMaskedGeneral(ctxB); m.Effective.RightSizingMinHistoryHours != 36 || m.Stored.RightSizingMinHistoryHours == nil {
+		t.Errorf("masked view: effective=%d stored=%v", m.Effective.RightSizingMinHistoryHours, m.Stored.RightSizingMinHistoryHours)
+	}
+
+	for _, bad := range []int{0, 6, 11, 169, 1000} {
+		err := rt.PutGeneral(ctxA, &StoredGeneralSettings{RightSizingMinHistoryHours: intPtr(bad)})
+		if !IsValidation(err) {
+			t.Errorf("%dh: want a validation error, got %v", bad, err)
+		}
+	}
+	if got := rt.General(ctxA).RightSizingMinHistoryHours; got != 36 {
+		t.Errorf("a refused value must not be stored: got %d", got)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -57,7 +58,10 @@ var rightSizingCache sync.Map // "tenant|clusterUID" → rightSizingEntry
 func (h *handlers) computeRightSizing(ctx context.Context, conn *cluster.Connector) (rightsizing.Result, error) {
 	uid := h.activeClusterUID(ctx)
 	tenant := metricsTenantPinCtx(ctx)
-	key := tenant + "|" + uid
+	minHours := h.rightSizingMinHistoryHours(ctx)
+	// The minimum is part of the key: a platform admin lowering it sees the
+	// change on the next read, not after the cached answer expires.
+	key := tenant + "|" + uid + "|" + strconv.Itoa(minHours)
 	if v, ok := rightSizingCache.Load(key); ok {
 		if e := v.(rightSizingEntry); time.Since(e.at) < rightSizingTTL {
 			return e.res, nil
@@ -71,9 +75,19 @@ func (h *handlers) computeRightSizing(ctx context.Context, conn *cluster.Connect
 	}
 	res := rightsizing.Evaluate(conn.NamespaceWorkloads(),
 		p95Index(in.cpu, 1000), // cores → millicores
-		p95Index(in.mem, 1), in.windowDays)
+		p95Index(in.mem, 1), in.windowDays, minHours)
 	rightSizingCache.Store(key, rightSizingEntry{at: time.Now(), res: res})
 	return res, nil
+}
+
+// rightSizingMinHistoryHours is the platform's minimum usage history for
+// right-sizing (Settings › General), the default when no setting is stored or
+// persistence is off.
+func (h *handlers) rightSizingMinHistoryHours(ctx context.Context) int {
+	if h.settingsRuntime == nil {
+		return rightsizing.DefaultMinHistoryHours
+	}
+	return rightsizing.ClampMinHistoryHours(h.settingsRuntime.General(ctx).RightSizingMinHistoryHours)
 }
 
 type rightSizingInputs struct {
