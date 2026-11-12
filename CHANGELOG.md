@@ -6,6 +6,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.6.2] — 2026-11-12
+
+Right-sizing on a cluster's first day, and Kobi says which role a connector
+needs. Drop-in, no migration; the agent stays on 1.4.9. Full note:
+[docs/releases/v2.6.2.md](docs/releases/v2.6.2.md).
+
 ### Changed
 
 - **Kobi says when a cloud connector is out of reach.** A user below a
