@@ -109,6 +109,31 @@ type AgentStore interface {
 	DeleteCluster(tenantID, clusterID string) (int, error)
 }
 
+// AgentKey names one agent record.
+type AgentKey struct {
+	ClusterID string
+	AgentID   string
+}
+
+// LivenessStore is implemented by a store several API replicas share (the
+// Enterprise Postgres store). Such a store is never stamped at boot the way
+// BoltAgentStore.MarkAllDisconnected stamps its own: another replica may hold
+// the agents a "connected" record names. It relies on liveness instead. Every
+// replica refreshes the records of the agents it holds (TouchConnected), and a
+// connected record nobody refreshed for the prune horizon belonged to a process
+// that died with its agents attached (PruneUnseen).
+//
+// Without it those records lived forever. The cluster that hosts the API lost
+// both at once on every node rotation: one install kept 14 such records for 3
+// live agents, one per node its cloud had replaced since July.
+type LivenessStore interface {
+	// TouchConnected refreshes the records of these agents, connected ones
+	// only. Returns how many it refreshed.
+	TouchConnected(keys []AgentKey, at time.Time) (int, error)
+	// PruneUnseen deletes connected records not refreshed since `before`.
+	PruneUnseen(before time.Time) (int, error)
+}
+
 // recordMatchesTenant mirrors the registry's rule for a caller org: a record
 // with no tenant spoke for every org, and a tenant-less caller (OSS, auth off)
 // matches every record.
