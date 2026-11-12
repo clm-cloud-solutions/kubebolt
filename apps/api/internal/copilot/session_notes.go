@@ -15,9 +15,13 @@ type SessionNotesInput struct {
 	// NoCluster: the org has no cluster to read.
 	NoCluster bool
 	// Connectors are the cloud connectors that contributed tools this turn.
-	Connectors         []string
-	ActionsEnabled     bool
-	DestructiveEnabled bool
+	Connectors []string
+	// ConnectorsOutOfReach are the organization's connectors this person's
+	// organization role (OrgRole) is below.
+	ConnectorsOutOfReach []ConnectorOutOfReach
+	OrgRole              string
+	ActionsEnabled       bool
+	DestructiveEnabled   bool
 	// Connected: a live connector; its cloud profile is then told to Kobi.
 	Connected                  bool
 	Platform, Provider, Region string
@@ -70,6 +74,11 @@ func SessionNotes(in SessionNotesInput) string {
 	// conversation keeps its cache. Empty when the org has none.
 	if external := ExternalDependenciesBlock(in.Connectors); external != "" {
 		notes += "\n\n" + external
+	}
+	// The connectors this person's organization role does not reach, so a
+	// question that needs the cloud is answered with why and which role.
+	if unreachable := ConnectorsOutOfReachBlock(in.ConnectorsOutOfReach, in.OrgRole); unreachable != "" {
+		notes += "\n\n" + unreachable
 	}
 	return notes
 }
