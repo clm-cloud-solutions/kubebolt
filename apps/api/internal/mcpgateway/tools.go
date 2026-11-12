@@ -230,6 +230,9 @@ func (g *Gateway) Call(ctx context.Context, consumer mcpcatalog.Consumer, name s
 		return g.deny(rec, name)
 	}
 	rec.listed = true
+	if res, stop := g.blockedByPlatform(rec, def, e.b, local, args); stop {
+		return res
+	}
 
 	if !g.allowCall(rec.org) {
 		rec.result, rec.reason = resultRateLimited, "rate limited"

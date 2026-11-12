@@ -477,6 +477,11 @@ func NewRouter(
 					r.Get("/ingest-channel", h.handleGetSettingsIngestChannel)
 					r.Put("/ingest-channel", h.handlePutSettingsIngestChannel)
 					r.Post("/ingest-channel/reset", h.handleResetSettingsIngestChannel)
+					// Blocked operations (debt-09): the emergency list of cloud
+					// connector operations no call may run, applied before each
+					// connector's allowlist. Fails closed.
+					r.Get("/blocked-operations", h.handleGetSettingsBlockedOperations)
+					r.Put("/blocked-operations", h.handlePutSettingsBlockedOperations)
 					r.Get("/booted-with", h.handleGetBootedWith)
 				})
 				// First-login wizard status. Separate from /settings/*

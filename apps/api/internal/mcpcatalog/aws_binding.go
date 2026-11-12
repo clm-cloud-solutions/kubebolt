@@ -392,6 +392,24 @@ func (b *awsBinding) Call(ctx context.Context, consumer Consumer, tool string, a
 	}
 }
 
+// OperationOf names a typed call as `service.operation`, lowercased: the
+// form the blocked list uses for AWS (debt-09).
+func (b *awsBinding) OperationOf(tool string, args json.RawMessage) string {
+	if tool != awsToolCall {
+		return ""
+	}
+	var a awsCallArgs
+	if json.Unmarshal(args, &a) != nil {
+		return ""
+	}
+	service := strings.ToLower(strings.TrimSpace(a.Service))
+	operation := strings.TrimSpace(a.Operation)
+	if !awsServiceRE.MatchString(service) || !awsOperationRE.MatchString(operation) {
+		return ""
+	}
+	return service + "." + strings.ToLower(operation)
+}
+
 // ----- the typed call -----
 
 type awsCallArgs struct {

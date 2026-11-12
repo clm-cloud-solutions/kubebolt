@@ -520,6 +520,14 @@ export interface AccountUsage {
   credits?: { upgradeUrl?: string }
 }
 
+// The blocked operations (debt-09): per connector, the entries (AWS
+// `service.operation`, an Azure command, a GCP tool; `x.*` a prefix, `*` the
+// whole connector), and the connectors this install has.
+export interface BlockedOperationsView {
+  connectors: Record<string, string[]>
+  available: { id: string; name: string }[]
+}
+
 export const api = {
   // --- Auth ---
   getAuthConfig: () =>
@@ -1818,6 +1826,11 @@ export const api = {
 
   getMcpConnector: (id: string) =>
     fetchJSON<McpConnector>(`${API_BASE}/admin/mcp-connectors/${encodeURIComponent(id)}`),
+  // Blocked operations (debt-09): the emergency list of cloud connector
+  // operations no call may run. Admin only; applies on the next call.
+  getBlockedOperations: () => fetchJSON<BlockedOperationsView>(`${API_BASE}/admin/settings/blocked-operations`),
+  putBlockedOperations: (body: { connectors: Record<string, string[]> }) =>
+    putJSON<BlockedOperationsView>(`${API_BASE}/admin/settings/blocked-operations`, body),
 
   // Secrets: absent or null = keep the stored value, "" = clear it, a value =
   // replace it. The form never sends "" for a blank field — blank means keep.

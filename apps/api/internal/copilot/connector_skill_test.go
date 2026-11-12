@@ -50,3 +50,34 @@ func TestWithConnectorSkill_TheFirstAWSCallCarriesItsProcedure(t *testing.T) {
 		}
 	}
 }
+
+// How a call ended is read from its own answer, never from the procedure in
+// front of it: the procedure names AccessDenied and was the "reason" shown.
+func TestCallStatus_ReadsTheAnswerNotTheAttachedProcedure(t *testing.T) {
+	call := ToolCall{ID: "t1", Name: "mcp__aws__call", Input: json.RawMessage(`{"service":"ec2","operation":"DescribeInstances"}`)}
+	cases := []struct {
+		name       string
+		answer     ToolResult
+		wantStatus string
+		wantReason string
+	}{
+		{"blocked by the platform", ToolResult{IsError: true, NotSent: true,
+			Content: "Refused: ec2.describeinstances is blocked on this KubeBolt installation by its administrators. Do not try it again; continue without it."},
+			ToolResultNotSent, "Refused: ec2.describeinstances is blocked on this KubeBolt installation by its administrators"},
+		{"a provider error that is not a denial", ToolResult{IsError: true, Content: `{"error":"the connection was reset. Try again."}`},
+			ToolResultError, "the connection was reset"},
+	}
+	for _, c := range cases {
+		first := WithConnectorSkill(nil, nil, call, c.answer)
+		if !strings.HasPrefix(first.Content, "[KubeBolt] aws-investigation") {
+			t.Fatalf("%s: the procedure was not attached", c.name)
+		}
+		if got := WithoutConnectorSkill(first.Content); got != c.answer.Content {
+			t.Fatalf("%s: WithoutConnectorSkill = %.80q", c.name, got)
+		}
+		status, reason := CallStatus(first, ClassifyToolResult(first), false)
+		if status != c.wantStatus || reason != c.wantReason {
+			t.Errorf("%s: CallStatus = (%q, %q), want (%q, %q)", c.name, status, reason, c.wantStatus, c.wantReason)
+		}
+	}
+}
