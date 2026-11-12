@@ -15,6 +15,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the connector to everyone. Before, Kobi answered as if there were no
   connector at all.
 
+### Fixed
+
+- **No more burst of 401s every 15 minutes.** The access token was renewed only
+  after it had expired: the next requests in an open tab answered
+  `401 {"error":"invalid or expired token"}`, then a refresh and a retry that
+  succeeded, a column of red rows in DevTools — and a message sent to Kobi in
+  that window showed the 401. The token is now renewed a minute before it
+  expires, Kobi's chat included. The 401 → refresh → retry path stays for what
+  renewal cannot foresee.
+
 ## [2.6.1] — 2026-11-11
 
 Kobi reads more of ECR, and the traffic map shows only what is talking. Drop-in,
