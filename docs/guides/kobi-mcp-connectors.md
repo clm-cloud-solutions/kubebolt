@@ -47,9 +47,11 @@ Limits: 12 cloud calls per question, 120 per minute for the whole install,
 
 Each connector has a minimum role, set in its drawer under *Who can use it
 in Kobi*: *Editors and admins* (the default), *Everyone* or *Admins only*.
-A user below it does not see the connector's tools, and Kobi's prompt does
-not mention it; a call made anyway is refused and recorded as denied.
-Changing it does not affect the verification or the connector's session.
+A user below it does not get the connector's tools; Kobi tells them the
+connector exists and which role it needs, and a call made anyway is refused
+and recorded as denied. To give it to them, raise their role or set the
+connector to *Everyone*. Changing it does not affect the verification or the
+connector's session.
 
 A connector reads the same cloud account for every user who clears the
 minimum role. The public MCP endpoint (`/api/v1/mcp`) never serves connector

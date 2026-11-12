@@ -6,6 +6,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Kobi says when a cloud connector is out of reach.** A user below a
+  connector's minimum role (*Who can use it in Kobi*, editors and admins by
+  default) still gets no cloud tools, but Kobi now tells them the connector
+  exists, which role it needs, and that an admin can raise their role or open
+  the connector to everyone. Before, Kobi answered as if there were no
+  connector at all.
+
 ## [2.6.1] — 2026-11-11
 
 Kobi reads more of ECR, and the traffic map shows only what is talking. Drop-in,

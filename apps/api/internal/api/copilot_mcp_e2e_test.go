@@ -491,10 +491,11 @@ func mcpToolsOffered(req copilot.ChatRequest) []string {
 
 // Each connector has a minimum role for Kobi, editor unless an admin changes
 // it, and the gateway reads the caller's role from the chat request's own
-// claims. A viewer's turn is offered no connector tool and a call it makes
-// anyway is refused, audited under the viewer; an editor's turn is offered
-// them; an admin lowering the floor through the admin API opens them to the
-// viewer.
+// claims. A viewer's turn is offered no connector tool and none of the rules
+// for calling one, but is told the connector exists and which role it needs;
+// a call it makes anyway is refused, audited under the viewer; an editor's
+// turn is offered them; an admin lowering the floor through the admin API
+// opens them to the viewer.
 func TestKobiChat_ConnectorRoleFloor(t *testing.T) {
 	prov := newScripted(callsThenAnswer(func() []copilot.ToolCall { return []copilot.ToolCall{mcpCall("c1")} }))
 	w := newWiring(t, true, prov.name)
@@ -511,8 +512,14 @@ func TestKobiChat_ConnectorRoleFloor(t *testing.T) {
 	if got := mcpToolsOffered(reqs[0]); len(got) != 0 {
 		t.Errorf("a viewer under the editor floor is offered %v", got)
 	}
-	if prefix := firstUserText(reqs[0]); strings.Contains(prefix, "# Cloud connectors") {
-		t.Errorf("a viewer's prompt names connectors it cannot use:\n%s", prefix)
+	prefix := firstUserText(reqs[0])
+	if strings.Contains(prefix, "# Cloud connectors\n") {
+		t.Errorf("a viewer's prompt carries the rules for connectors it cannot call:\n%s", prefix)
+	}
+	if !strings.Contains(prefix, "# Cloud connectors this person cannot use") ||
+		!strings.Contains(prefix, "fake (needs the editor role)") ||
+		!strings.Contains(prefix, "Their role is viewer") {
+		t.Errorf("a viewer is not told the connector exists and which role it needs:\n%s", prefix)
 	}
 	res := lastToolResults(reqs[1])
 	if len(res) != 1 || !res[0].IsError || !strings.Contains(res[0].Content, "Tool not allowed") {
@@ -536,6 +543,9 @@ func TestKobiChat_ConnectorRoleFloor(t *testing.T) {
 	if got := strings.Join(mcpToolsOffered(reqs[0]), ","); got != want {
 		t.Errorf("an editor is offered %q, want %q", got, want)
 	}
+	if strings.Contains(firstUserText(reqs[0]), "cannot use") {
+		t.Errorf("an editor is told a connector is out of reach:\n%s", firstUserText(reqs[0]))
+	}
 	if calls := w.binder.snapshot(); len(calls) != 1 || calls[0].consumer != mcpcatalog.ConsumerKobi {
 		t.Fatalf("an editor's call: %+v", calls)
 	}
@@ -549,6 +559,9 @@ func TestKobiChat_ConnectorRoleFloor(t *testing.T) {
 	reqs = prov.requests()[4:]
 	if got := strings.Join(mcpToolsOffered(reqs[0]), ","); got != want {
 		t.Errorf("a viewer over a viewer floor is offered %q, want %q", got, want)
+	}
+	if strings.Contains(firstUserText(reqs[0]), "cannot use") {
+		t.Errorf("a viewer over a viewer floor is still told it is out of reach:\n%s", firstUserText(reqs[0]))
 	}
 	if calls := w.binder.snapshot(); len(calls) != 2 {
 		t.Errorf("the viewer's call once the floor allows it: %+v", calls)
