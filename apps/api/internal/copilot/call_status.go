@@ -17,15 +17,22 @@ const (
 	// ToolResultUnsupported: the tool does not cover the kind it was asked
 	// for. Not a failure of anything.
 	ToolResultUnsupported = "unsupported"
+	// ToolResultRateLimited: the gateway held the call back because the
+	// organization spent its connector calls for the minute (the plan's rate
+	// limit). Nothing failed; the answer lacks that read.
+	ToolResultRateLimited = "rate_limited"
 )
+
+// rateLimitedReason is the line a card shows under a rate-limited call.
+const rateLimitedReason = "cloud call limit reached for this minute"
 
 // reasonMax bounds the one line a card shows for a call that did not read.
 const reasonMax = 140
 
 // CallStatus is how the chat shows a finished call, with a short reason for
 // one that did not read: class is ClassifyToolResult's, refined by the cases
-// only the chat tells apart — a call KubeBolt never sent, an agent that is
-// not connected, a kind the tool does not cover. The reason is the error's
+// only the chat tells apart — a call KubeBolt never sent, one the rate limit
+// held back, an agent that is not connected, a kind the tool does not cover. The reason is the error's
 // first sentence, never what the result tells the model to do.
 func CallStatus(r ToolResult, class string, budgetRefused bool) (status, reason string) {
 	switch {
@@ -33,6 +40,8 @@ func CallStatus(r ToolResult, class string, budgetRefused bool) (status, reason 
 		return ToolResultNotSent, fmt.Sprintf("this question already used its %d cloud calls", MaxMCPCallsPerTurn)
 	case r.NotSent:
 		return ToolResultNotSent, errorReason(r.Content)
+	case r.RateLimited:
+		return ToolResultRateLimited, rateLimitedReason
 	case agentOffline(r.Content):
 		return ToolResultAgentOffline, ""
 	}

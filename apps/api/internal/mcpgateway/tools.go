@@ -233,7 +233,9 @@ func (g *Gateway) Call(ctx context.Context, consumer mcpcatalog.Consumer, name s
 
 	if !g.allowCall(rec.org) {
 		rec.result, rec.reason = resultRateLimited, "rate limited"
-		return errResult("Rate limited, try again later: this organization made too many external tool calls in the last minute.")
+		res := errResult("Rate limited, try again later: this organization made too many external tool calls in the last minute.")
+		res.RateLimited = true
+		return res
 	}
 
 	callCtx, cancel := context.WithTimeout(ctx, g.o.CallTimeout)

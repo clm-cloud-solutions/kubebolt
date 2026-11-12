@@ -28,7 +28,7 @@ import { useClusterOverview } from '@/hooks/useClusterOverview'
 import { useInsights } from '@/hooks/useInsights'
 import { generateCopilotSuggestions } from '@/utils/copilotSuggestions'
 import { KobiFace } from '@/components/kobi'
-import { useKobiPresence } from './useKobiPresence'
+import { PRESENCE_LABEL, useKobiPresence } from './useKobiPresence'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ActionProposalCard } from './ActionProposalCard'
 import { ToolCallCard } from './ToolCallCard'
@@ -137,7 +137,11 @@ function exportConversationMarkdown(messages: CopilotMessage[], title: string | 
       }
       lines.push('')
     }
-    if (m.failure) lines.push(`> _(Kobi couldn't finish: ${m.failure.message})_`, '')
+    if (m.failure) {
+      const lead =
+        m.failure.kind === 'busy' ? 'Kobi was busy' : m.failure.kind === 'credits' ? 'Out of AI credits' : "Kobi couldn't finish"
+      lines.push(`> _(${lead}: ${m.failure.message})_`, '')
+    }
   }
   const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' })
   const url = URL.createObjectURL(blob)
@@ -197,6 +201,7 @@ export function CopilotPanel() {
     staleResume,
     newConversation,
     dismissStaleResume,
+    turnWaitUntil,
   } = useCopilot()
   const { layout, toggleMode, setDockedWidth, setFloatingSize } = layoutState
   // Connector settings live in the admin-only AI hub; only admins get links there.
@@ -429,7 +434,7 @@ export function CopilotPanel() {
             <span className="font-display text-[15px] font-semibold tracking-tight text-kobi-text leading-tight truncate">
               Kobi
             </span>
-            {presence.state === 'watching' ? (
+            {presence.label === PRESENCE_LABEL.watching ? (
               <span
                 className="text-[10px] font-mono text-kobi-text-tertiary uppercase tracking-[0.08em] truncate"
                 title={[config.model, escalatedModel].filter(Boolean).join(' → ')}
@@ -745,7 +750,7 @@ export function CopilotPanel() {
                   )}
                   {m.failure && (
                     <ToolCardLane>
-                      <TurnFailure message={m.failure.message} afterMs={m.failure.afterMs} />
+                      <TurnFailure message={m.failure.message} afterMs={m.failure.afterMs} kind={m.failure.kind} />
                     </ToolCardLane>
                   )}
                   {m.cancelled && (
@@ -848,7 +853,9 @@ export function CopilotPanel() {
       {/* Input */}
       <div className="border-t border-kobi-border p-3 shrink-0">
         {/* While a question runs, the strip says how it goes and holds Stop. */}
-        {isLoading && <InvestigationStrip live={liveInvestigation(messages)} onStop={cancelMessage} />}
+        {isLoading && (
+          <InvestigationStrip live={liveInvestigation(messages)} onStop={cancelMessage} waitUntil={turnWaitUntil} />
+        )}
         <div className="flex gap-2 items-end">
           {/* AI bezel — gradient border that rotates around the box
               (accent → blue → violet → back), paired with a slow
@@ -1154,7 +1161,7 @@ const LONG_WAIT_MS = 15000
 const MODEL_LONG_WAIT_MS = 60000
 
 function StreamStatusHint() {
-  const { isLoading, lastActivityAt, messages } = useCopilot()
+  const { isLoading, lastActivityAt, messages, turnWaitUntil } = useCopilot()
   const [, setTick] = useState(0)
   useEffect(() => {
     if (!isLoading) return
@@ -1162,7 +1169,9 @@ function StreamStatusHint() {
     return () => window.clearInterval(id)
   }, [isLoading])
 
-  if (!isLoading) return null
+  // Waiting for a free slot is said by the strip above the input; nothing is
+  // thinking yet.
+  if (!isLoading || turnWaitUntil != null) return null
   const phase = livePhase(messages)
   const idleMs = lastActivityAt ? Date.now() - lastActivityAt : 0
 

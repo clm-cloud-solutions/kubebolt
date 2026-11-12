@@ -3,7 +3,8 @@ import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { ToolCallCard, formatDigest } from './ToolCallCard'
+import { ToolCallCard, failureLine, formatDigest } from './ToolCallCard'
+import { couldNotRead } from './investigationRun'
 import { MCP_CONNECTORS_KEY } from '@/components/admin/mcp/ConnectorBits'
 
 // user-event fires its events through its own copy of @testing-library/dom
@@ -161,6 +162,14 @@ describe('ToolCallCard — how the call ended', () => {
       expect(screen.getByText(word)).toBeInTheDocument()
       unmount()
     }
+  })
+
+  it('shows a call the rate limit held back in amber, as not read rather than failed', () => {
+    expect(failureLine('rate_limited', "cloud call limit reached for this minute", 1)).toEqual({
+      text: "Not read — cloud call limit reached for this minute",
+      color: 'text-kobi-st-warn',
+    })
+    expect(couldNotRead({ toolCallId: 'x', content: '', status: 'rate_limited', isError: true })).toBe(true)
   })
 
   it('keeps an error collapsed until asked', async () => {
