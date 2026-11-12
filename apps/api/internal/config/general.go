@@ -52,6 +52,13 @@ type GeneralConfig struct {
 	// via KUBEBOLT_CACHE_SYNC_TIMEOUT_SECONDS; admins override at runtime (no
 	// restart) via Settings → General. Floored at 5s.
 	CacheSyncTimeoutSeconds int
+
+	// RightSizingMinHistoryHours is how much usage history right-sizing needs
+	// before it recommends anything. 0 = rightsizing.DefaultMinHistoryHours
+	// (48h: two daily peaks). Install-global: set in Settings › General, no
+	// restart; lowering it lets a trial cluster show recommendations on its
+	// first day, marked low-confidence below 48h.
+	RightSizingMinHistoryHours int
 }
 
 // DefaultCacheSyncTimeoutSeconds is the baseline informer cache-sync deadline.

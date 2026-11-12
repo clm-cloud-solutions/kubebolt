@@ -37,9 +37,17 @@ const (
 	RequestHeadroom = 1.2
 	LimitHeadroom   = 1.5
 
-	// ConfidenceDays: below two days of history the P95 has not seen two daily
-	// peaks, so a quiet snapshot reads as the steady state.
-	ConfidenceDays = 2.0
+	// DefaultMinHistoryHours: below two days of history the P95 has not seen two
+	// daily peaks, so a quiet snapshot reads as the steady state. The platform
+	// may lower it (Settings › General, floor MinMinHistoryHours) so a trial
+	// cluster shows recommendations on its first day; those carry LowConfidence.
+	DefaultMinHistoryHours = 48
+	// MinMinHistoryHours floors the setting: under half a day the P95 has not
+	// seen a single daily peak.
+	MinMinHistoryHours = 12
+	// MaxMinHistoryHours: the history window is read over 7 days, so a minimum
+	// above that would never be met.
+	MaxMinHistoryHours = 7 * 24
 )
 
 // Severity of a recommendation.
@@ -96,12 +104,20 @@ type Result struct {
 	Totals Totals           `json:"totals"`
 	// WindowDays is how much history the P95 really spans; nil when unknown.
 	WindowDays *float64 `json:"windowDays,omitempty"`
-	// InsufficientHistory: the cluster does not yet have ConfidenceDays of usage
+	// InsufficientHistory: the cluster does not yet have MinHistoryHours of usage
 	// history (or has none at all), so right-sizing makes NO recommendations. A
 	// P95 over too short a window is a quiet snapshot of a barely-run cluster, and
 	// acting on it means resizing a workload on no real evidence (finding #74).
 	// Consumers show a "collecting samples" state rather than a confident list.
 	InsufficientHistory bool `json:"insufficientHistory"`
+	// MinHistoryHours is the history this answer required — the platform setting,
+	// DefaultMinHistoryHours unless lowered — so every surface says the same
+	// number the gate used.
+	MinHistoryHours int `json:"minHistoryHours"`
+	// LowConfidence: recommendations made from under DefaultMinHistoryHours of
+	// history, possible only when the platform lowered the minimum. The P95 has
+	// not seen two daily peaks yet; say so next to the numbers.
+	LowConfidence bool `json:"lowConfidence,omitempty"`
 }
 
 // Key identifies a workload in the P95 indexes: namespace/kind/name.
@@ -109,15 +125,18 @@ func Key(namespace, kind, name string) string { return namespace + "/" + kind + 
 
 // Evaluate applies the rules to every workload. cpuP95 is in millicores and
 // memP95 in bytes, keyed by Key; a workload with no sample gets P95 0.
-func Evaluate(workloads []models.NamespaceWorkload, cpuP95, memP95 map[string]int64, windowDays *float64) Result {
-	// History gate (finding #74): right-sizing needs at least ConfidenceDays of
+// minHistoryHours is the platform's minimum history (0 = the default).
+func Evaluate(workloads []models.NamespaceWorkload, cpuP95, memP95 map[string]int64, windowDays *float64, minHistoryHours int) Result {
+	minHistoryHours = ClampMinHistoryHours(minHistoryHours)
+	// History gate (finding #74): right-sizing needs at least minHistoryHours of
 	// usage history to say anything. Below that — or with no samples at all
 	// (windowDays nil) — the P95 is a quiet snapshot of a cluster that has barely
 	// run, and a recommendation built on it means shrinking a workload on no real
 	// evidence. Make no recommendations; report that the data is still collecting.
-	if windowDays == nil || *windowDays < ConfidenceDays {
-		return Result{Recs: []Recommendation{}, WindowDays: windowDays, InsufficientHistory: true}
+	if windowDays == nil || *windowDays*24 < float64(minHistoryHours) {
+		return Result{Recs: []Recommendation{}, WindowDays: windowDays, InsufficientHistory: true, MinHistoryHours: minHistoryHours}
 	}
+	lowConfidence := *windowDays*24 < DefaultMinHistoryHours
 	recs := []Recommendation{}
 	for _, nsw := range workloads {
 		for _, w := range nsw.Workloads {
@@ -151,7 +170,8 @@ func Evaluate(workloads []models.NamespaceWorkload, cpuP95, memP95 map[string]in
 		}
 		return Key(recs[i].Namespace, recs[i].Kind, recs[i].Name) < Key(recs[j].Namespace, recs[j].Kind, recs[j].Name)
 	})
-	res := Result{Recs: recs, Totals: Totals{Count: len(recs)}, WindowDays: windowDays}
+	res := Result{Recs: recs, Totals: Totals{Count: len(recs)}, WindowDays: windowDays,
+		MinHistoryHours: minHistoryHours, LowConfidence: lowConfidence}
 	for _, r := range recs {
 		if r.CPU.State == Over {
 			res.Totals.ReclaimCPUMilli += r.CPU.Request - r.CPU.Suggest
@@ -161,6 +181,22 @@ func Evaluate(workloads []models.NamespaceWorkload, cpuP95, memP95 map[string]in
 		}
 	}
 	return res
+}
+
+// ClampMinHistoryHours resolves the platform's minimum history: 0 (unset) is
+// the default, anything else is held to [MinMinHistoryHours, MaxMinHistoryHours]
+// — the settings validator refuses values outside it, this only guards a stored
+// value from before the bounds.
+func ClampMinHistoryHours(h int) int {
+	switch {
+	case h <= 0:
+		return DefaultMinHistoryHours
+	case h < MinMinHistoryHours:
+		return MinMinHistoryHours
+	case h > MaxMinHistoryHours:
+		return MaxMinHistoryHours
+	}
+	return h
 }
 
 // EvaluateResource applies the three rules to one resource. round is the

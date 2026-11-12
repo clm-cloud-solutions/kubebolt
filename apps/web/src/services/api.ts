@@ -2293,6 +2293,7 @@ export interface GeneralSettingsResponse {
     prodNamespacePattern: string
     updateCheckEnabled: boolean
     cacheSyncTimeoutSeconds: number
+    rightSizingMinHistoryHours?: number
   }
   stored: {
     hasOverride: boolean
@@ -2301,6 +2302,7 @@ export interface GeneralSettingsResponse {
     prodNamespacePattern?: string
     updateCheckEnabled?: boolean
     cacheSyncTimeoutSeconds?: number
+    rightSizingMinHistoryHours?: number
   }
 }
 
@@ -2311,6 +2313,7 @@ export interface GeneralSettingsPutRequest {
     prodNamespacePattern?: string
     updateCheckEnabled?: boolean
     cacheSyncTimeoutSeconds?: number
+    rightSizingMinHistoryHours?: number
   }
 }
 
