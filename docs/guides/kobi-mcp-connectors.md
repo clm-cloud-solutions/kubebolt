@@ -190,7 +190,7 @@ and the
 The server runs read-only, with response caching off (an answer during an
 incident is never a cached one), telemetry off, and its own sign-in off,
 which it allows only on loopback. KubeBolt pins the release its allowlist was
-reviewed against, `3.0.0-beta.46`: the betas rename commands, so the pin
+reviewed against, `4.0.0-beta.6`: the betas rename commands, so the pin
 moves only with a KubeBolt release.
 
 **Helm.** The chart runs it as a second container of the API pod
@@ -237,7 +237,7 @@ cd deploy && docker compose --profile azure up -d
 ```
 
 **Anywhere else** (the API on a host, or a container you run yourself): the
-drawer's setup guide gives the `npx -y @azure/mcp@3.0.0-beta.46 server start …`
+drawer's setup guide gives the `npx -y @azure/mcp@4.0.0-beta.6 server start …`
 command with the same options and environment. Run it on the API's host, or
 in a container that shares the API's network; set `KUBEBOLT_MCP_AZMCP_URL` on
 the API if it listens on another loopback port.

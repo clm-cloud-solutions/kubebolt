@@ -27,7 +27,7 @@ const (
 	azTestTenant = "11111111-2222-3333-4444-555555555555"
 )
 
-// fakeAzmcp replays the Azure MCP Server 3.0.0-beta.46 as measured in the
+// fakeAzmcp replays the Azure MCP Server 4.0.0-beta.6 as measured in the
 // live discovery: SSE replies, no session id, routers answering learn=true
 // with the recorded command tables.
 type fakeAzmcp struct {

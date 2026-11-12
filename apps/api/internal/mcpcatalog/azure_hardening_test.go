@@ -374,9 +374,9 @@ func TestAzureValuesMustHaveTheDeclaredType(t *testing.T) {
 		want       map[string]any
 	}{
 		{ConsumerKobi, "advisor", azArgs(t, "advisor_recommendation_list", map[string]any{"tracking-ids": []string{"QNY1-HB8", "9G0V-_G8"}, "top": 5}),
-			map[string]any{"tracking-ids": []any{"QNY1-HB8", "9G0V-_G8"}, "top": float64(5), "subscription": azTestSub}},
+			map[string]any{"tracking-ids": []any{"QNY1-HB8", "9G0V-_G8"}, "top": float64(5), "subscriptions": []any{azTestSub}}},
 		{ConsumerKobi, "advisor", azArgs(t, "advisor_recommendation_list", map[string]any{"category": "Cost", "top": nil}),
-			map[string]any{"category": "Cost", "subscription": azTestSub}},
+			map[string]any{"category": "Cost", "subscriptions": []any{azTestSub}}},
 		{ConsumerKobi, "keyvault", azArgs(t, "keyvault_key_get", map[string]any{"vault": "kv1", "include-managed": true}),
 			map[string]any{"vault": "kv1", "include-managed": true}},
 		// The activity log reads three entries for each operation asked for:
@@ -665,5 +665,62 @@ func TestAzureBindingReportsWhatIsMissing(t *testing.T) {
 	got[0] = "tampered"
 	if partial.Missing()[0] == "tampered" {
 		t.Fatal("Missing returned the binding's own slice")
+	}
+}
+
+// Azure MCP Server 4.0's Advisor reads a LIST of subscriptions and can scope
+// a read to a service group, which spans subscriptions. Pinning only
+// "subscription" would have let the model read another subscription the
+// identity can see: the list is pinned the same way and a service group is
+// refused, and neither is offered to the model.
+func TestAzureAdvisorListOfSubscriptionsIsPinned(t *testing.T) {
+	f := newFakeAzmcp(t)
+	b := bindAzure(t, f, nil)
+
+	for _, args := range []map[string]any{
+		{"subscriptions": []string{azOtherSub}},
+		{"subscriptions": []string{azTestSub, azOtherSub}},
+		{"subscriptions": azOtherSub},
+		{"subscriptions": []any{float64(1)}},
+		{"service-group": "sg-root"},
+		{"service-group": []string{"sg-root"}},
+	} {
+		before := len(f.calls)
+		res := azCall(t, b, ConsumerKobi, "advisor", azArgs(t, "advisor_recommendation_list", args))
+		if !res.IsError || !res.Own {
+			t.Errorf("%v: not refused: %+v", args, res)
+		}
+		if azCallsBut(f.calls[before:], "learn") != 0 {
+			t.Errorf("%v: reached the sidecar", args)
+		}
+	}
+
+	// The pinned subscription, or nothing, goes out as the one subscription.
+	for _, args := range []map[string]any{
+		{"subscriptions": []string{azTestSub}},
+		{"subscriptions": nil, "service-group": nil},
+		{},
+	} {
+		if res := azCall(t, b, ConsumerKobi, "advisor", azArgs(t, "advisor_recommendation_summary", args)); res.IsError {
+			t.Fatalf("%v: refused: %s", args, res.Text)
+		}
+		got := azParams(t, f.last(t))["subscriptions"]
+		if !reflect.DeepEqual(got, []any{azTestSub}) {
+			t.Errorf("%v: subscriptions forwarded %v, want only %s", args, got, azTestSub)
+		}
+		if _, ok := azParams(t, f.last(t))["service-group"]; ok {
+			t.Errorf("%v: service-group forwarded", args)
+		}
+	}
+
+	// Neither is offered to the model.
+	res := azCall(t, b, ConsumerKobi, "advisor", `{"learn":true}`)
+	if res.IsError {
+		t.Fatalf("learn: %s", res.Text)
+	}
+	for _, hidden := range []string{"subscriptions", "service-group"} {
+		if strings.Contains(res.Text, hidden) {
+			t.Errorf("learn offers %q to the model", hidden)
+		}
 	}
 }

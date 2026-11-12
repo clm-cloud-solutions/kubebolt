@@ -292,7 +292,7 @@ chart provides what has to run or be known at deploy time. Guide:
 | `mcpConnectors.aws.webIdentity.expirationSeconds` | Lifetime of that token; the kubelet renews it before it expires | `3600` |
 | `mcpConnectors.azure.sidecar.enabled` | Run the Azure MCP Server as a second container of the API pod, on its loopback | `false` |
 | `mcpConnectors.azure.sidecar.existingSecret` | Secret with the read-only service principal: `tenant-id`, `client-id`, `client-secret` (required with the sidecar) | `""` |
-| `mcpConnectors.azure.sidecar.image.*` | `mcr.microsoft.com/azure-sdk/azure-mcp`, the release Kobi's allowlist was reviewed against, by digest. Change it only with a KubeBolt release | `3.0.0-beta.46` |
+| `mcpConnectors.azure.sidecar.image.*` | `mcr.microsoft.com/azure-sdk/azure-mcp`, the release Kobi's allowlist was reviewed against, by digest. Change it only with a KubeBolt release | `4.0.0-beta.6` |
 | `mcpConnectors.azure.sidecar.resources` | Sidecar requests and limits | 20m / 128Mi, 500m / 512Mi |
 | `mcpConnectors.azure.sidecar.securityContext` | Non-root (uid 1654), read-only root filesystem, no capabilities. On OpenShift unset `runAsUser` | see `values.yaml` |
 
