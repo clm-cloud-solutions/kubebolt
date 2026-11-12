@@ -92,9 +92,36 @@ export function planLabel(id: string): string {
 
 let accessToken: string | null = null
 let refreshPromise: Promise<string | null> | null = null
+// When the in-memory token is renewed before a request uses it: a minute before
+// it expires. Measured on this clock from the token's own lifetime (exp − iat)
+// and the moment it arrived, never from `exp` against Date.now() — a laptop
+// clock ahead of the server would otherwise renew on every request, one behind
+// it would keep sending expired tokens. Infinity = never renewed ahead (a token
+// whose claims cannot be read); the 401 → refresh → retry path still covers it.
+let renewAt = Infinity
+
+const RENEW_AHEAD_MS = 60_000
+
+function renewalDeadline(token: string): number {
+  try {
+    const payload = token.split('.')[1]
+    if (!payload) return Infinity
+    const b64 = payload.replace(/-/g, '+').replace(/_/g, '/')
+    const claims = JSON.parse(atob(b64.padEnd(b64.length + ((4 - (b64.length % 4)) % 4), '=')))
+    const { iat, exp } = claims as { iat?: unknown; exp?: unknown }
+    if (typeof iat !== 'number' || typeof exp !== 'number' || exp <= iat) return Infinity
+    const lifetimeMs = (exp - iat) * 1000
+    // A short-lived token (a lifetime of a minute or two) is renewed at half its
+    // life instead, so it is not renewed on every request.
+    return Date.now() + Math.max(lifetimeMs - RENEW_AHEAD_MS, lifetimeMs / 2)
+  } catch {
+    return Infinity
+  }
+}
 
 export function setAccessToken(token: string | null) {
   accessToken = token
+  renewAt = token ? renewalDeadline(token) : Infinity
 }
 
 export function getAccessToken(): string | null {
@@ -103,6 +130,7 @@ export function getAccessToken(): string | null {
 
 export function clearAccessToken() {
   accessToken = null
+  renewAt = Infinity
 }
 
 // --- Fetch helpers with auth ---
@@ -160,7 +188,7 @@ async function tryRefreshToken(): Promise<string | null> {
       })
       if (!res.ok) return null
       const data: RefreshResponse = await res.json()
-      accessToken = data.accessToken
+      setAccessToken(data.accessToken)
       return data.accessToken
     } catch {
       return null
@@ -171,12 +199,36 @@ async function tryRefreshToken(): Promise<string | null> {
   return refreshPromise
 }
 
-async function fetchWithAuth(url: string, init?: RequestInit): Promise<Response> {
+// renewIfDue refreshes the access token BEFORE a request when the one in memory
+// is within a minute of expiring. Without it every open tab hit a burst of
+// 401 "invalid or expired token" every 15 minutes, each one retried after a
+// refresh — and Kobi's chat, which builds its own request, showed the 401. The
+// page load needs nothing here: RequireAuth renders no page until AuthContext's
+// refresh has put a token in memory. Concurrent callers share one refresh.
+// Resolves undefined when nothing was due, null when a refresh ran and found
+// no session.
+async function renewIfDue(): Promise<string | null | undefined> {
+  return accessToken && Date.now() >= renewAt ? tryRefreshToken() : undefined
+}
+
+/** An access token good for the next request, renewed first when it is about
+ *  to expire. For callers that build their own request instead of going
+ *  through fetchWithAuth (Kobi's chat stream). */
+export async function freshAccessToken(): Promise<string | null> {
+  await renewIfDue()
+  return accessToken
+}
+
+export async function fetchWithAuth(url: string, init?: RequestInit): Promise<Response> {
+  const renewed = await renewIfDue()
   const headers = { ...authHeaders(), ...init?.headers }
   let res = await fetch(url, { ...init, headers, credentials: 'include' })
 
-  // On 401, try one silent refresh then retry
-  if (res.status === 401 && accessToken) {
+  // On 401, try one silent refresh then retry: what renewal cannot foresee (a
+  // token the server stopped accepting early, a laptop that slept). When this
+  // request already waited for a refresh that found no session
+  // (renewed === null), a second would only 401 again.
+  if (res.status === 401 && accessToken && renewed !== null) {
     const newToken = await tryRefreshToken()
     if (newToken) {
       const retryHeaders = { ...init?.headers, Authorization: `Bearer ${newToken}` }
@@ -2241,6 +2293,7 @@ export interface GeneralSettingsResponse {
     prodNamespacePattern: string
     updateCheckEnabled: boolean
     cacheSyncTimeoutSeconds: number
+    rightSizingMinHistoryHours?: number
   }
   stored: {
     hasOverride: boolean
@@ -2249,6 +2302,7 @@ export interface GeneralSettingsResponse {
     prodNamespacePattern?: string
     updateCheckEnabled?: boolean
     cacheSyncTimeoutSeconds?: number
+    rightSizingMinHistoryHours?: number
   }
 }
 
@@ -2259,6 +2313,7 @@ export interface GeneralSettingsPutRequest {
     prodNamespacePattern?: string
     updateCheckEnabled?: boolean
     cacheSyncTimeoutSeconds?: number
+    rightSizingMinHistoryHours?: number
   }
 }
 

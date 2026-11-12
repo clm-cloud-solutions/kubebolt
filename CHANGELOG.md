@@ -6,6 +6,38 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.6.2] — 2026-11-12
+
+Right-sizing on a cluster's first day, and Kobi says which role a connector
+needs. Drop-in, no migration; the agent stays on 1.4.9. Full note:
+[docs/releases/v2.6.2.md](docs/releases/v2.6.2.md).
+
+### Changed
+
+- **Kobi says when a cloud connector is out of reach.** A user below a
+  connector's minimum role (*Who can use it in Kobi*, editors and admins by
+  default) still gets no cloud tools, but Kobi now tells them the connector
+  exists, which role it needs, and that an admin can raise their role or open
+  the connector to everyone. Before, Kobi answered as if there were no
+  connector at all.
+
+### Fixed
+
+- **Right-sizing's minimum history is a setting.** It was fixed at two days, so
+  a cluster connected for a trial or a proof of concept showed no
+  recommendations on its first day. Settings › General › *Right-sizing* sets it
+  (48 h by default, 12–168 h), for every cluster and for Kobi, with no restart.
+  Recommendations from under 48 h say so: the panel reads "early estimate" with
+  the history they rest on, and Kobi says how much history the numbers have.
+  The "collecting samples" texts name the configured minimum in days and hours.
+- **No more burst of 401s every 15 minutes.** The access token was renewed only
+  after it had expired: the next requests in an open tab answered
+  `401 {"error":"invalid or expired token"}`, then a refresh and a retry that
+  succeeded, a column of red rows in DevTools — and a message sent to Kobi in
+  that window showed the 401. The token is now renewed a minute before it
+  expires, Kobi's chat included. The 401 → refresh → retry path stays for what
+  renewal cannot foresee.
+
 ## [2.6.1] — 2026-11-11
 
 Kobi reads more of ECR, and the traffic map shows only what is talking. Drop-in,

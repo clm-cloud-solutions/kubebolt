@@ -352,6 +352,53 @@ func ExternalDependenciesBlock(connectors []string) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// ConnectorOutOfReach is a cloud connector this KubeBolt has ready for Kobi
+// that the person asking cannot use: their role is below the connector's
+// minimum.
+type ConnectorOutOfReach struct {
+	ID      string // the connector: "aws", "azure", "gcp"
+	MinRole string // the role it needs: "editor" or "admin"
+}
+
+// ConnectorsOutOfReachBlock tells Kobi which of the cloud connectors this
+// person cannot use, and which role each needs, or "" when there is none.
+// Below the floor the connector's tools are not listed, and without this block
+// Kobi acted as if there were no connector at all: the person only saw that
+// Kobi could not read the cloud, never why. The bytes depend only on the set,
+// the floors and the person's role, so a conversation keeps its cache.
+func ConnectorsOutOfReachBlock(out []ConnectorOutOfReach, role string) string {
+	needs := map[string]string{}
+	for _, c := range out {
+		id := strings.ToLower(strings.TrimSpace(c.ID))
+		if id == "" || c.MinRole == "" {
+			continue
+		}
+		needs[id] = c.MinRole
+	}
+	if len(needs) == 0 {
+		return ""
+	}
+	ids := make([]string, 0, len(needs))
+	for id := range needs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	named := make([]string, 0, len(ids))
+	for _, id := range ids {
+		named = append(named, ConnectorDisplayName(id)+" (needs the "+needs[id]+" role)")
+	}
+	var b strings.Builder
+	b.WriteString("# Cloud connectors this person cannot use\n")
+	b.WriteString("This KubeBolt has read-only cloud connectors that this person cannot use: " + strings.Join(named, ", ") + ". ")
+	if role != "" {
+		b.WriteString("Their role is " + role + ", so you have no tools for them in this conversation.\n")
+	} else {
+		b.WriteString("You have no tools for them in this conversation.\n")
+	}
+	b.WriteString("When the answer needs those cloud resources, or the operator asks you to read them, say so plainly: name the connector, the role it needs, and that an admin can raise this person's role or open the connector to everyone (Administration → AI (Kobi) → Connectors, \"Who can use it in Kobi\"). Then go on with the evidence you can read.")
+	return b.String()
+}
+
 // normalizeConnectorIDs sorts and deduplicates connector ids, dropping empty
 // ones, so a block's bytes depend only on the set.
 func normalizeConnectorIDs(ids []string) []string {

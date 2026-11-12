@@ -722,8 +722,8 @@ export function McpConnectorDrawer({ connector: c, contactUrl, onClose }: Props)
                 ))}
               </select>
               <p id={`${idPrefix}-who-help`} className="mt-1.5 text-[11px] text-kb-text-tertiary leading-relaxed">
-                Anyone else still uses Kobi, without this connector. It applies in every team
-                {autopilotTools.length > 0 ? ", and Autopilot's incident runs are not affected." : '.'}
+                Anyone below it still uses Kobi without this connector, and Kobi tells them which role it needs.
+                {autopilotTools.length > 0 ? " Autopilot's incident runs are not affected." : ''}
               </p>
             </section>
           )}

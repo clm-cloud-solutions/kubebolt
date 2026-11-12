@@ -450,9 +450,13 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		ClientTimezone:     req.ClientTimezone,
 		NoCluster:          noCluster,
 		Connectors:         connectors,
-		ActionsEnabled:     govCfg.ActionsEnabled,
-		DestructiveEnabled: govCfg.DestructiveActionsEnabled,
-		OperatorLanguage:   copilot.OperatorLanguage(req.Messages),
+		// The connectors this person's role is below: Kobi says they exist
+		// and which role they need, instead of nothing.
+		ConnectorsOutOfReach: h.kobiConnectorsOutOfReach(r.Context()),
+		OrgRole:              string(auth.ContextRole(r)),
+		ActionsEnabled:       govCfg.ActionsEnabled,
+		DestructiveEnabled:   govCfg.DestructiveActionsEnabled,
+		OperatorLanguage:     copilot.OperatorLanguage(req.Messages),
 	}
 	if conn != nil {
 		sessionNotes.Connected = true

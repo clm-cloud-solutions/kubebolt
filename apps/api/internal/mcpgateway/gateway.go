@@ -35,6 +35,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
 	"github.com/kubebolt/kubebolt/apps/api/internal/mcpcatalog"
 	"github.com/kubebolt/kubebolt/apps/api/internal/mcpclient"
 	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
@@ -404,11 +405,51 @@ type target struct {
 	mode mcpcatalog.AuthMode
 }
 
-// usableConnectors lists, in catalog order, the org's connectors that are
-// enabled, not paused, open to the consumer and the caller in ctx (the Kobi
-// role floor), entitled, in a mode this install offers and whose stored
-// configuration is complete.
+// usableConnectors lists, in catalog order, the org's ready connectors
+// (readyConnectors) open to the consumer and the caller in ctx: the Kobi role
+// floor.
 func (g *Gateway) usableConnectors(ctx context.Context, org string, consumer mcpcatalog.Consumer) ([]target, error) {
+	ready, err := g.readyConnectors(ctx, org)
+	if err != nil {
+		return nil, err
+	}
+	out := ready[:0]
+	for _, t := range ready {
+		if reachable(ctx, consumer, t.cfg) {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+// ConnectorsOutOfReach lists, in catalog order, the org's ready connectors
+// whose Kobi role floor is above the caller's role, with the role each one
+// needs. Kobi's session notes name them, so a person below the floor is told
+// the connector exists and which role it needs, instead of Kobi acting as if
+// there were none. Nil on any error: the notice is never worth failing a turn
+// for.
+func (g *Gateway) ConnectorsOutOfReach(ctx context.Context) []copilot.ConnectorOutOfReach {
+	org, err := orgOf(ctx)
+	if err != nil {
+		return nil
+	}
+	ready, err := g.readyConnectors(ctx, org)
+	if err != nil {
+		return nil
+	}
+	var out []copilot.ConnectorOutOfReach
+	for _, t := range ready {
+		if !reachable(ctx, mcpcatalog.ConsumerKobi, t.cfg) {
+			out = append(out, copilot.ConnectorOutOfReach{ID: t.def.ID, MinRole: string(kobiMinRole(t.cfg))})
+		}
+	}
+	return out
+}
+
+// readyConnectors lists, in catalog order, the org's connectors that are
+// enabled, not paused, entitled, in a mode this install offers and whose
+// stored configuration is complete, whoever asks.
+func (g *Gateway) readyConnectors(ctx context.Context, org string) ([]target, error) {
 	all, err := g.st.MCP(ctx)
 	if err != nil {
 		return nil, err
@@ -417,7 +458,7 @@ func (g *Gateway) usableConnectors(ctx context.Context, org string, consumer mcp
 	var out []target
 	for _, def := range g.cat.List() {
 		cfg, ok := all.Connectors[def.ID]
-		if !ok || !cfg.Enabled || cfg.Paused || !reachable(ctx, consumer, cfg) {
+		if !ok || !cfg.Enabled || cfg.Paused {
 			continue
 		}
 		if entitled, _ := g.entitlement(plan, def); !entitled {
