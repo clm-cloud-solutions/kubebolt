@@ -76,8 +76,16 @@ func (h *handlers) handleInsightsSummary(w http.ResponseWriter, r *http.Request)
 		BySeverityCluster: map[string]map[string]int{},
 		BySeverity:        map[string]int{},
 	}
+	// The mute overlay (#54) applies here too: Fleet and Home read each
+	// cluster's health from this summary, and a silenced insight kept its
+	// cluster amber there while the Overview said healthy (finding #80). Same
+	// rule as applyMuteFilter: a critical shows through a mute.
+	muted := h.orgMuteIndex(r)
 	for _, rec := range records {
 		if !scope.May(rec.ClusterID) {
+			continue
+		}
+		if muted[muteKey(rec.ClusterID, rec.RuleID, rec.Resource)] && !piercesMute(rec.Severity) {
 			continue
 		}
 		per := resp.BySeverityCluster[rec.ClusterID]
