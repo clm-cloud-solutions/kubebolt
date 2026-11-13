@@ -8,6 +8,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Home's links answer for the cluster they name** (finding #81). Home is a
+  global page, but parts of it still answered for the selected cluster:
+  - In «While you were away», an episode from another cluster now switches to
+    that cluster before opening. *See all bursts* and *open full history* show
+    every cluster over the report's own window, which is what the report
+    counted.
+  - Kobi's card names each conversation's cluster. One from another cluster
+    opens there instead of continuing against the selected one. The ask box
+    names the cluster it will ask about.
+
 - **A silenced insight no longer counts on Home and Fleet** (finding #80).
   Both read each cluster's health from `/insights/summary`, which never applied
   the mute overlay, so a silenced warning kept a cluster amber there while its

@@ -5,6 +5,7 @@ import { BellOff, RotateCw, X } from 'lucide-react'
 import { api, type InsightEpisode, type OperationalBurst, type ShiftReport } from '@/services/api'
 import { LABELS as CAPABILITY_LABELS } from '@/ee/CapabilitiesSection'
 import { clockOrDate } from '@/utils/localTime'
+import { ClusterLink } from '@/components/shared/ClusterLink'
 
 // «While you were away» — Fase 3's shift report, restyled to the Home design
 // (in-vivo 01-sep): it lives INSIDE the greeting card as its lower section,
@@ -360,29 +361,32 @@ function EpisodeRow({ e, showCluster }: { e: InsightEpisode; showCluster: boolea
       {muted ? (
         // The detail shows the silence that covers it and can lift it, for
         // anyone who may read the episode — the Silenced tab is admin-only.
-        <Link
+        <ClusterLink
+          cluster={e.clusterId}
           to={`/insights/episodes/${e.id}${firing ? '?from=active' : ''}`}
           className="shrink-0 text-[11px] font-mono text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
           title="Silenced — this episode is not counted on Home or Fleet"
         >
           muted
-        </Link>
+        </ClusterLink>
       ) : firing ? (
-        <Link
+        <ClusterLink
+          cluster={e.clusterId}
           to={`/insights/episodes/${e.id}?from=active`}
           className="shrink-0 px-3 py-1 rounded-full text-[11px] font-mono transition-colors hover:opacity-80"
           style={{ color, boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${color} 55%, transparent)` }}
         >
           Review →
-        </Link>
+        </ClusterLink>
       ) : (
-        <Link
+        <ClusterLink
+          cluster={e.clusterId}
           to={`/insights/episodes/${e.id}`}
           className="shrink-0 text-[11px] font-mono hover:opacity-80"
           style={{ color }}
         >
           {resolved ? e.resolutionKind || 'resolved' : e.status}
-        </Link>
+        </ClusterLink>
       )}
     </div>
   )
@@ -526,8 +530,10 @@ export function ShiftReportSection({
               {summarized && (
                 <>
                   {' '}
+                  {/* cluster=all: the report counted the org's bursts, and the
+                      Bursts tab defaults to the active cluster's (#75, #81). */}
                   <Link
-                    to={`/insights?view=bursts&from=${encodeURIComponent(report.windowFrom)}&to=${encodeURIComponent(report.windowTo)}`}
+                    to={`/insights?view=bursts&cluster=all&from=${encodeURIComponent(report.windowFrom)}&to=${encodeURIComponent(report.windowTo)}`}
                     className="font-mono text-kb-accent underline underline-offset-2 hover:opacity-80 whitespace-nowrap"
                   >
                     See all {report.bursts.length} bursts →
@@ -538,12 +544,14 @@ export function ShiftReportSection({
                 <>
                   {' '}
                   The longest,{' '}
-                  <Link
+                  <ClusterLink
+                    // The worst episode carries no cluster; the window's rows do.
+                    cluster={episodes.find((ep) => ep.id === report.worst?.id)?.clusterId}
                     to={`/insights/episodes/${report.worst.id}?from=active`}
                     className="font-mono text-kb-accent underline underline-offset-2 hover:opacity-80"
                   >
                     {report.worst.resource}
-                  </Link>
+                  </ClusterLink>
                   , has been down{' '}
                   <span className="font-mono text-status-error font-semibold">
                     {fmtDur(report.worst.seconds)}
@@ -657,8 +665,9 @@ export function ShiftReportSection({
           )}
         </span>
         <span className="flex-1" />
+        {/* The report's own window, every cluster: what it counted (#81). */}
         <Link
-          to="/insights?view=history"
+          to={`/insights?view=history&cluster=all&from=${encodeURIComponent(report.windowFrom)}&to=${encodeURIComponent(report.windowTo)}`}
           className="text-kb-text-secondary underline underline-offset-2 hover:text-kb-text-primary shrink-0"
         >
           open full history →
