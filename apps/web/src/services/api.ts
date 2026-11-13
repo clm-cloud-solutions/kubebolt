@@ -425,6 +425,9 @@ export interface InsightEpisode {
   resolutionKind?: string
   flapCount: number
   prevEpisodeId?: string
+  // The list marks what the mute overlay hides: a mute covers it and it never
+  // reached critical (finding #80). Never stored; absent on the detail.
+  muted?: boolean
   // What the rule SAW when this episode opened. Only the detail endpoint
   // carries it — the list would pay for it on every row and already returns
   // hundreds unpaginated.

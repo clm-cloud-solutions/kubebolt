@@ -141,6 +141,13 @@ interface CopilotContextValue {
    * So the question waits here until the copilot's own scope reports the
    * target cluster, and only then is asked — in a fresh conversation. */
   askInCluster: (clusterContext: string, text: string, options?: SendMessageOptions) => void
+  /** Resume a past conversation that belongs to ANOTHER cluster, once the switch
+   * to it has landed (finding #81). Same reason as askInCluster: resuming before
+   * the copilot's scope reaches that cluster lets the scope change wipe the
+   * resumed transcript, and resuming without switching makes the next question
+   * run against the active cluster inside a conversation about another one.
+   * The caller starts the switch; this only parks the resume until it lands. */
+  resumeInCluster: (clusterContext: string, id: string) => void
   /** Context name of the active cluster (matches a conversation's clusterId).
    * The history list filters to this by default — conversations are
    * cluster-bound. null while clusters are loading or none is active. */
@@ -803,6 +810,32 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
     [hydrateFromRecord],
   )
 
+  // A resume parked until the copilot's scope reaches the conversation's
+  // cluster. See `resumeInCluster` on the context interface.
+  const [pendingResume, setPendingResume] = useState<{ clusterContext: string; id: string } | null>(null)
+
+  const resumeInCluster = useCallback((clusterContext: string, id: string) => {
+    if (!clusterContext || !id) return
+    setPendingResume({ clusterContext, id })
+  }, [])
+
+  useEffect(() => {
+    if (!pendingResume) return
+    // As with a parked question: wait for the scope AND the rehydrate the scope
+    // change triggers, or the new cluster's last conversation lands on top of
+    // the one being resumed.
+    if (activeClusterContext !== pendingResume.clusterContext || !hydrated) {
+      const timer = setTimeout(() => {
+        setPendingResume(null)
+        setError('The cluster switch did not finish, so the conversation was not opened. Try again.')
+        setIsOpen(true) // the error lives in the panel; the click asked for it
+      }, PENDING_ASK_TIMEOUT_MS)
+      return () => clearTimeout(timer)
+    }
+    setPendingResume(null)
+    void resumeConversation(pendingResume.id)
+  }, [pendingResume, activeClusterContext, hydrated, resumeConversation])
+
   // renameActiveConversation persists a new title and updates the header.
   const renameActiveConversation = useCallback(
     async (title: string) => {
@@ -1060,6 +1093,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         cancelMessage,
         clearHistory,
         askInCluster,
+        resumeInCluster,
         compactSession,
         recordProposalOutcome,
         recordProposalProgressSettled,

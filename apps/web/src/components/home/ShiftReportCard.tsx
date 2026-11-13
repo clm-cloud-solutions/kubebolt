@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { RotateCw, X } from 'lucide-react'
+import { BellOff, RotateCw, X } from 'lucide-react'
 import { api, type InsightEpisode, type OperationalBurst, type ShiftReport } from '@/services/api'
 import { LABELS as CAPABILITY_LABELS } from '@/ee/CapabilitiesSection'
 import { clockOrDate } from '@/utils/localTime'
+import { ClusterLink } from '@/components/shared/ClusterLink'
 
 // «While you were away» — Fase 3's shift report, restyled to the Home design
 // (in-vivo 01-sep): it lives INSIDE the greeting card as its lower section,
@@ -281,34 +282,51 @@ const SEV_RANK: Record<string, number> = { critical: 0, warning: 1, info: 2 }
 // thing still open (opened in the window before carried over from before
 // it), the second to the worst thing that resolved, and the third to the
 // best of what is left — each pick worst severity first, then most recent.
-function pickRows(episodes: InsightEpisode[], from: number, n: number): InsightEpisode[] {
+//
+// A silenced episode (`muted`, finding #80) never takes a row from one that is
+// not: the person already said "stop telling me". It ranks after everything
+// else and only fills a row the window left empty — so a morning with forty
+// silenced episodes and one real one still leads with the real one.
+export function pickRows(episodes: InsightEpisode[], from: number, n: number): InsightEpisode[] {
   const sev = (e: InsightEpisode) => SEV_RANK[e.maxSeverity] ?? 3
   const rank = (e: InsightEpisode) => {
     const group =
       e.status === 'firing' ? (Date.parse(e.firstSeen) >= from ? 0 : 2) : e.status === 'resolved' ? 1 : 3
-    return group * 10 + sev(e)
+    return (e.muted ? 100 : 0) + group * 10 + sev(e)
   }
   const sorted = [...episodes].sort(
     (a, b) => rank(a) - rank(b) || Date.parse(b.lastSeen) - Date.parse(a.lastSeen),
   )
   const picked: InsightEpisode[] = []
   for (const want of ['firing', 'resolved'] as const) {
-    const hit = sorted.find((e) => e.status === want)
+    const hit = sorted.find((e) => e.status === want && !e.muted)
     if (hit && picked.length < n) picked.push(hit)
   }
   for (const e of sorted) {
     if (picked.length >= n) break
     if (!picked.includes(e)) picked.push(e)
   }
-  // Shown open first — the row that asks for something leads.
-  const shown = (e: InsightEpisode) => (e.status === 'firing' ? 0 : e.status === 'resolved' ? 10 : 20) + sev(e)
+  // Shown open first — the row that asks for something leads; silenced last.
+  const shown = (e: InsightEpisode) =>
+    (e.muted ? 100 : 0) + (e.status === 'firing' ? 0 : e.status === 'resolved' ? 10 : 20) + sev(e)
   return picked.sort((a, b) => shown(a) - shown(b))
 }
 
+const MUTED_COLOR = 'var(--kb-text-tertiary)'
+
 function EpisodeRow({ e, showCluster }: { e: InsightEpisode; showCluster: boolean }) {
+  // A silenced episode keeps its row (history is history) but asks for
+  // nothing: neutral colour, a «muted» mark instead of «Review →».
+  const muted = !!e.muted
   const firing = e.status === 'firing'
   const resolved = e.status === 'resolved'
-  const color = firing ? (SEV_COLOR[e.maxSeverity] ?? SEV_COLOR.warning) : resolved ? OK : 'var(--kb-text-tertiary)'
+  const color = muted
+    ? MUTED_COLOR
+    : firing
+      ? (SEV_COLOR[e.maxSeverity] ?? SEV_COLOR.warning)
+      : resolved
+        ? OK
+        : 'var(--kb-text-tertiary)'
   const start = Date.parse(e.firstSeen)
   const end = resolved && e.resolvedAt ? Date.parse(e.resolvedAt) : firing ? Date.now() : Date.parse(e.lastSeen)
   const dur = fmtDur(Math.max(0, Math.round((end - start) / 1000)))
@@ -320,15 +338,18 @@ function EpisodeRow({ e, showCluster }: { e: InsightEpisode; showCluster: boolea
       : `expired · no signal since ${clockOrDate(e.lastSeen)}${where}`
   return (
     <div
-      className="flex items-center gap-3 rounded-xl px-3.5 py-2.5 min-w-0"
-      style={{ background: 'var(--kb-surface)', boxShadow: firing ? `inset 0 0 0 1px color-mix(in srgb, ${color} 22%, transparent)` : undefined }}
+      className={`flex items-center gap-3 rounded-xl px-3.5 py-2.5 min-w-0 ${muted ? 'opacity-70' : ''}`}
+      style={{
+        background: 'var(--kb-surface)',
+        boxShadow: firing && !muted ? `inset 0 0 0 1px color-mix(in srgb, ${color} 22%, transparent)` : undefined,
+      }}
     >
       <span
         className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 text-[12px] font-semibold"
         style={{ color, background: `color-mix(in srgb, ${color} 14%, transparent)` }}
         aria-hidden
       >
-        {firing ? '!' : resolved ? '✓' : '↺'}
+        {muted ? <BellOff className="w-3.5 h-3.5" /> : firing ? '!' : resolved ? '✓' : '↺'}
       </span>
       <div className="min-w-0 flex-1">
         <div className="text-[13.5px] text-kb-text-primary truncate">
@@ -337,22 +358,35 @@ function EpisodeRow({ e, showCluster }: { e: InsightEpisode; showCluster: boolea
         </div>
         <div className="text-[11px] font-mono text-kb-text-tertiary truncate">{sub}</div>
       </div>
-      {firing ? (
-        <Link
+      {muted ? (
+        // The detail shows the silence that covers it and can lift it, for
+        // anyone who may read the episode — the Silenced tab is admin-only.
+        <ClusterLink
+          cluster={e.clusterId}
+          to={`/insights/episodes/${e.id}${firing ? '?from=active' : ''}`}
+          className="shrink-0 text-[11px] font-mono text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
+          title="Silenced — this episode is not counted on Home or Fleet"
+        >
+          muted
+        </ClusterLink>
+      ) : firing ? (
+        <ClusterLink
+          cluster={e.clusterId}
           to={`/insights/episodes/${e.id}?from=active`}
           className="shrink-0 px-3 py-1 rounded-full text-[11px] font-mono transition-colors hover:opacity-80"
           style={{ color, boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${color} 55%, transparent)` }}
         >
           Review →
-        </Link>
+        </ClusterLink>
       ) : (
-        <Link
+        <ClusterLink
+          cluster={e.clusterId}
           to={`/insights/episodes/${e.id}`}
           className="shrink-0 text-[11px] font-mono hover:opacity-80"
           style={{ color }}
         >
           {resolved ? e.resolutionKind || 'resolved' : e.status}
-        </Link>
+        </ClusterLink>
       )}
     </div>
   )
@@ -361,7 +395,10 @@ function EpisodeRow({ e, showCluster }: { e: InsightEpisode; showCluster: boolea
 // The window as a track, one dot per moment something opened. Episodes that
 // open together (a node rotation opens a dozen) share a dot, which grows with
 // the count and takes the worst state among them.
+// A silenced episode draws as the quiet state: it never lights a dot amber or
+// red on its own (finding #80).
 function dotState(e: InsightEpisode): number {
+  if (e.muted) return 3
   if (e.status === 'firing') return e.maxSeverity === 'critical' ? 0 : 1
   return e.status === 'resolved' ? 2 : 3
 }
@@ -493,8 +530,10 @@ export function ShiftReportSection({
               {summarized && (
                 <>
                   {' '}
+                  {/* cluster=all: the report counted the org's bursts, and the
+                      Bursts tab defaults to the active cluster's (#75, #81). */}
                   <Link
-                    to={`/insights?view=bursts&from=${encodeURIComponent(report.windowFrom)}&to=${encodeURIComponent(report.windowTo)}`}
+                    to={`/insights?view=bursts&cluster=all&from=${encodeURIComponent(report.windowFrom)}&to=${encodeURIComponent(report.windowTo)}`}
                     className="font-mono text-kb-accent underline underline-offset-2 hover:opacity-80 whitespace-nowrap"
                   >
                     See all {report.bursts.length} bursts →
@@ -505,12 +544,14 @@ export function ShiftReportSection({
                 <>
                   {' '}
                   The longest,{' '}
-                  <Link
+                  <ClusterLink
+                    // The worst episode carries no cluster; the window's rows do.
+                    cluster={episodes.find((ep) => ep.id === report.worst?.id)?.clusterId}
                     to={`/insights/episodes/${report.worst.id}?from=active`}
                     className="font-mono text-kb-accent underline underline-offset-2 hover:opacity-80"
                   >
                     {report.worst.resource}
-                  </Link>
+                  </ClusterLink>
                   , has been down{' '}
                   <span className="font-mono text-status-error font-semibold">
                     {fmtDur(report.worst.seconds)}
@@ -624,8 +665,9 @@ export function ShiftReportSection({
           )}
         </span>
         <span className="flex-1" />
+        {/* The report's own window, every cluster: what it counted (#81). */}
         <Link
-          to="/insights?view=history"
+          to={`/insights?view=history&cluster=all&from=${encodeURIComponent(report.windowFrom)}&to=${encodeURIComponent(report.windowTo)}`}
           className="text-kb-text-secondary underline underline-offset-2 hover:text-kb-text-primary shrink-0"
         >
           open full history →
