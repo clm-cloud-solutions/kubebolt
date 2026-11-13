@@ -5,11 +5,12 @@ import {
   fmtDur,
   isQuietShift,
   pickBursts,
+  pickRows,
   SHIFT_BURSTS_SHOWN,
   spansDays,
   type Phrase,
 } from './ShiftReportCard'
-import type { OperationalBurst, ShiftReport } from '@/services/api'
+import type { InsightEpisode, OperationalBurst, ShiftReport } from '@/services/api'
 
 // The shift report narrates arithmetic over the clusterer's output — these
 // pin the sentence builder against the Dipres shape and the quiet detection
@@ -179,5 +180,45 @@ describe('isQuietShift', () => {
   it('one episode or one capability CHANGE breaks the quiet', () => {
     expect(isQuietShift({ ...base, episodes: { ...base.episodes, opened: 1 } })).toBe(false)
     expect(isQuietShift({ ...base, capabilityChanges: 2 })).toBe(false)
+  })
+})
+
+// Finding #80: a silenced episode keeps its place in history but never takes
+// one of the three rows from an episode that is not silenced.
+describe('pickRows', () => {
+  const from = Date.parse('2026-11-13T08:00:00Z')
+  function ep(over: Partial<InsightEpisode>): InsightEpisode {
+    return {
+      id: 'e',
+      clusterId: 'c1',
+      fingerprint: 'f',
+      ruleId: 'crash-loop',
+      resource: 'Pod/ns/x',
+      status: 'firing',
+      severity: 'warning',
+      maxSeverity: 'warning',
+      firstSeen: '2026-11-13T09:00:00Z',
+      lastSeen: '2026-11-13T09:30:00Z',
+      flapCount: 0,
+      ...over,
+    }
+  }
+
+  it('leads with what is not silenced, however many silenced episodes there are', () => {
+    const silenced = Array.from({ length: 40 }, (_, i) =>
+      ep({ id: `m${i}`, muted: true, maxSeverity: 'warning', lastSeen: `2026-11-13T10:${String(i).padStart(2, '0')}:00Z` }),
+    )
+    const loud = ep({ id: 'loud', maxSeverity: 'info' })
+    const resolved = ep({ id: 'ok', status: 'resolved', resolvedAt: '2026-11-13T09:40:00Z' })
+    const rows = pickRows([...silenced, loud, resolved], from, 3)
+    expect(rows.map((r) => r.id).slice(0, 2)).toEqual(['loud', 'ok'])
+    // The third row was empty: a silenced one may fill it, and shows last.
+    expect(rows).toHaveLength(3)
+    expect(rows[2].muted).toBe(true)
+  })
+
+  it('shows silenced episodes when there is nothing else', () => {
+    const rows = pickRows([ep({ id: 'm1', muted: true }), ep({ id: 'm2', muted: true })], from, 3)
+    expect(rows.map((r) => r.id).sort()).toEqual(['m1', 'm2'])
   })
 })
