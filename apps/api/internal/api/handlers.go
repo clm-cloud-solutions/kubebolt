@@ -607,7 +607,12 @@ func (h *handlers) getEvents(w http.ResponseWriter, r *http.Request) {
 	if limit < 1 {
 		limit = 100
 	}
-	respondJSON(w, http.StatusOK, conn.GetEvents(eventType, namespace, involvedKind, involvedName, limit))
+	events := conn.GetEvents(eventType, namespace, involvedKind, involvedName, limit)
+	if events.Forbidden {
+		respondError(w, http.StatusForbidden, "insufficient permissions to access events")
+		return
+	}
+	respondJSON(w, http.StatusOK, events)
 }
 
 func (h *handlers) getPodLogs(w http.ResponseWriter, r *http.Request) {
