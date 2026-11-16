@@ -4265,9 +4265,59 @@ func resourceTypeToGVR(resourceType string) (schema.GroupVersionResource, bool) 
 		"vpas":                             {Group: "autoscaling.k8s.io", Version: "v1", Resource: "verticalpodautoscalers"},
 		"ciliumnetworkpolicies":            {Group: "cilium.io", Version: "v2", Resource: "ciliumnetworkpolicies"},
 		"ciliumclusterwidenetworkpolicies": {Group: "cilium.io", Version: "v2", Resource: "ciliumclusterwidenetworkpolicies"},
+		// External Secrets Operator (finding #91): which key of which external
+		// store a Secret is synced from, and whether the sync works. Read for
+		// the investigation; KubeBolt's role grants get/list/watch only. v1 is
+		// tried first and v1beta1 after it (resourceYAML), since operators
+		// before v0.16 serve only v1beta1.
+		"externalsecrets":     {Group: "external-secrets.io", Version: "v1", Resource: "externalsecrets"},
+		"secretstores":        {Group: "external-secrets.io", Version: "v1", Resource: "secretstores"},
+		"clustersecretstores": {Group: "external-secrets.io", Version: "v1", Resource: "clustersecretstores"},
 	}
 	gvr, ok := m[resourceType]
 	return gvr, ok
+}
+
+// olderVersionGVR is the version to try when a type's preferred one is not
+// served: External Secrets Operator's v1beta1.
+func olderVersionGVR(resourceType string) (schema.GroupVersionResource, bool) {
+	switch resourceType {
+	case "externalsecrets", "secretstores", "clustersecretstores":
+		gvr, _ := resourceTypeToGVR(resourceType)
+		gvr.Version = "v1beta1"
+		return gvr, true
+	}
+	return schema.GroupVersionResource{}, false
+}
+
+// isExternalSecretsStore reports a type whose spec may carry an inline
+// credential (a store's provider configuration).
+func isExternalSecretsStore(resourceType string) bool {
+	return resourceType == "secretstores" || resourceType == "clustersecretstores"
+}
+
+// redactInlineCredentials hides, in a store's spec, every string value under
+// a key that names a credential. A store normally points at its credentials
+// (secretRef: name and key, a role ARN, a service account), and those stay:
+// the redaction only catches a value written inline (the fake provider's
+// data, a webhook header, a token pasted into the spec).
+func redactInlineCredentials(v interface{}) {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		for k, x := range t {
+			if s, ok := x.(string); ok {
+				if s != "" && (looksLikeSensitiveKey(k) || strings.EqualFold(k, "value")) {
+					t[k] = redactedPlaceholder
+				}
+				continue
+			}
+			redactInlineCredentials(x)
+		}
+	case []interface{}:
+		for _, x := range t {
+			redactInlineCredentials(x)
+		}
+	}
 }
 
 // isClusterScoped returns true for resource types that are not namespaced.
@@ -4328,7 +4378,7 @@ func looksLikeSensitiveValue(value string) bool {
 func isClusterScoped(resourceType string) bool {
 	switch resourceType {
 	case "nodes", "namespaces", "persistentvolumes", "pvs", "storageclasses", "clusterroles", "clusterrolebindings",
-		"ciliumclusterwidenetworkpolicies":
+		"ciliumclusterwidenetworkpolicies", "clustersecretstores":
 		return true
 	}
 	return false
@@ -4819,6 +4869,22 @@ func (c *Connector) resourceYAML(resourceType, namespace, name string, writes *[
 	default:
 		obj, err = c.dynamicClient.Resource(gvr).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
 	}
+	// A version the cluster does not serve answers NotFound too: try the older
+	// one before reporting it.
+	if apierrors.IsNotFound(err) {
+		if older, ok := olderVersionGVR(resourceType); ok {
+			var o *unstructured.Unstructured
+			var oerr error
+			if isClusterScoped(resourceType) {
+				o, oerr = c.dynamicClient.Resource(older).Get(ctx, name, metav1.GetOptions{})
+			} else {
+				o, oerr = c.dynamicClient.Resource(older).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+			}
+			if oerr == nil {
+				obj, err = o, nil
+			}
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("fetching resource: %w", err)
 	}
@@ -4843,6 +4909,11 @@ func (c *Connector) resourceYAML(resourceType, namespace, name string, writes *[
 				data[k] = redactedPlaceholder
 			}
 		}
+	}
+
+	// A secret store's spec may carry a credential written inline.
+	if isExternalSecretsStore(resourceType) {
+		redactInlineCredentials(obj.Object["spec"])
 	}
 
 	// Redact sensitive-looking values in ConfigMap data
