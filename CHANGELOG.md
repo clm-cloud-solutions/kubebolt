@@ -6,7 +6,39 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Kobi reads what an External Secret syncs** (finding #91). Kobi can now
+  read ExternalSecrets and their secret stores with `get_resource_yaml` (v1, or
+  v1beta1 on older operators):
+  - the remote key;
+  - the store's provider and region;
+  - whether the last sync worked, and when it last refreshed.
+
+  With that, a rotated credential is traced to the exact secret in the cloud
+  instead of guessed. These objects hold references only, and a store's inline
+  credentials are hidden. Requires the chart's new read-only RBAC rule for
+  `external-secrets.io`.
+- **Kobi tells a credential error's three causes apart** (finding #86). A new
+  `credential-errors` procedure covers a login that starts failing at a point
+  in time:
+  - pods holding a stale credential: a restart fixes it;
+  - a cluster that never received the new one: a restart changes nothing, and
+    the procedure points at the sync, including one that has stopped while
+    still reporting Ready;
+  - a source and a database that disagree.
+
+  It names the change at its source: with the AWS connector, when the secret
+  rotated and who rotated it, never its value.
+
 ### Fixed
+
+- **A dependency behind an ExternalName Service is classified where it leads**
+  (finding #88). The flows name such a dependency by the Service it was dialed
+  through, so `get_external_connections` called it in-cluster and told Kobi not
+  to use a cloud connector for it. An RDS database behind `shop-data/shop-db`
+  was read that way. The chain is now followed to where it leaves the cluster,
+  and the answer also names the cluster's own provider.
 
 - **Home's links answer for the cluster they name** (finding #81). Home is a
   global page, but parts of it still answered for the selected cluster:

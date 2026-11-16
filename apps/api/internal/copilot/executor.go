@@ -514,6 +514,10 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 			out["lastWrites"] = writes
 			out["lastWritesNote"] = lastWritesNote
 		}
+		// An External Secrets object: the store it reads, and the cloud behind it.
+		if store := externalSecretStore(conn, t, ns, yamlBytes); store != nil {
+			out["store"] = store
+		}
 		res.Content = jsonString(out)
 
 	case "get_resource_describe":

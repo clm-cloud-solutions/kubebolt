@@ -1031,3 +1031,42 @@ func TestDependencyRowsBuckets(t *testing.T) {
 		t.Errorf("a bucket variable on GCP: %+v", other[0])
 	}
 }
+
+// Finding #88: a database reached through the ExternalName Service
+// shop-data/shop-db → db.shop.internal. The flows name it by the Service, and
+// it was classified "in-cluster: not a cloud connector", so the investigation
+// did not look in AWS. Classified where the chain ends, it is an AWS address.
+func TestClassifyExternal_FollowsAnExternalNameService(t *testing.T) {
+	v := &externalView{
+		provider: "AWS",
+		region:   "us-east-2",
+		enabled:  map[string]bool{"aws": true},
+		toolsOf:  func(string) map[string]bool { return nil },
+		externalName: func(host string) (string, string, bool) {
+			if host == "shop-db.shop-data.svc.cluster.local" {
+				return "db.shop.internal", "shop-data/shop-db", true
+			}
+			return "", "", false
+		},
+	}
+	got := classifyExternal("shop-db.shop-data.svc.cluster.local", "10.42.116.155", v)
+	if got.Provider != "aws" || !got.ConnectorEnabled || got.Service == "in-cluster" {
+		t.Fatalf("not attributed to the AWS connector: %+v", got)
+	}
+	if !strings.Contains(got.Note, "ExternalName Service (shop-data/shop-db) for db.shop.internal") {
+		t.Errorf("the note does not say where the chain leads: %q", got.Note)
+	}
+	// An address in the cluster's VPC names no service: the note says how to
+	// find what owns it.
+	if !strings.Contains(got.Note, "DescribeNetworkInterfaces") {
+		t.Errorf("the note does not say how to find the address's owner: %q", got.Note)
+	}
+	// Without an address, the private name alone says Route 53.
+	if byName := classifyExternal("shop-db.shop-data.svc.cluster.local", "", v); byName.Provider != "aws" || byName.Service != "route53" {
+		t.Errorf("a private name on an EKS cluster: %+v", byName)
+	}
+	// An ordinary Service stays in-cluster.
+	if c := classifyExternal("cache.shop-data.svc.cluster.local", "10.100.0.7", v); c.Service != "in-cluster" {
+		t.Errorf("an ordinary Service was taken outside the cluster: %+v", c)
+	}
+}
