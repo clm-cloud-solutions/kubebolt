@@ -6,22 +6,25 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added
+### Fixed
 
-- **Kobi reads what an External Secret syncs** (finding #91). Kobi can now
-  read ExternalSecrets and their secret stores with `get_resource_yaml` (v1, or
-  v1beta1 on older operators):
+- **Kobi can trace a rotated credential through External Secrets** (finding
+  #91). Kobi could not read ExternalSecrets or their secret stores, so a Secret
+  synced from a cloud store could not be traced to its remote key, and Kobi had
+  to guess the secret's name. `get_resource_yaml` now reads them (v1, or v1beta1
+  on older operators):
   - the remote key;
   - the store's provider and region;
   - whether the last sync worked, and when it last refreshed.
 
-  With that, a rotated credential is traced to the exact secret in the cloud
-  instead of guessed. These objects hold references only, and a store's inline
-  credentials are hidden. Requires the chart's new read-only RBAC rule for
+  These objects hold references only, and a store's inline credentials are
+  hidden. Requires the chart's new read-only RBAC rule for
   `external-secrets.io`.
-- **Kobi tells a credential error's three causes apart** (finding #86). A new
-  `credential-errors` procedure covers a login that starts failing at a point
-  in time:
+- **A credential error is no longer answered with a restart that changes
+  nothing** (finding #86). Kobi had no procedure for a login that starts
+  failing at a point in time, so a credential the cluster never received could
+  be read as stale pods. The `credential-errors` procedure tells three causes
+  apart:
   - pods holding a stale credential: a restart fixes it;
   - a cluster that never received the new one: a restart changes nothing, and
     the procedure points at the sync, including one that has stopped while
@@ -30,8 +33,6 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
   It names the change at its source: with the AWS connector, when the secret
   rotated and who rotated it, never its value.
-
-### Fixed
 
 - **A dependency behind an ExternalName Service is classified where it leads**
   (finding #88). The flows name such a dependency by the Service it was dialed
