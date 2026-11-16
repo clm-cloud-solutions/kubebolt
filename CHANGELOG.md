@@ -6,6 +6,68 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.6.3] — 2026-11-16
+
+Kobi traces a rotated credential to its source through External Secrets, and
+Home answers for the cluster it names. A fix release: drop-in, no migration;
+the agent stays on 1.4.9. Full note:
+[docs/releases/v2.6.3.md](docs/releases/v2.6.3.md).
+
+### Fixed
+
+- **Kobi can trace a rotated credential through External Secrets** (finding
+  #91). Kobi could not read ExternalSecrets or their secret stores, so a Secret
+  synced from a cloud store could not be traced to its remote key, and Kobi had
+  to guess the secret's name. `get_resource_yaml` now reads them (v1, or v1beta1
+  on older operators):
+  - the remote key;
+  - the store's provider and region;
+  - whether the last sync worked, and when it last refreshed.
+
+  These objects hold references only, and a store's inline credentials are
+  hidden. Requires the chart's new read-only RBAC rule for
+  `external-secrets.io`.
+- **A credential error is no longer answered with a restart that changes
+  nothing** (finding #86). Kobi had no procedure for a login that starts
+  failing at a point in time, so a credential the cluster never received could
+  be read as stale pods. The `credential-errors` procedure tells three causes
+  apart:
+  - pods holding a stale credential: a restart fixes it;
+  - a cluster that never received the new one: a restart changes nothing, and
+    the procedure points at the sync, including one that has stopped while
+    still reporting Ready;
+  - a source and a database that disagree.
+
+  It names the change at its source: with the AWS connector, when the secret
+  rotated and who rotated it, never its value.
+
+- **A dependency behind an ExternalName Service is classified where it leads**
+  (finding #88). The flows name such a dependency by the Service it was dialed
+  through, so `get_external_connections` called it in-cluster and told Kobi not
+  to use a cloud connector for it. An RDS database behind `shop-data/shop-db`
+  was read that way. The chain is now followed to where it leaves the cluster,
+  and the answer also names the cluster's own provider.
+
+- **Home's links answer for the cluster they name** (finding #81). Home is a
+  global page, but parts of it still answered for the selected cluster:
+  - In «While you were away», an episode from another cluster now switches to
+    that cluster before opening. *See all bursts* and *open full history* show
+    every cluster over the report's own window, which is what the report
+    counted.
+  - Kobi's card names each conversation's cluster. One from another cluster
+    opens there instead of continuing against the selected one. The ask box
+    names the cluster it will ask about.
+
+- **A silenced insight no longer counts on Home and Fleet** (finding #80).
+  Both read each cluster's health from `/insights/summary`, which never applied
+  the mute overlay, so a silenced warning kept a cluster amber there while its
+  Overview said healthy. A critical still shows through a mute, as everywhere
+  else. In Home's «While you were away» a silenced episode keeps its row only
+  when the window has room: it never takes one of the three rows from an
+  episode that is not silenced, reads *muted* instead of *Review →*, draws as a
+  quiet dot on the timeline, and is never the report's "longest" sentence. The
+  episode list marks it (`muted`).
+
 ## [2.6.2] — 2026-11-12
 
 Right-sizing on a cluster's first day, and Kobi says which role a connector

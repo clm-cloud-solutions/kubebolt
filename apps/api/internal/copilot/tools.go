@@ -92,7 +92,7 @@ func ToolDefinitions() []ToolDefinition {
 		},
 		{
 			Name:        "get_resource_yaml",
-			Description: "Get raw YAML of a resource (secrets are redacted automatically)",
+			Description: "Get raw YAML of a resource (secrets redacted; External Secrets objects too)",
 			InputSchema: nsResourceSchema(),
 		},
 		{

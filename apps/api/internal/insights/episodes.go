@@ -126,7 +126,10 @@ type Episode struct {
 	ClusterID string `json:"clusterId"`
 	// ClusterName is enriched by the API layer from the org's persisted
 	// display names — it survives the cluster's death, unlike the fleet list.
-	ClusterName    string     `json:"clusterName,omitempty"`
+	ClusterName string `json:"clusterName,omitempty"`
+	// Muted is enriched by the API layer like ClusterName (never stored): a
+	// mute matches this episode and it never reached critical (finding #80).
+	Muted          bool       `json:"muted,omitempty"`
 	Fingerprint    string     `json:"fingerprint"`
 	RuleID         string     `json:"ruleId"`
 	Resource       string     `json:"resource"`
