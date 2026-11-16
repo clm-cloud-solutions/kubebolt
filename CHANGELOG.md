@@ -6,6 +6,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.6.3] — 2026-11-16
+
+Kobi traces a rotated credential to its source through External Secrets, and
+Home answers for the cluster it names. A fix release: drop-in, no migration;
+the agent stays on 1.4.9. Full note:
+[docs/releases/v2.6.3.md](docs/releases/v2.6.3.md).
+
 ### Fixed
 
 - **Kobi can trace a rotated credential through External Secrets** (finding
