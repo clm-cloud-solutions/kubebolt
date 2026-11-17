@@ -49,8 +49,11 @@ func (c *Client) SetScope(tenant, cluster string) {
 
 // matchesScope reports whether a message tagged (tenant, cluster) should reach
 // this client. An unscoped message (empty) is global → always delivered. A
-// client with no scope set receives everything (OSS-degenerate). Otherwise both
-// dimensions must match.
+// client with no scope set receives everything (OSS-degenerate). Otherwise the
+// tenant must match; a message that names a tenant but NO cluster is
+// tenant-wide — it reaches every client of that tenant whatever cluster they are
+// viewing (e.g. cluster.switched, which must reach the switching org's sockets
+// but no other org's). A message that names both requires both to match.
 func (c *Client) matchesScope(tenant, cluster string) bool {
 	if tenant == "" && cluster == "" {
 		return true // global event
@@ -60,7 +63,13 @@ func (c *Client) matchesScope(tenant, cluster string) bool {
 	if c.tenant == "" && c.cluster == "" {
 		return true // unscoped client — receive all
 	}
-	return c.tenant == tenant && c.cluster == cluster
+	if c.tenant != tenant {
+		return false // never cross the org boundary
+	}
+	if cluster == "" {
+		return true // tenant-wide event — any cluster this org's client is viewing
+	}
+	return c.cluster == cluster
 }
 
 // NOTE — there is deliberately no per-message-type subscription here.

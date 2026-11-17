@@ -6,6 +6,24 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A cluster switch no longer tears down more than it should.** Switching
+  clusters stopped every active port-forward and cancelled every in-flight
+  drain; it now scopes that teardown (and the switch notification) to the caller
+  itself, so another organization's forwards, drains and sockets are left alone.
+  A switch to the cluster that is already active is now a no-op, so returning to
+  a cluster view no longer closes the port-forwards you have open on it.
+  Single-tenant installs are unaffected.
+- **The active port-forward list is scoped to the caller.** `GET /portforward`
+  returned every organization's forwards; it now returns only the caller's own,
+  so one organization's indicator never shows another's tunnels. Single-tenant
+  installs are unaffected.
+- **Access-audit records carry the cluster the access reached.** Terminal,
+  port-forward and pod file-read records stamped the install's default cluster
+  rather than the one the access actually touched; they now record the resolved
+  cluster.
+
 ## [2.6.3] — 2026-11-16
 
 Kobi traces a rotated credential to its source through External Secrets, and
