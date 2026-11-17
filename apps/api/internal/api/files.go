@@ -27,6 +27,17 @@ type fileEntry struct {
 	Permissions string `json:"permissions,omitempty"`
 }
 
+// accessClusterUID returns the UID of the cluster this request resolved to, so
+// an access-audit record is stamped with the cluster the access actually
+// reached rather than the install's default. "" when no connector is resolved —
+// the record then falls back to audit.ClusterID() as before.
+func (h *handlers) accessClusterUID(ctx context.Context) string {
+	if conn := h.manager.Connector(ctx); conn != nil {
+		return conn.ClusterUID()
+	}
+	return ""
+}
+
 // execCommand runs a non-interactive command in a pod container and returns stdout/stderr.
 func (h *handlers) execCommand(ctx context.Context, namespace, name, container string, command []string) (string, string, error) {
 	conn := h.manager.Connector(ctx)
@@ -261,7 +272,7 @@ func (h *handlers) handleFileContent(w http.ResponseWriter, r *http.Request) {
 	// The path and the size, never the bytes. Reading a file out of a running
 	// pod is how data leaves, so it is recorded; recording WHAT was read would
 	// copy the pod's secrets into the audit trail, which outlives them.
-	auditAccess(actorFromRequest(r), "pod_file_read", "pods", namespace, name, map[string]any{
+	auditAccess(actorFromRequest(r).withCluster(h.accessClusterUID(r.Context())), "pod_file_read", "pods", namespace, name, map[string]any{
 		"container": container,
 		"path":      filePath,
 		"bytes":     len(stdout),
@@ -291,7 +302,7 @@ func (h *handlers) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 
 	stdout, stderr, err := h.execCommand(r.Context(), namespace, name, container,
 		[]string{"cat", filePath})
-	auditAccess(actorFromRequest(r), "pod_file_download", "pods", namespace, name, map[string]any{
+	auditAccess(actorFromRequest(r).withCluster(h.accessClusterUID(r.Context())), "pod_file_download", "pods", namespace, name, map[string]any{
 		"container": container,
 		"path":      filePath,
 		"bytes":     len(stdout),
