@@ -66,6 +66,43 @@ var stripManagedFieldsOption = informers.WithTransform(func(obj interface{}) (in
 	return obj, nil
 })
 
+// paginateInitialListOption makes the informers' initial LIST paginate instead
+// of arriving as one body. client-go's reflector lists with resourceVersion=0 on
+// its first pass, which the API server serves from its watch cache — ignoring
+// `limit` and returning every object in a single response. On a large cluster
+// (tens of MiB of ReplicaSets) that body is too big for an agent-proxy tunnel's
+// per-request timeout and for the agent's memory. Blanking resourceVersion makes
+// the server honour the pager's limit=500 and paginate: a consistent read,
+// served from the watch cache where ConsistentListFromCache is on, otherwise a
+// bounded etcd range read per page.
+var paginateInitialListOption = informers.WithTweakListOptions(listFromServerNotWatchCache)
+
+// listFromServerNotWatchCache implements paginateInitialListOption.
+// WithTweakListOptions runs on the reflector's List AND Watch calls, so it
+// rewrites only a request that is both resourceVersion=0 and paginated
+// (Limit > 0), which is the reflector's initial LIST page:
+//   - a watch never carries a limit, so it is left alone whatever its
+//     resourceVersion;
+//   - continuation pages already carry resourceVersion="" (the pager clears it);
+//   - when a continue token expires the pager falls back to one LIST with
+//     Limit=0 and resourceVersion=0. Blanking that one would turn it into a
+//     full read of the collection from storage (etcd, or kine on k3s) instead of
+//     the watch cache, for the same single body, so it keeps resourceVersion=0.
+func listFromServerNotWatchCache(opts *metav1.ListOptions) {
+	if opts.ResourceVersion == "0" && opts.Limit > 0 {
+		opts.ResourceVersion = ""
+	}
+}
+
+// newInformerFactory builds every typed informer factory the connector uses, so
+// none of them can miss the shared options: managedFields stripped from the
+// cache and the initial LIST paginated. extra carries the per-factory ones,
+// such as the namespace of a namespace-scoped factory.
+func newInformerFactory(cs kubernetes.Interface, extra ...informers.SharedInformerOption) informers.SharedInformerFactory {
+	opts := append([]informers.SharedInformerOption{stripManagedFieldsOption, paginateInitialListOption}, extra...)
+	return informers.NewSharedInformerFactoryWithOptions(cs, informerResync, opts...)
+}
+
 // Connector manages the Kubernetes cluster connection and informers.
 type Connector struct {
 	restConfig    *rest.Config
@@ -277,7 +314,7 @@ func newConnectorFromConfig(restConfig *rest.Config, clusterName string, wsHub *
 		log.Printf("Warning: metrics client creation failed: %v", err)
 	}
 
-	factory := informers.NewSharedInformerFactoryWithOptions(clientset, informerResync, stripManagedFieldsOption)
+	factory := newInformerFactory(clientset)
 
 	c := &Connector{
 		restConfig:    restConfig,
@@ -562,9 +599,7 @@ func (c *Connector) setupInformers() {
 	if len(nsNamespaces) > 0 {
 		nsFactories = make(map[string]informers.SharedInformerFactory, len(nsNamespaces))
 		for _, ns := range nsNamespaces {
-			nsFactories[ns] = informers.NewSharedInformerFactoryWithOptions(
-				c.clientset, informerResync, informers.WithNamespace(ns), stripManagedFieldsOption,
-			)
+			nsFactories[ns] = newInformerFactory(c.clientset, informers.WithNamespace(ns))
 		}
 	}
 
