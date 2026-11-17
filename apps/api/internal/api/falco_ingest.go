@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/findings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
 )
@@ -132,6 +133,9 @@ func (h *handlers) handleFalcoIngest(w http.ResponseWriter, r *http.Request) {
 			ClusterID:    tok.ClusterID,
 			RuntimeEvent: sig.Events[i],
 		}
+		// Stored filtered: the record outlives the event by a month and reaches
+		// every reader of the feed, the security digest and Kobi.
+		redactRuntimeEvent(&rec.RuntimeEvent)
 		if err := h.eventStore.Append(rec); err != nil {
 			respondError(w, http.StatusInternalServerError, "failed to store event")
 			return
@@ -209,6 +213,10 @@ func (h *handlers) handleListRuntimeEvents(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	events = visible
+	// Events stored before ingest filtered them still carry the raw line.
+	for i := range events {
+		redactRuntimeEvent(&events[i].RuntimeEvent)
+	}
 	// `total` is the returned count, so the UI can tell "50 shown" from
 	// "50 is everything" — it is capped by `limit`, not a scope-wide count.
 	respondJSON(w, http.StatusOK, map[string]any{"events": events, "total": len(events)})
@@ -216,3 +224,15 @@ func (h *handlers) handleListRuntimeEvents(w http.ResponseWriter, r *http.Reques
 
 // auth import anchors the token-class documentation above.
 var _ = auth.ModeIngestToken
+
+// redactRuntimeEvent hides the credentials a runtime event carries in plain
+// sight: Falco's output line and fields quote the command line that ran
+// (`curl -H "Authorization: Bearer …"`, `mysql -p…`). Kobi always filtered
+// them; the feed served them raw to every role (finding #93). Hex runs (ids,
+// digests) survive, as in logs.
+func redactRuntimeEvent(e *integrations.RuntimeEvent) {
+	e.DetectedBehavior = cluster.RedactText(e.DetectedBehavior)
+	for k, v := range e.Fields {
+		e.Fields[k] = cluster.RedactText(v)
+	}
+}
