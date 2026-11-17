@@ -692,9 +692,7 @@ func NewRouter(
 				r.Group(func(r chi.Router) {
 					r.Use(auth.RequireRole(auth.RoleEditor))
 					// The pod file browser runs `ls` / `cat` inside the
-					// container: it is exec, and it reads what the pod mounts —
-					// its Secrets, its ServiceAccount token. Editor, like the
-					// terminal (#93: it was Viewer+).
+					// container: it is exec, so Editor, like the terminal.
 					r.Get("/resources/pods/{namespace}/{name}/files", h.handleListFiles)
 					r.Get("/resources/pods/{namespace}/{name}/files/content", h.handleFileContent)
 					r.Get("/resources/pods/{namespace}/{name}/files/download", h.handleFileDownload)

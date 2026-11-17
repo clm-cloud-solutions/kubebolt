@@ -931,11 +931,11 @@ func respondGovernanceBlocked(w http.ResponseWriter, setting, msg string) {
 	})
 }
 
-// auditParams is params as the log and the trail keep them (finding #93): a
-// JSON copy (the caller's structs stay untouched), with no literal env value
-// (audit.DropEnvValues — set_env recorded whole envs, passwords included) and
-// what cluster.RedactObject hides in annotations, args and messages. Both
-// outlive the mutation by months; neither needs a value to say what changed.
+// auditParams is params as the log and the trail keep them: a JSON copy (the
+// caller's structs stay untouched), with no literal env value
+// (audit.DropEnvValues) and what cluster.RedactObject hides in annotations,
+// args and messages. Both outlive the mutation by months; neither needs a
+// value to say what changed.
 func auditParams(params map[string]any) map[string]any {
 	if params == nil {
 		return nil

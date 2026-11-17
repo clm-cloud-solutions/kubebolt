@@ -9,8 +9,8 @@ import (
 )
 
 // boltAuditStore opens the Bolt audit trail and drops the literal env values
-// that set_env records carried before they were scrubbed at write time
-// (finding #93). Every boot, idempotent: once clean, it rewrites nothing.
+// that set_env records carried before they were scrubbed at write time.
+// Every boot, idempotent: once clean, it rewrites nothing.
 func boltAuditStore(db *bolt.DB, bucket []byte) audit.Store {
 	store := audit.NewBoltStore(db, bucket)
 	if n, err := store.DropEnvValues(); err != nil {

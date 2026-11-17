@@ -8,12 +8,8 @@ import (
 )
 
 // A mutation's params are kept for as long as the trail (2160h by default) and
-// printed to the process log on the way. set_env recorded each touched
-// container's whole env before and after, literal values included — a
-// DB_PASSWORD written in a Deployment ended up in both, for anyone who reads
-// the trail or the log pipeline, long after it was rotated (finding #93). The
-// trail records which variables changed and how they are sourced, never a
-// literal value.
+// printed to the process log on the way. For an env change the trail records
+// which variables changed and how they are sourced, never a literal value.
 
 // DropEnvValues removes, anywhere in v, the value of every entry of an "env"
 // list: {name, kind, value, valueFrom} keeps its name, its kind and its

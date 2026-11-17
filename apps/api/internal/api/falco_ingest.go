@@ -134,7 +134,7 @@ func (h *handlers) handleFalcoIngest(w http.ResponseWriter, r *http.Request) {
 			RuntimeEvent: sig.Events[i],
 		}
 		// Stored filtered: the record outlives the event by a month and reaches
-		// every reader of the feed, the security digest and Kobi.
+		// every reader of the feed and Kobi.
 		redactRuntimeEvent(&rec.RuntimeEvent)
 		if err := h.eventStore.Append(rec); err != nil {
 			respondError(w, http.StatusInternalServerError, "failed to store event")
@@ -213,7 +213,7 @@ func (h *handlers) handleListRuntimeEvents(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	events = visible
-	// Events stored before ingest filtered them still carry the raw line.
+	// Events stored by an older version are filtered here too.
 	for i := range events {
 		redactRuntimeEvent(&events[i].RuntimeEvent)
 	}
@@ -226,10 +226,8 @@ func (h *handlers) handleListRuntimeEvents(w http.ResponseWriter, r *http.Reques
 var _ = auth.ModeIngestToken
 
 // redactRuntimeEvent hides the credentials a runtime event carries in plain
-// sight: Falco's output line and fields quote the command line that ran
-// (`curl -H "Authorization: Bearer …"`, `mysql -p…`). Kobi always filtered
-// them; the feed served them raw to every role (finding #93). Hex runs (ids,
-// digests) survive, as in logs.
+// sight: Falco's output line and fields quote the command line that ran. The
+// same filter as Kobi's; hex runs (ids, digests) survive, as in logs.
 func redactRuntimeEvent(e *integrations.RuntimeEvent) {
 	e.DetectedBehavior = cluster.RedactText(e.DetectedBehavior)
 	for k, v := range e.Fields {

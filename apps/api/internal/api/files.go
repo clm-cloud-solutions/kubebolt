@@ -309,9 +309,8 @@ func (h *handlers) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 }
 
 // filesRoleAllowed answers 403 below Editor. The router already puts the file
-// routes in the Editor group; this holds if a route is ever moved back
-// (finding #93: they were Viewer+, and reading a file is exec — a mounted
-// Secret, the ServiceAccount token). The terminal checks the same in exec.go.
+// routes in the Editor group; this holds if a route is ever moved: reading a
+// file is exec, and the terminal checks the same in exec.go.
 func filesRoleAllowed(w http.ResponseWriter, r *http.Request) bool {
 	if auth.RoleLevel(auth.ContextRole(r)) < auth.RoleLevel(auth.RoleEditor) {
 		respondError(w, http.StatusForbidden, "Editor role required to browse a pod's files")

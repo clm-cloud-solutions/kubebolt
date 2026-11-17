@@ -16,16 +16,14 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
 )
 
-// Finding #93: paths below Editor that reached secret material, and records
-// that kept it for months.
+// Role gates and redaction on the paths that read inside a workload or keep
+// what it ran.
 
 func withRole(r *http.Request, role auth.Role) *http.Request {
 	return r.WithContext(auth.WithClaims(r.Context(), &auth.Claims{UserID: "u1", Username: "alice", Role: role}))
 }
 
-// The pod file browser is exec: `cat` of whatever the container mounts — its
-// Secrets, its ServiceAccount token. It answered any Viewer; the terminal,
-// the same exec, required Editor.
+// The pod file browser is exec, like the terminal: Editor.
 func TestFileHandlers_RefuseBelowEditor(t *testing.T) {
 	h := &handlers{}
 	for name, handler := range map[string]http.HandlerFunc{
@@ -49,8 +47,7 @@ func TestFileHandlers_RefuseBelowEditor(t *testing.T) {
 	}
 }
 
-// set_env recorded each touched container's whole env, literal values
-// included, in the durable trail and in the process log.
+// The trail and the log record which variables set_env changed, never a value.
 func TestAuditMutation_KeepsNoEnvValue(t *testing.T) {
 	sink := newAccessSink(t)
 	var logged bytes.Buffer
@@ -107,8 +104,7 @@ const falcoCredentialBody = `{"rule":"Outbound connection with credentials","pri
 	`"output":"curl -H 'Authorization: Bearer falco-bearer-s3cret' https://api.example.com",` +
 	`"output_fields":{"k8s.ns.name":"prod","k8s.pod.name":"web-1","proc.cmdline":"mysql -u root --password=falco-cmd-s3cret"}}`
 
-// A runtime event quotes the command line that ran. Kobi filtered it; the feed
-// served it raw to every role, and the store kept it for a month.
+// A runtime event quotes the command line that ran: it is stored filtered.
 func TestFalcoIngest_StoresTheCommandLineFiltered(t *testing.T) {
 	rr, events := falcoPost(t, "cluster-a", falcoCredentialBody)
 	if rr.Code != http.StatusAccepted || len(events.appended) != 1 {
@@ -127,7 +123,7 @@ func TestFalcoIngest_StoresTheCommandLineFiltered(t *testing.T) {
 	}
 }
 
-// Events stored before ingest filtered them are filtered on the way out.
+// Events stored by an older version are filtered on the way out.
 func TestRuntimeEvents_FilteredOnRead(t *testing.T) {
 	events := &memEvents{appended: []findings.EventRecord{{
 		ID: "e1", ClusterID: "cluster-a",
