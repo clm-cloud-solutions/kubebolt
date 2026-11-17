@@ -4290,34 +4290,32 @@ func olderVersionGVR(resourceType string) (schema.GroupVersionResource, bool) {
 	return schema.GroupVersionResource{}, false
 }
 
-// isExternalSecretsStore reports a type whose spec may carry an inline
-// credential (a store's provider configuration).
-func isExternalSecretsStore(resourceType string) bool {
-	return resourceType == "secretstores" || resourceType == "clustersecretstores"
-}
-
 // redactInlineCredentials hides, in a store's spec, every string value under
 // a key that names a credential. A store normally points at its credentials
 // (secretRef: name and key, a role ARN, a service account), and those stay:
 // the redaction only catches a value written inline (the fake provider's
 // data, a webhook header, a token pasted into the spec).
-func redactInlineCredentials(v interface{}) {
+// It reports whether anything changed.
+func redactInlineCredentials(v interface{}) bool {
+	changed := false
 	switch t := v.(type) {
 	case map[string]interface{}:
 		for k, x := range t {
 			if s, ok := x.(string); ok {
-				if s != "" && (looksLikeSensitiveKey(k) || strings.EqualFold(k, "value")) {
+				if s != "" && s != redactedPlaceholder && (looksLikeSensitiveKey(k) || strings.EqualFold(k, "value")) {
 					t[k] = redactedPlaceholder
+					changed = true
 				}
 				continue
 			}
-			redactInlineCredentials(x)
+			changed = redactInlineCredentials(x) || changed
 		}
 	case []interface{}:
 		for _, x := range t {
-			redactInlineCredentials(x)
+			changed = redactInlineCredentials(x) || changed
 		}
 	}
+	return changed
 }
 
 // isClusterScoped returns true for resource types that are not namespaced.
@@ -4902,30 +4900,9 @@ func (c *Connector) resourceYAML(resourceType, namespace, name string, writes *[
 		}
 	}
 
-	// Redact secret data values
-	if resourceType == "secrets" {
-		if data, ok := obj.Object["data"].(map[string]interface{}); ok {
-			for k := range data {
-				data[k] = redactedPlaceholder
-			}
-		}
-	}
-
-	// A secret store's spec may carry a credential written inline.
-	if isExternalSecretsStore(resourceType) {
-		redactInlineCredentials(obj.Object["spec"])
-	}
-
-	// Redact sensitive-looking values in ConfigMap data
-	if resourceType == "configmaps" {
-		if data, ok := obj.Object["data"].(map[string]interface{}); ok {
-			for k, v := range data {
-				if s, ok := v.(string); ok && configMapValueHidden(k, s) {
-					data[k] = redactedPlaceholder
-				}
-			}
-		}
-	}
+	// Every Secret value, a ConfigMap's credentials, a secret store's inline
+	// credentials, an Argo CD Application's values: viewer_redact.go.
+	hideFromViewer(obj.Object)
 
 	yamlBytes, err := sigsyaml.Marshal(obj.Object)
 	if err != nil {
@@ -5202,6 +5179,7 @@ func (c *Connector) ApplyResourceYAML(ctx context.Context, resourceType, namespa
 	// values come back: a stored value may be binary on purpose.
 	var refused refusals
 	refused.add(checkPlaceholdersKept(resourceType, rawObj, live.Object))
+	refused.add(checkSpecHiddenKept(rawObj, live.Object))
 	refused.add(checkBase64Values(resourceType, rawObj))
 	refused.add(checkTextValues(resourceType, rawObj, opts))
 	if err := refused.err(); err != nil {

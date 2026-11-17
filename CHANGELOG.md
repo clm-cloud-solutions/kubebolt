@@ -23,6 +23,25 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   port-forward and pod file-read records stamped the install's default cluster
   rather than the one the access actually touched; they now record the resolved
   cluster.
+- **Saving a secret store from the YAML editor keeps its inline credential.**
+  The viewer hides a store's inline credentials, and the save wrote the
+  placeholder back over them. A hidden value left as shown now keeps the
+  stored one, as with Secrets; one edited while still hidden is refused,
+  naming the field.
+
+### Security
+
+- The Helm release view shows a release's values and rendered manifest the way
+  the YAML viewer shows the objects themselves: Secret values hidden, and
+  credentials in the values hidden by name and shape.
+- The pod file browser requires the Editor role, like the terminal.
+- The audit trail and the API log no longer keep the values of environment
+  variables changed with set-env, only their names and sources. Older records
+  are cleaned at startup.
+- Runtime events are filtered for credentials when stored and when read.
+- An Argo CD Application's Helm values, parameters and plugin environment are
+  hidden in the YAML view, in describe and to Kobi.
+- Describe hides the ConfigMap values the YAML view hides.
 
 ## [2.6.3] — 2026-11-16
 

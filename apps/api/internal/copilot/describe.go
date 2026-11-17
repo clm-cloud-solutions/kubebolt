@@ -124,7 +124,7 @@ func describeResource(conn *cluster.Connector, resourceType, namespace, name str
 	if !ok {
 		return "", fmt.Errorf("unsupported resource type for describe: %s", resourceType)
 	}
-	describer, found := describe.DescriberFor(gk, conn.RestConfig())
+	describer, found := cluster.DescriberFor(gk, conn.RestConfig())
 	if !found {
 		// Generic describer fallback for dynamic CRDs (no built-in describer).
 		if gvr, ok := cluster.ResourceTypeGVR(resourceType); ok {
@@ -137,7 +137,7 @@ func describeResource(conn *cluster.Connector, resourceType, namespace, name str
 				GroupVersionKind: gvr.GroupVersion().WithKind(gk.Kind),
 				Scope:            scope,
 			}
-			describer, found = describe.GenericDescriberFor(mapping, conn.RestConfig())
+			describer, found = cluster.GenericDescriberFor(mapping, conn.RestConfig())
 		}
 	}
 	if !found {

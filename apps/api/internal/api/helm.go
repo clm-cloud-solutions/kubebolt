@@ -6,6 +6,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/helm"
 )
 
@@ -33,7 +34,7 @@ func (h *handlers) handleListHelmReleases(w http.ResponseWriter, r *http.Request
 
 // handleGetHelmRelease returns the detail view (latest revision values +
 // manifest + notes + dependencies, plus full revision history) for one
-// release.
+// release, with what the viewer hides hidden.
 func (h *handlers) handleGetHelmRelease(w http.ResponseWriter, r *http.Request) {
 	conn := h.manager.Connector(r.Context())
 	if conn == nil {
@@ -56,5 +57,9 @@ func (h *handlers) handleGetHelmRelease(w http.ResponseWriter, r *http.Request) 
 		respondError(w, http.StatusNotFound, "Helm release not found")
 		return
 	}
+	// A release's storage is a Secret holding the values and every object the
+	// chart rendered, its Secrets included. The view shows what the YAML
+	// viewer shows of those objects and no more.
+	cluster.RedactHelmRelease(detail)
 	respondJSON(w, http.StatusOK, detail)
 }

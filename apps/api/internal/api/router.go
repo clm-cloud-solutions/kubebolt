@@ -655,9 +655,6 @@ func NewRouter(
 				r.Get("/resources/{type}/{namespace}/{name}/yaml", h.getResourceYAML)
 				r.Get("/resources/{type}/{namespace}/{name}/describe", h.getResourceDescribe)
 				r.Get("/resources/pods/{namespace}/{name}/logs", h.getPodLogs)
-				r.Get("/resources/pods/{namespace}/{name}/files", h.handleListFiles)
-				r.Get("/resources/pods/{namespace}/{name}/files/content", h.handleFileContent)
-				r.Get("/resources/pods/{namespace}/{name}/files/download", h.handleFileDownload)
 				r.Get("/resources/deployments/{namespace}/{name}/pods", h.getDeploymentPods)
 				r.Get("/resources/deployments/{namespace}/{name}/history", h.getDeploymentHistory)
 				r.Get("/resources/statefulsets/{namespace}/{name}/pods", h.getStatefulSetPods)
@@ -694,6 +691,11 @@ func NewRouter(
 				// Write endpoints — Editor+ role required
 				r.Group(func(r chi.Router) {
 					r.Use(auth.RequireRole(auth.RoleEditor))
+					// The pod file browser runs `ls` / `cat` inside the
+					// container: it is exec, so Editor, like the terminal.
+					r.Get("/resources/pods/{namespace}/{name}/files", h.handleListFiles)
+					r.Get("/resources/pods/{namespace}/{name}/files/content", h.handleFileContent)
+					r.Get("/resources/pods/{namespace}/{name}/files/download", h.handleFileDownload)
 					r.Put("/resources/{type}/{namespace}/{name}/yaml", h.putResourceYAML)
 					// Create new resource from manifest — kubectl create -f
 					// equivalent. URL is /resources/:type/:ns (no :name —
