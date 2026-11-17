@@ -173,6 +173,10 @@ func DecodeReleases(secrets []corev1.Secret) []Release {
 // DecodeReleaseDetail decodes the detail view for one release: the latest
 // revision's values/manifest/notes/dependencies plus the full revision
 // history, from all storage Secrets that belong to (namespace, name).
+//
+// The result is RAW: the values and the rendered manifest carry every
+// credential the chart was given, its Secrets' data included. Nothing leaves
+// the process without cluster.RedactHelmRelease.
 func DecodeReleaseDetail(namespace, name string, secrets []corev1.Secret) (*Release, error) {
 	var revisions []helmReleaseJSON
 	for i := range secrets {

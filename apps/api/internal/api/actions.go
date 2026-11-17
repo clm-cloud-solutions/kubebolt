@@ -21,6 +21,7 @@ import (
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/audit"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/fieldmanager"
 )
@@ -55,6 +56,7 @@ var setImageableTypes = map[string]bool{
 // persists a durable record to the kobi_actions bucket for the admin
 // action-history view.
 func auditMutation(r *http.Request, action, resourceType, namespace, name string, params map[string]any, err error) {
+	params = auditParams(params)
 	actor := actionActorOf(r)
 	source := actor.Source
 	var userID, username string
@@ -927,4 +929,26 @@ func respondGovernanceBlocked(w http.ResponseWriter, setting, msg string) {
 		"governanceBlocked": true,
 		"setting":           setting,
 	})
+}
+
+// auditParams is params as the log and the trail keep them: a JSON copy (the
+// caller's structs stay untouched), with no literal env value
+// (audit.DropEnvValues) and what cluster.RedactObject hides in annotations,
+// args and messages. Both outlive the mutation by months; neither needs a
+// value to say what changed.
+func auditParams(params map[string]any) map[string]any {
+	if params == nil {
+		return nil
+	}
+	raw, err := json.Marshal(params)
+	if err != nil {
+		return map[string]any{"params": "not recorded: " + err.Error()}
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return map[string]any{"params": "not recorded: " + err.Error()}
+	}
+	audit.DropEnvValues(out)
+	cluster.RedactObject(out)
+	return out
 }

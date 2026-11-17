@@ -15,6 +15,7 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/remotecommand"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 )
 
@@ -81,6 +82,9 @@ func sanitizePath(p string) string {
 }
 
 func (h *handlers) handleListFiles(w http.ResponseWriter, r *http.Request) {
+	if !filesRoleAllowed(w, r) {
+		return
+	}
 	namespace := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 	container := r.URL.Query().Get("container")
@@ -227,6 +231,9 @@ func parseFindOutput(output, dirPath string) []fileEntry {
 }
 
 func (h *handlers) handleFileContent(w http.ResponseWriter, r *http.Request) {
+	if !filesRoleAllowed(w, r) {
+		return
+	}
 	namespace := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 	container := r.URL.Query().Get("container")
@@ -270,6 +277,9 @@ func (h *handlers) handleFileContent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handlers) handleFileDownload(w http.ResponseWriter, r *http.Request) {
+	if !filesRoleAllowed(w, r) {
+		return
+	}
 	namespace := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 	container := r.URL.Query().Get("container")
@@ -296,4 +306,15 @@ func (h *handlers) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", fileName))
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(stdout))
+}
+
+// filesRoleAllowed answers 403 below Editor. The router already puts the file
+// routes in the Editor group; this holds if a route is ever moved: reading a
+// file is exec, and the terminal checks the same in exec.go.
+func filesRoleAllowed(w http.ResponseWriter, r *http.Request) bool {
+	if auth.RoleLevel(auth.ContextRole(r)) < auth.RoleLevel(auth.RoleEditor) {
+		respondError(w, http.StatusForbidden, "Editor role required to browse a pod's files")
+		return false
+	}
+	return true
 }
