@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -26,9 +27,11 @@ import (
 //
 // COST. Deliberately near-zero, because the alternative would be the
 // cluster-wide LIST anti-pattern this codebase is careful about: the audit asks
-// for ONE item with `resourceVersion=0` and reads `remainingItemCount` from the
-// list metadata. The apiserver answers from its watch cache and ships a single
-// object, so the total costs one small round trip per type — not a full list.
+// for ONE item and reads `remainingItemCount` from the list metadata, so the
+// total costs one small round trip per type — not a full list. It must NOT pin
+// `resourceVersion=0` (see countOnly): that makes the apiserver serve from its
+// watch cache, ignore the limit and ship every object — tens of MB per type
+// through the agent every 5 minutes.
 //
 // It logs only on DIVERGENCE. A clean audit says nothing, so the line appearing
 // at all is the signal.
@@ -79,29 +82,35 @@ func (c *Connector) AuditInformerCaches() {
 		if err != nil || l == nil {
 			return 0, err
 		}
-		return len(l.Items) + int(deref(l.RemainingItemCount)), nil
+		return listCount(len(l.Items), l.ListMeta)
 	})
 	c.auditType(ctx, "deployments", c.cachedDeploymentCount, func() (int, error) {
 		l, err := c.clientset.AppsV1().Deployments(metav1.NamespaceAll).List(ctx, countOnly())
 		if err != nil || l == nil {
 			return 0, err
 		}
-		return len(l.Items) + int(deref(l.RemainingItemCount)), nil
+		return listCount(len(l.Items), l.ListMeta)
 	})
 	c.auditType(ctx, "replicasets", c.cachedReplicaSetCount, func() (int, error) {
 		l, err := c.clientset.AppsV1().ReplicaSets(metav1.NamespaceAll).List(ctx, countOnly())
 		if err != nil || l == nil {
 			return 0, err
 		}
-		return len(l.Items) + int(deref(l.RemainingItemCount)), nil
+		return listCount(len(l.Items), l.ListMeta)
 	})
 }
 
-// countOnly asks for one item and lets the apiserver report the rest in
-// `remainingItemCount`. resourceVersion=0 serves it from the watch cache, so it
-// never hits etcd.
+// countOnly asks for one item and reads the rest from the list metadata's
+// RemainingItemCount, so the audit never downloads a full list. It deliberately
+// does NOT set resourceVersion=0: served from the watch cache the apiserver
+// ignores Limit and returns every object, with no RemainingItemCount — on a
+// large cluster that is tens of MB per type every 5 minutes, through the agent,
+// enough to OOMKill it. Without it the apiserver honours the limit and
+// paginates — one item plus RemainingItemCount, a few KB; a consistent limit-1
+// read is served from the watch cache where ConsistentListFromCache is on,
+// otherwise one bounded etcd range read.
 func countOnly() metav1.ListOptions {
-	return metav1.ListOptions{Limit: 1, ResourceVersion: "0"}
+	return metav1.ListOptions{Limit: 1}
 }
 
 func deref(p *int64) int64 {
@@ -109,6 +118,24 @@ func deref(p *int64) int64 {
 		return 0
 	}
 	return *p
+}
+
+// errCountUnavailable means the apiserver paginated the limit-1 list (it sent a
+// continue token) but reported no RemainingItemCount, so the collection's size
+// is unknown. auditType skips the pass instead of comparing the cache with 1.
+var errCountUnavailable = errors.New("apiserver paginated the list without remainingItemCount")
+
+// listCount turns a limit-1 list into the collection's size: the items returned
+// plus RemainingItemCount. A whole list never needed that field; with limit=1
+// the size depends on it, and the apiserver omits it when a label or field
+// selector is set, and a storage backend may not compute it. With a continue
+// token and no count the size is unknown, and len(Items)=1 would be logged as a
+// divergence of thousands every 5 minutes, so it reports errCountUnavailable.
+func listCount(items int, meta metav1.ListMeta) (int, error) {
+	if meta.Continue != "" && meta.RemainingItemCount == nil {
+		return 0, errCountUnavailable
+	}
+	return items + int(deref(meta.RemainingItemCount)), nil
 }
 
 // auditType runs one comparison. A cached count of -1 means "informer not

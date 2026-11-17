@@ -8,6 +8,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The initial informer LIST is paginated.** The same `resourceVersion=0` made
+  a large cluster's first LIST arrive as one body, too big for the agent's
+  memory and for the tunnel's per-request timeout. It now arrives 500 objects
+  at a time.
+- **The informer cache audit no longer downloads every list.** It asked for one
+  item with `resourceVersion=0`, which the API server answers from its watch
+  cache while ignoring the limit, so every 5 minutes it pulled the full Pod,
+  Deployment and ReplicaSet lists, through the agent on an agent-connected
+  cluster: on a large cluster, enough to exhaust the agent's memory. It now
+  reads the count from `remainingItemCount`, a few KB per type.
 - **A cluster switch no longer tears down more than it should.** Switching
   clusters stopped every active port-forward and cancelled every in-flight
   drain; it now scopes that teardown (and the switch notification) to the caller
