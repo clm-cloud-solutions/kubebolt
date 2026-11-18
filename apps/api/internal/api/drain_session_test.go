@@ -25,7 +25,7 @@ func TestDrainSessionStartIsSingleAcquisition(t *testing.T) {
 	const node = "n1"
 
 	// First start wins.
-	s1, ctx1, fresh1 := m.Start(node, nil)
+	s1, ctx1, fresh1 := m.Start("", node, nil)
 	if !fresh1 || s1 == nil || ctx1 == nil {
 		t.Fatalf("first Start: got fresh=%v session=%v ctx=%v", fresh1, s1, ctx1)
 	}
@@ -33,7 +33,7 @@ func TestDrainSessionStartIsSingleAcquisition(t *testing.T) {
 	// Second start while first is in-flight gets the SAME session
 	// back, with fresh=false. ctx2 is meaningless (caller shouldn't
 	// use it on the loser side); we don't assert on it.
-	s2, _, fresh2 := m.Start(node, nil)
+	s2, _, fresh2 := m.Start("", node, nil)
 	if fresh2 {
 		t.Errorf("second Start should not be fresh")
 	}
@@ -43,7 +43,7 @@ func TestDrainSessionStartIsSingleAcquisition(t *testing.T) {
 
 	// After finalize, a NEW Start gets a fresh session.
 	s1.finalize()
-	s3, _, fresh3 := m.Start(node, nil)
+	s3, _, fresh3 := m.Start("", node, nil)
 	if !fresh3 {
 		t.Errorf("after finalize, Start should be fresh")
 	}
@@ -69,7 +69,7 @@ func TestDrainSessionStartConcurrent(t *testing.T) {
 	for i := 0; i < N; i++ {
 		go func() {
 			defer wg.Done()
-			s, _, fresh := m.Start(node, nil)
+			s, _, fresh := m.Start("", node, nil)
 			mu.Lock()
 			if fresh {
 				wins++
@@ -97,7 +97,7 @@ func TestDrainSessionStartConcurrent(t *testing.T) {
 
 func TestDrainSessionSubscribeReplaysBuffer(t *testing.T) {
 	m := newDrainSessionManager()
-	s, _, _ := m.Start("n1", nil)
+	s, _, _ := m.Start("", "n1", nil)
 
 	s.emit(drainEvent{Name: "pod-evicted", Data: map[string]any{"pod": "p1"}})
 	s.emit(drainEvent{Name: "pod-evicted", Data: map[string]any{"pod": "p2"}})
@@ -131,7 +131,7 @@ func TestDrainSessionSubscribeAfterFinalize(t *testing.T) {
 	// panic, and must return the full replay buffer + a closed
 	// channel so the caller's range loop terminates immediately.
 	m := newDrainSessionManager()
-	s, _, _ := m.Start("n1", nil)
+	s, _, _ := m.Start("", "n1", nil)
 	s.emit(drainEvent{Name: "pod-evicted", Data: map[string]any{"pod": "p1"}})
 	s.emit(drainEvent{Name: "drain-complete", Data: map[string]any{"status": "drained"}})
 	s.finalize()
@@ -162,7 +162,7 @@ func TestDrainSessionFinalizeIdempotent(t *testing.T) {
 	// `defer session.finalize()` plus an explicit finalize on
 	// error path are both legitimate and we shouldn't crash.
 	m := newDrainSessionManager()
-	s, _, _ := m.Start("n1", nil)
+	s, _, _ := m.Start("", "n1", nil)
 	ch, _, _ := s.subscribe()
 
 	s.finalize()
@@ -181,7 +181,7 @@ func TestDrainSessionEmitAfterFinalizeIsSilent(t *testing.T) {
 	// trailing eviction confirmation). The session must drop those
 	// events silently rather than write to closed channels.
 	m := newDrainSessionManager()
-	s, _, _ := m.Start("n1", nil)
+	s, _, _ := m.Start("", "n1", nil)
 	s.finalize()
 
 	// Should NOT panic, should NOT block.
@@ -199,7 +199,7 @@ func TestDrainSessionEmitAfterFinalizeIsSilent(t *testing.T) {
 
 func TestDrainSessionCancel(t *testing.T) {
 	m := newDrainSessionManager()
-	s, ctx, _ := m.Start("n1", nil)
+	s, ctx, _ := m.Start("", "n1", nil)
 
 	if ctx.Err() != nil {
 		t.Fatalf("ctx unexpectedly already cancelled: %v", ctx.Err())
@@ -224,9 +224,9 @@ func TestDrainSessionCancel(t *testing.T) {
 
 func TestDrainSessionCancelAll(t *testing.T) {
 	m := newDrainSessionManager()
-	_, ctx1, _ := m.Start("n1", nil)
-	_, ctx2, _ := m.Start("n2", nil)
-	_, ctx3, _ := m.Start("n3", nil)
+	_, ctx1, _ := m.Start("", "n1", nil)
+	_, ctx2, _ := m.Start("", "n2", nil)
+	_, ctx3, _ := m.Start("", "n3", nil)
 
 	m.CancelAll()
 
@@ -234,7 +234,7 @@ func TestDrainSessionCancelAll(t *testing.T) {
 		t.Error("CancelAll did not cancel every session")
 	}
 	// Map should be cleared so a fresh Start gets a new session.
-	s, _, fresh := m.Start("n1", nil)
+	s, _, fresh := m.Start("", "n1", nil)
 	if !fresh {
 		t.Errorf("Start after CancelAll should be fresh")
 	}
@@ -243,12 +243,12 @@ func TestDrainSessionCancelAll(t *testing.T) {
 
 func TestDrainSessionCleanup(t *testing.T) {
 	m := newDrainSessionManager()
-	old, _, _ := m.Start("old", nil)
+	old, _, _ := m.Start("", "old", nil)
 	old.finalize()
 	// Backdate the start so cleanup will purge it.
 	old.StartedAt = time.Now().Add(-2 * time.Hour)
 
-	running, _, _ := m.Start("running", nil)
+	running, _, _ := m.Start("", "running", nil)
 	_ = running // stays in map regardless of age (still active)
 
 	m.Cleanup(time.Hour)

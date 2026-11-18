@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { enterKey, lastEnterCluster, rememberEnterCluster, useEnterMode } from '@/utils/enterOnce'
 import { useIsMutating, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -18,6 +18,7 @@ import { CopilotToggle } from '@/components/copilot/CopilotToggle'
 import { useCopilot } from '@/contexts/CopilotContext'
 import { SetupWizard } from '@/components/setup/SetupWizard'
 import { useScope, survivesDeadCluster } from '@/utils/scope'
+import { PreparingCluster, useClusterProgress } from './PreparingCluster'
 
 // Friendly names for optional-CRD permission keys, so the "not detected" note
 // reads in product terms. Both Cilium CRDs collapse to one "Cilium".
@@ -30,7 +31,7 @@ const ABSENT_INTEGRATION_NAMES: Record<string, string> = {
 }
 
 export function Layout() {
-  const { data: rawOverview, error, refetch, dataUpdatedAt } = useClusterOverview()
+  const { data: rawOverview, error, refetch, dataUpdatedAt, isPending: overviewPending } = useClusterOverview()
   const isSwitching = useIsMutating({ mutationKey: ['switch-cluster'] }) > 0
   const location = useLocation()
   // A link to "#panel" scrolls to that panel (KPI cards' links).
@@ -173,6 +174,37 @@ export function Layout() {
   // event the moment an agent registers and the connector recovers, so the
   // UI doesn't need a manual Retry button — the empty state auto-heals.
   const isAwaitingAgent = isUnavailable && /no agent connected yet|waiting for agent to register/i.test(error.message || '')
+  // A cluster whose cache is still loading answers 503 too — after a restart,
+  // or when a page is opened while it connects. That is not "unreachable": ask
+  // how far its connect is, and show the Preparing view while it runs. The
+  // first overview of a page opened then is still pending: ask too, so the
+  // page goes straight to that view instead of a spinner first.
+  const firstLoad = overviewPending && !rawOverview && !error
+  const progressProbe = useClusterProgress(
+    activeClusterCtx,
+    (isUnavailable || firstLoad || isSwitching) && !isAwaitingAgent,
+    isSwitching ? 1000 : 2000,
+  )
+  const prepareState = progressProbe.data?.state
+  // Ready on the server while this page's overview still holds the 503 it got
+  // during the connect: ask again now instead of on the 30 s retry, and keep
+  // the Preparing view (at 100%) up meanwhile — for a while, not forever.
+  const readySince = useRef<number | null>(null)
+  if (isUnavailable && prepareState === 'ready') {
+    readySince.current ??= Date.now()
+  } else {
+    readySince.current = null
+  }
+  useEffect(() => {
+    if (isUnavailable && prepareState === 'ready') {
+      void queryClient.invalidateQueries({ queryKey: ['cluster-overview'] })
+      void queryClient.invalidateQueries({ queryKey: ['clusters'] })
+    }
+  }, [isUnavailable, prepareState, queryClient])
+  const finishing = prepareState === 'ready' && readySince.current != null && Date.now() - readySince.current < 15_000
+  const isPreparing = (isUnavailable || firstLoad) && !isAwaitingAgent && (prepareState === 'connecting' || (isUnavailable && finishing))
+  const activeClusterInfo = (clusters ?? []).find(c => c.active)
+  const preparingName = activeClusterInfo?.displayName || activeClusterInfo?.name || 'the cluster'
   // What the Topbar's state pill says: the overview poll is the cluster
   // answering. A metrics-only cluster has no connector to answer it (its 503 is
   // by design), so the pill keeps saying live there instead of offline.
@@ -180,9 +212,12 @@ export function Layout() {
   // Out of contact the overview still answers, from the cache: answering is
   // not the cluster answering, so the pill says disconnected.
   const outOfContact = !isUnavailable && rawOverview?.stale != null
-  const connection = isMetricsOnly ? 'live' : outOfContact ? 'offline' : freshness
+  // While the cluster is prepared the pill says so, not "disconnected".
+  const connection = isMetricsOnly ? 'live' : isSwitching || isPreparing ? 'connecting' : outOfContact ? 'offline' : freshness
   // When cluster is unreachable, don't pass stale data from the previous cluster
-  const overview = isUnavailable ? undefined : rawOverview
+  // Same while a switch or a connect is in progress: the counts in the menu
+  // would be the previous cluster's under the new one's name.
+  const overview = isUnavailable || isSwitching || isPreparing ? undefined : rawOverview
 
   // Detect limited permissions
   // Optional CRDs the cluster lacks (absentResources) are CanList=false but NOT a
@@ -318,13 +353,16 @@ export function Layout() {
           style={{ marginRight: copilotReservation }}
         >
           {isSwitching ? (
-            <div className="flex flex-col items-center justify-center h-full text-center">
-              <Loader2 className="w-8 h-8 text-status-info animate-spin mb-4" />
-              <h3 className="text-sm font-semibold text-kb-text-primary mb-1">Connecting to cluster</h3>
-              <p className="text-xs text-kb-text-tertiary max-w-xs">
-                Probing permissions and syncing resources...
-              </p>
-            </div>
+            // A switch to a cluster KubeBolt already holds is instant: the
+            // card would only flash. It shows when the switch has a connect
+            // to wait for.
+            prepareState === 'connecting' ? (
+              <PreparingCluster name={preparingName} context={activeClusterCtx} />
+            ) : (
+              <div className="flex items-center justify-center h-full">
+                <Loader2 className="w-6 h-6 text-kb-text-tertiary animate-spin" aria-label="Switching cluster" />
+              </div>
+            )
           ) : isPlatformRoute ? (
             <Outlet />
           ) : noClusters ? (
@@ -348,6 +386,8 @@ export function Layout() {
                 </button>
               )}
             </div>
+          ) : isPreparing ? (
+            <PreparingCluster name={preparingName} context={activeClusterCtx} />
           ) : isAwaitingAgent ? (
             <div className="flex flex-col items-center justify-center h-full text-center">
               <Loader2 className="w-8 h-8 text-status-info animate-spin mb-4" />

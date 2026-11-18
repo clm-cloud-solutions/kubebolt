@@ -10,7 +10,22 @@ import type { ReactNode } from 'react'
 
 const switchMutate = vi.fn()
 vi.mock('@/hooks/useSwitchCluster', () => ({ useSwitchCluster: () => ({ mutate: switchMutate, isPending: false }) }))
-vi.mock('@/components/admin/AddClusterWizard', () => ({ AddClusterWizard: () => <div>advanced wizard</div> }))
+// The advanced wizard records what it was opened with and can go back or hand
+// a re-generated token back, like the real one.
+type AdvancedProps = { onBack?: () => void; initialToken?: { token?: string } | null; initialClusterName?: string; onTokenIssued?: (r: { token: string }) => void }
+const advanced: AdvancedProps[] = []
+vi.mock('@/components/admin/AddClusterWizard', () => ({
+  AddClusterWizard: (p: AdvancedProps) => {
+    advanced.push(p)
+    return (
+      <div>
+        advanced wizard
+        <button type="button" onClick={p.onBack}>back to simple</button>
+        <button type="button" onClick={() => p.onTokenIssued?.({ token: 'kbi_regenerated' })}>regenerate</button>
+      </div>
+    )
+  },
+}))
 vi.mock('@/components/admin/AddKubeconfigModal', () => ({ AddKubeconfigModal: () => <div>kubeconfig import</div> }))
 
 const issue = vi.fn()
@@ -37,6 +52,7 @@ function wrap(ui: ReactNode) {
 }
 
 beforeEach(() => {
+  advanced.length = 0
   clusters = []
   defaults = { deploymentMode: 'external', externalEndpoint: 'kubebolt.lan:9090', agentNamespace: 'kubebolt-system' }
   issue.mockReset()
@@ -150,5 +166,39 @@ describe('FirstClusterWizard', () => {
     expect(await screen.findByText('prod-eu is connected')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /open prod-eu/i }))
     expect(switchMutate).toHaveBeenCalledWith('agent-prod', expect.anything())
+  })
+
+  // «Advanced setup» used to replace the wizard with no way
+  // back and issue a second token of its own.
+  it('opens Advanced setup with the token it issued and comes back to it', async () => {
+    issue.mockResolvedValue({ token: 'kbi_supersecret', unusedExpiresAt: '2026-11-25T08:00:00Z' })
+    wrap(<FirstClusterWizard onClose={() => {}} />)
+    await nameAndContinue()
+    await screen.findByRole('button', { name: /copy all/i })
+    expect(screen.getByText(/works until .* unless an agent uses it first/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getAllByRole('button', { name: /advanced setup/i })[0])
+    await screen.findByText('advanced wizard')
+    const opened = advanced[advanced.length - 1]
+    expect(opened.initialToken?.token).toBe('kbi_supersecret')
+    expect(opened.initialClusterName).toBe('prod-eu')
+
+    fireEvent.click(screen.getByRole('button', { name: 'back to simple' }))
+    await screen.findByRole('button', { name: /copy all/i })
+    expect(issue).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows the token the advanced wizard re-generated when coming back', async () => {
+    issue.mockResolvedValue({ token: 'kbi_supersecret' })
+    wrap(<FirstClusterWizard onClose={() => {}} />)
+    await nameAndContinue()
+    await screen.findByRole('button', { name: /copy all/i })
+    fireEvent.click(screen.getAllByRole('button', { name: /advanced setup/i })[0])
+    fireEvent.click(await screen.findByRole('button', { name: 'regenerate' }))
+    fireEvent.click(screen.getByRole('button', { name: 'back to simple' }))
+    await screen.findByRole('button', { name: /copy all/i })
+    fireEvent.click(screen.getByTitle('Show the token'))
+    expect(document.querySelector('pre')!.textContent).toContain('kbi_regenerated')
+    expect(issue).toHaveBeenCalledTimes(1)
   })
 })

@@ -17,9 +17,6 @@ import (
 // that. So the first answer from a connector in a conversation carries the
 // connector's procedure, once.
 
-// connectorSkills maps a connector to the procedure for its tools.
-var connectorSkills = map[string]string{"aws": "aws-investigation"}
-
 const connectorSkillHeader = "[KubeBolt] %s, the procedure for these tools, attached to this conversation's first call to them (it is what load_skill %s returns). The call's answer follows it."
 
 // WithConnectorSkill puts the procedure of call's connector in front of its
@@ -31,7 +28,7 @@ func WithConnectorSkill(history []Message, round []ToolResult, call ToolCall, re
 	if !ok {
 		return result
 	}
-	name, ok := connectorSkills[id]
+	name, ok := skills.ForConnector(id)
 	if !ok {
 		return result
 	}

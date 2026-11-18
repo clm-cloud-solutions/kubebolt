@@ -420,8 +420,8 @@ Setup guides: [self-managed read-only](https://github.com/clm-cloud-solutions/ku
 |-------|---------|---------|
 | `resources.requests.cpu` | `10m` | DaemonSet agent container. |
 | `resources.requests.memory` | `64Mi` | Sized for steady state with Hubble + API proxy + scrape sidecar active. |
-| `resources.limits.cpu` | `100m` | |
-| `resources.limits.memory` | `128Mi` | Headroom for Hubble flow-parsing bursts. See "Memory and observability" below. |
+| `resources.limits.cpu` | `500m` | The connect of a large agent-proxy cluster pages its LISTs through the agent; 100m throttled it. |
+| `resources.limits.memory` | `256Mi` | Headroom for Hubble flow-parsing bursts and for the API-server responses relayed for an agent-proxy cluster: one body is capped at a quarter of this limit (`KUBEBOLT_AGENT_MEMORY_LIMIT_BYTES`, set from it), so a body too large is an error naming the limit, not an OOMKill. Raise it (e.g. `512Mi`) on clusters with thousands of objects. See "Memory and observability" below. |
 | `gomemlimit` | `""` _(derived)_ | Overrides the auto-derived `GOMEMLIMIT` (90% of each Go container's `limits.memory`). Set e.g. `"200MiB"` to pin it across all containers. |
 
 The `promread` pod and the vmagent sidecar have their own resources

@@ -159,7 +159,7 @@ func (p *prometheusProvider) Meta() Integration {
 		ID:          PrometheusID,
 		Name:        PrometheusName,
 		Description: "External Prometheus pushing samples to KubeBolt via remote_write. Detected automatically from ingest-token usage — per-tenant bearer auth + rate limit + cardinality cap gate every batch.",
-		DocsURL:     "https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/integrations/prometheus.md",
+		DocsURL:     prometheusGuide,
 		Capabilities: []string{
 			"metrics.scraped",
 			"metrics.historical",

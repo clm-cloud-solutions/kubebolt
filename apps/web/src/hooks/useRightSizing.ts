@@ -63,11 +63,17 @@ export interface RightSizingResult {
   // over [7d], but a freshly-connected cluster only has a few hours — so this
   // is what the recommendation is REALLY based on. undefined while loading.
   windowDays?: number
-  // True when the cluster has under ~2 days of usage history (or none at all):
+  // True when the cluster has under minHistoryHours of usage history (or none):
   // right-sizing is still collecting and returns NO recommendations, rather than
   // ones built on a quiet snapshot of a barely-run cluster. Consumers show a
   // "collecting samples" state instead of an empty or falsely-confident list.
   insufficientHistory: boolean
+  // The history the backend required — the setting in Settings › General,
+  // 48 unless lowered. Every "needs …" text reads it.
+  minHistoryHours: number
+  // Recommendations from under 48h of history (an admin lowered the
+  // minimum): the P95 has not seen two daily peaks yet.
+  lowConfidence: boolean
 }
 
 interface RightSizingResponse {
@@ -75,7 +81,11 @@ interface RightSizingResponse {
   totals: RightSizingTotals
   windowDays?: number
   insufficientHistory: boolean
+  minHistoryHours?: number
+  lowConfidence?: boolean
 }
+
+export const DEFAULT_MIN_HISTORY_HOURS = 48
 
 const EMPTY_TOTALS: RightSizingTotals = { count: 0, reclaimCpuMilli: 0, reclaimMemBytes: 0 }
 
@@ -96,10 +106,34 @@ export function rightSizingState(
   return 'clean'
 }
 
-// How far a collecting cluster is towards the ~2 days the rules need.
-export function collectedLabel(windowDays?: number | null): string {
+// An amount of history as a person says it: hours under a day ("12h"), days
+// when it is whole days ("2 days"), both otherwise ("1 day 12h"). Never below 1h.
+export function formatHistoryHours(hours: number): string {
+  const h = Math.max(1, Math.round(hours))
+  if (h < 24) return `${h}h`
+  const d = Math.floor(h / 24)
+  const r = h % 24
+  const days = `${d} ${d === 1 ? 'day' : 'days'}`
+  return r ? `${days} ${r}h` : days
+}
+
+// How much history right-sizing needs — the platform's minimum, 2 days unless
+// lowered — as the "collecting samples" texts say it.
+export function historyNeededLabel(minHistoryHours: number = DEFAULT_MIN_HISTORY_HOURS): string {
+  return formatHistoryHours(minHistoryHours)
+}
+
+// How far a collecting cluster is towards the history the rules need.
+export function collectedLabel(windowDays?: number | null, minHistoryHours: number = DEFAULT_MIN_HISTORY_HOURS): string {
   if (windowDays == null || windowDays <= 0) return 'no usage history yet'
-  return `${Math.max(1, Math.round(windowDays * 24))}h of ~48h collected`
+  return `${formatHistoryHours(windowDays * 24)} of ${formatHistoryHours(minHistoryHours)} collected`
+}
+
+// The span a P95 rests on: as a person says it under two days, where the exact
+// amount matters ("1 day 20h"), whole days above ("3d").
+export function historySpanLabel(windowDays?: number | null): string {
+  if (windowDays == null) return '7d'
+  return windowDays < 2 ? formatHistoryHours(windowDays * 24) : `${Math.max(1, Math.round(windowDays))}d`
 }
 
 export const RIGHT_SIZING_ERROR_COPY = 'couldn’t read usage history — tries again in 5 min'
@@ -124,5 +158,7 @@ export function useRightSizing(installed: boolean, _overview?: ClusterOverview):
     error: (q.error as Error | null) ?? null,
     windowDays: q.data?.windowDays,
     insufficientHistory: q.data?.insufficientHistory ?? false,
+    minHistoryHours: q.data?.minHistoryHours || DEFAULT_MIN_HISTORY_HOURS,
+    lowConfidence: q.data?.lowConfidence ?? false,
   }
 }

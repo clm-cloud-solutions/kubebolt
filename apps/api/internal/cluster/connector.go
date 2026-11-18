@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"reflect"
 	"regexp"
 	"sort"
@@ -45,6 +46,7 @@ import (
 	policylisters "k8s.io/client-go/listers/policy/v1"
 	rbaclisters "k8s.io/client-go/listers/rbac/v1"
 	storagelisters "k8s.io/client-go/listers/storage/v1"
+	"k8s.io/client-go/metadata"
 	rest "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
@@ -66,16 +68,56 @@ var stripManagedFieldsOption = informers.WithTransform(func(obj interface{}) (in
 	return obj, nil
 })
 
+// paginateInitialListOption makes the informers' initial LIST paginate instead
+// of arriving as one body. client-go's reflector lists with resourceVersion=0 on
+// its first pass, which the API server serves from its watch cache — ignoring
+// `limit` and returning every object in a single response. On a large cluster
+// (tens of MiB of ReplicaSets) that body is too big for an agent-proxy tunnel's
+// per-request timeout and for the agent's memory. Blanking resourceVersion makes
+// the server honour the pager's limit=500 and paginate: a consistent read,
+// served from the watch cache where ConsistentListFromCache is on, otherwise a
+// bounded etcd range read per page.
+var paginateInitialListOption = informers.WithTweakListOptions(listFromServerNotWatchCache)
+
+// listFromServerNotWatchCache implements paginateInitialListOption.
+// WithTweakListOptions runs on the reflector's List AND Watch calls, so it
+// rewrites only a request that is both resourceVersion=0 and paginated
+// (Limit > 0), which is the reflector's initial LIST page:
+//   - a watch never carries a limit, so it is left alone whatever its
+//     resourceVersion;
+//   - continuation pages already carry resourceVersion="" (the pager clears it);
+//   - when a continue token expires the pager falls back to one LIST with
+//     Limit=0 and resourceVersion=0. Blanking that one would turn it into a
+//     full read of the collection from storage (etcd, or kine on k3s) instead of
+//     the watch cache, for the same single body, so it keeps resourceVersion=0.
+func listFromServerNotWatchCache(opts *metav1.ListOptions) {
+	if opts.ResourceVersion == "0" && opts.Limit > 0 {
+		opts.ResourceVersion = ""
+	}
+}
+
+// newInformerFactory builds every typed informer factory the connector uses, so
+// none of them can miss the shared options: managedFields stripped from the
+// cache and the initial LIST paginated. extra carries the per-factory ones,
+// such as the namespace of a namespace-scoped factory.
+func newInformerFactory(cs kubernetes.Interface, extra ...informers.SharedInformerOption) informers.SharedInformerFactory {
+	opts := append([]informers.SharedInformerOption{stripManagedFieldsOption, paginateInitialListOption}, extra...)
+	return informers.NewSharedInformerFactoryWithOptions(cs, informerResync, opts...)
+}
+
 // Connector manages the Kubernetes cluster connection and informers.
 type Connector struct {
 	restConfig    *rest.Config
 	clientset     kubernetes.Interface
 	dynamicClient dynamic.Interface
-	metricsClient metricsv.Interface
-	factory       informers.SharedInformerFactory
-	nsFactories   []informers.SharedInformerFactory // per-namespace factories for namespace-scoped access
-	graph         *TopologyGraph
-	wsHub         *websocket.Hub
+	// metadataClient lists objects as metadata only — Helm's release storage
+	// without its payloads (helm_releases.go).
+	metadataClient metadata.Interface
+	metricsClient  metricsv.Interface
+	factory        informers.SharedInformerFactory
+	nsFactories    []informers.SharedInformerFactory // per-namespace factories for namespace-scoped access
+	graph          *TopologyGraph
+	wsHub          *websocket.Hub
 	// broadcastGate, when non-nil and false, suppresses this connector's WS
 	// broadcasts — set by the manager when the connector's runtime is PARKED
 	// in the pool (W2). Parked informers keep syncing (so a switch back is
@@ -88,6 +130,9 @@ type Connector struct {
 	// subscribe by (X-KubeBolt-Cluster), not the kube-system clusterUID.
 	wsTenant  string
 	wsCluster string
+	// progress is when the connector last received a successful non-watch
+	// response; Start and the manager's connect budget read it.
+	progress *connectProgress
 	// cacheSyncTimeout overrides the Start() informer-sync deadline. Set by the
 	// manager per-connect from the live General setting; 0 → defaultCacheSyncTimeout.
 	cacheSyncTimeout time.Duration
@@ -136,13 +181,9 @@ type Connector struct {
 	k8sVersionFetching bool
 	apiServerReachable bool
 	apiServerCheckedAt time.Time
-	// helmReleaseSecrets caches the owner=helm Secrets once per ~60s so the overview
-	// count AND the Applications list both read them instead of a live (seconds,
-	// over-the-agent-proxy) LIST of every large gzipped release Secret on every
-	// request. Warmed async; the list syncs once on a cold cache so it isn't empty.
-	helmReleaseSecrets []corev1.Secret
-	helmCountCheckedAt time.Time
-	helmCountFetching  bool
+	// helm holds Helm's release storage as metadata and the revisions decoded
+	// so far; payloads are read on demand (helm_releases.go).
+	helm helmReleaseCache
 	// optionalCounts caches the overview's gateway + optional-CRD COUNTS — each is
 	// a live cluster-wide dynamic LIST (the helm-detail failure mode on cert-manager
 	// / Cilium-heavy clusters, on the hottest endpoint). Warmed async.
@@ -262,6 +303,15 @@ func newConnectorFromConfig(restConfig *rest.Config, clusterName string, wsHub *
 		restConfig.Timeout = 15 * time.Second
 	}
 
+	// Every successful non-watch response marks progress, so the connect's
+	// budgets measure silence, not total duration.
+	// Wrapped before any client is built: the dedicated probe and UID clients
+	// copy the config, wrapper included.
+	progress := newConnectProgress()
+	restConfig.Wrap(func(rt http.RoundTripper) http.RoundTripper {
+		return &progressRoundTripper{next: rt, p: progress}
+	})
+
 	clientset, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
 		return nil, fmt.Errorf("creating kubernetes client: %w", err)
@@ -277,19 +327,26 @@ func newConnectorFromConfig(restConfig *rest.Config, clusterName string, wsHub *
 		log.Printf("Warning: metrics client creation failed: %v", err)
 	}
 
-	factory := informers.NewSharedInformerFactoryWithOptions(clientset, informerResync, stripManagedFieldsOption)
+	metaClient, err := metadata.NewForConfig(restConfig)
+	if err != nil {
+		log.Printf("Warning: metadata client creation failed: %v", err)
+	}
+
+	factory := newInformerFactory(clientset)
 
 	c := &Connector{
-		restConfig:    restConfig,
-		clientset:     clientset,
-		dynamicClient: dynClient,
-		metricsClient: metricsClient,
-		factory:       factory,
-		graph:         NewTopologyGraph(),
-		wsHub:         wsHub,
-		stopCh:        make(chan struct{}),
-		recentWrites:  NewRecentWritesOverlay(),
-		clusterName:   clusterName,
+		restConfig:     restConfig,
+		clientset:      clientset,
+		dynamicClient:  dynClient,
+		metadataClient: metaClient,
+		metricsClient:  metricsClient,
+		factory:        factory,
+		graph:          NewTopologyGraph(),
+		wsHub:          wsHub,
+		stopCh:         make(chan struct{}),
+		recentWrites:   NewRecentWritesOverlay(),
+		clusterName:    clusterName,
+		progress:       progress,
 	}
 
 	// Read kube-system namespace UID to scope VM queries. Same value
@@ -466,26 +523,6 @@ func (c *Connector) Clientset() kubernetes.Interface {
 	return c.clientset
 }
 
-// ListHelmReleaseSecrets returns all Helm 3 release-storage Secrets (label
-// owner=helm) across the namespaces the connected ServiceAccount can read.
-// Helm stores each release revision as one such Secret; the helm package
-// decodes them into a read-only release view (Sprint 4). Uses a live API
-// list with a label selector rather than the secret informer — Helm release
-// listing is infrequent and the selector is narrow, so it's cheaper than
-// watching every Secret in the cluster.
-func (c *Connector) ListHelmReleaseSecrets(ctx context.Context) ([]corev1.Secret, error) {
-	if c.clientset == nil {
-		return nil, fmt.Errorf("no clientset")
-	}
-	list, err := c.clientset.CoreV1().Secrets(metav1.NamespaceAll).List(ctx, metav1.ListOptions{
-		LabelSelector: "owner=helm",
-	})
-	if err != nil {
-		return nil, err
-	}
-	return list.Items, nil
-}
-
 // ListHelmReleaseSecretsForRelease returns only ONE release's storage Secrets (all of
 // its revisions), scoped to its namespace + name label. The detail view used to pull
 // EVERY release's (large, gzipped-manifest) Secret cluster-wide just to decode one —
@@ -562,9 +599,7 @@ func (c *Connector) setupInformers() {
 	if len(nsNamespaces) > 0 {
 		nsFactories = make(map[string]informers.SharedInformerFactory, len(nsNamespaces))
 		for _, ns := range nsNamespaces {
-			nsFactories[ns] = informers.NewSharedInformerFactoryWithOptions(
-				c.clientset, informerResync, informers.WithNamespace(ns), stripManagedFieldsOption,
-			)
+			nsFactories[ns] = newInformerFactory(c.clientset, informers.WithNamespace(ns))
 		}
 	}
 
@@ -656,14 +691,18 @@ func (c *Connector) setupInformers() {
 		}
 	}
 	if can("secrets") {
+		// Helm's release storage stays out of the Secrets cache: it is read on
+		// demand (helm_releases.go).
 		if isNS("secrets") {
 			var listers []corelisters.SecretLister
-			for _, f := range nsFactories {
+			for ns, f := range nsFactories {
+				registerSecretInformer(f, ns)
 				listers = append(listers, f.Core().V1().Secrets().Lister())
 				f.Core().V1().Secrets().Informer().AddEventHandler(handler)
 			}
 			c.secretLister = &multiSecretLister{listers: listers}
 		} else {
+			registerSecretInformer(c.factory, metav1.NamespaceAll)
 			c.secretLister = c.factory.Core().V1().Secrets().Lister()
 			c.factory.Core().V1().Secrets().Informer().AddEventHandler(handler)
 		}
@@ -1312,28 +1351,17 @@ func (c *Connector) effectiveCacheSyncTimeout() time.Duration {
 	return defaultCacheSyncTimeout
 }
 
-// Start begins the shared informer factory. Returns an error if cache sync does
-// not complete within the configured timeout (default 45s; e.g. cluster
-// unreachable).
+// Start begins the shared informer factory. Returns an error if the cache sync
+// receives nothing for the configured timeout (default 45s; e.g. cluster
+// unreachable) or runs past maxConnectDuration.
 func (c *Connector) Start() error {
 	c.factory.Start(c.stopCh)
 	for _, f := range c.nsFactories {
 		f.Start(c.stopCh)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), c.effectiveCacheSyncTimeout())
-	defer cancel()
-	for _, ok := range c.factory.WaitForCacheSync(ctx.Done()) {
-		if !ok {
-			return fmt.Errorf("timed out waiting for cache sync — cluster may be unreachable")
-		}
-	}
-	for _, f := range c.nsFactories {
-		for _, ok := range f.WaitForCacheSync(ctx.Done()) {
-			if !ok {
-				return fmt.Errorf("timed out waiting for namespace cache sync")
-			}
-		}
+	if err := c.waitForCacheSync(c.effectiveCacheSyncTimeout()); err != nil {
+		return err
 	}
 	log.Println("Informer caches synced")
 	// …and that claim is exactly what needs auditing: on 2026-08-05 it was
@@ -1344,6 +1372,40 @@ func (c *Connector) Start() error {
 	// not stay "not installed" for the connector's life. See optional_crds.go.
 	c.StartOptionalCRDRefresh()
 	c.rebuildTopology()
+	if c.secretLister != nil {
+		// The Overview counts Helm releases and their storage Secrets from
+		// metadata read off the informers; have it ready.
+		c.warmHelmMetas()
+	}
+	return nil
+}
+
+// waitForCacheSync waits for every informer's first LIST. idle is a budget of
+// silence, not of duration: the sync fails when no page has arrived for that
+// long and keeps going while pages arrive, up to maxConnectDuration. A fixed deadline failed a large cluster behind a slow
+// tunnel on every attempt while it was still receiving pages.
+func (c *Connector) waitForCacheSync(idle time.Duration) error {
+	if c.progress == nil {
+		c.progress = newConnectProgress()
+	}
+	c.progress.touch()
+	ctx, cancel := progressContext(context.Background(), c.progress, idle, maxConnectDuration)
+	defer cancel()
+	// What the initial LISTs bring is counted for the connect's progress only
+	// (prepare_progress.go): a relist later is not a connect.
+	defer c.progress.listsDone.Store(true)
+	for _, ok := range c.factory.WaitForCacheSync(ctx.Done()) {
+		if !ok {
+			return fmt.Errorf("cache sync stopped: %v — cluster may be unreachable", context.Cause(ctx))
+		}
+	}
+	for _, f := range c.nsFactories {
+		for _, ok := range f.WaitForCacheSync(ctx.Done()) {
+			if !ok {
+				return fmt.Errorf("namespace cache sync stopped: %v", context.Cause(ctx))
+			}
+		}
+	}
 	return nil
 }
 
@@ -1412,80 +1474,6 @@ func (c *Connector) warmServerVersion() {
 	}
 	c.k8sVersion = sv.GitVersion
 	c.platform = detectPlatform(sv.GitVersion)
-}
-
-// helmReleaseCountCached returns the distinct-helm-release count from the cached
-// owner=helm Secrets, warming them asynchronously off the request path. It NEVER lists
-// synchronously — a live LIST over the agent-proxy pulls every large gzipped release
-// Secret and cost seconds on every overview. Cold cache → 0 now, real count next tick.
-func (c *Connector) helmReleaseCountCached() int {
-	c.mu.RLock()
-	secrets, checkedAt, fetching := c.helmReleaseSecrets, c.helmCountCheckedAt, c.helmCountFetching
-	c.mu.RUnlock()
-	if !fetching && (checkedAt.IsZero() || time.Since(checkedAt) > 60*time.Second) {
-		c.mu.Lock()
-		if !c.helmCountFetching && (c.helmCountCheckedAt.IsZero() || time.Since(c.helmCountCheckedAt) > 60*time.Second) {
-			c.helmCountFetching = true
-			go c.warmHelmReleaseSecrets()
-		}
-		c.mu.Unlock()
-	}
-	return distinctHelmReleaseCount(secrets)
-}
-
-// ListHelmReleaseSecretsCached serves the owner=helm Secrets from the same ~60s cache
-// for the Applications LIST, so it no longer does a live (seconds, large-payload) LIST
-// over the agent-proxy on every page load + 30s refetch. Unlike the count, a COLD cache
-// lists ONCE synchronously so the first list view is correct (not empty); the result is
-// cached (the count reuses it) and refreshed async on a TTL afterward.
-func (c *Connector) ListHelmReleaseSecretsCached(ctx context.Context) ([]corev1.Secret, error) {
-	c.mu.RLock()
-	secrets, checkedAt, fetching := c.helmReleaseSecrets, c.helmCountCheckedAt, c.helmCountFetching
-	c.mu.RUnlock()
-	if !checkedAt.IsZero() {
-		if !fetching && time.Since(checkedAt) > 60*time.Second {
-			c.mu.Lock()
-			if !c.helmCountFetching && time.Since(c.helmCountCheckedAt) > 60*time.Second {
-				c.helmCountFetching = true
-				go c.warmHelmReleaseSecrets()
-			}
-			c.mu.Unlock()
-		}
-		return secrets, nil
-	}
-	fresh, err := c.ListHelmReleaseSecrets(ctx)
-	if err != nil {
-		return nil, err
-	}
-	c.mu.Lock()
-	c.helmReleaseSecrets = fresh
-	c.helmCountCheckedAt = time.Now()
-	c.mu.Unlock()
-	return fresh, nil
-}
-
-// warmHelmReleaseSecrets refreshes the cached Secrets off the request path. Best-effort:
-// a failed list isn't cached past the checkedAt stamp, so a later request retries.
-func (c *Connector) warmHelmReleaseSecrets() {
-	fresh, err := c.ListHelmReleaseSecrets(context.Background())
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.helmCountFetching = false
-	c.helmCountCheckedAt = time.Now()
-	if err != nil {
-		return
-	}
-	c.helmReleaseSecrets = fresh
-}
-
-// distinctHelmReleaseCount counts distinct releases (namespace/name) across owner=helm
-// revision Secrets.
-func distinctHelmReleaseCount(secrets []corev1.Secret) int {
-	distinct := make(map[string]struct{}, len(secrets))
-	for i := range secrets {
-		distinct[secrets[i].Namespace+"/"+secrets[i].Labels["name"]] = struct{}{}
-	}
-	return len(distinct)
 }
 
 // optionalResourceCountCached returns the cached count for a gateway/optional-CRD
@@ -1805,8 +1793,14 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 	if c.secretLister != nil {
 		secrets, _ = c.secretLister.List(everythingSelector())
 	}
-	overview.Secrets.Total = len(secrets)
-	overview.Secrets.Ready = len(secrets)
+	// Helm's release storage is not in the Secrets cache; it is still a
+	// Secret, and counted.
+	secretCount := len(secrets)
+	if c.secretLister != nil {
+		secretCount += c.helmSecretCountCached()
+	}
+	overview.Secrets.Total = secretCount
+	overview.Secrets.Ready = secretCount
 
 	// PVCs
 	var pvcs []*corev1.PersistentVolumeClaim
@@ -2854,6 +2848,11 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 	case "secrets":
 		sec, err := c.secretLister.Secrets(namespace).Get(name)
 		if err != nil {
+			if apierrors.IsNotFound(err) {
+				if row, ok := c.helmSecretDetail(namespace, name); ok {
+					return row, nil
+				}
+			}
 			return nil, err
 		}
 		return secretToMap(sec), nil
@@ -4265,9 +4264,57 @@ func resourceTypeToGVR(resourceType string) (schema.GroupVersionResource, bool) 
 		"vpas":                             {Group: "autoscaling.k8s.io", Version: "v1", Resource: "verticalpodautoscalers"},
 		"ciliumnetworkpolicies":            {Group: "cilium.io", Version: "v2", Resource: "ciliumnetworkpolicies"},
 		"ciliumclusterwidenetworkpolicies": {Group: "cilium.io", Version: "v2", Resource: "ciliumclusterwidenetworkpolicies"},
+		// External Secrets Operator (finding #91): which key of which external
+		// store a Secret is synced from, and whether the sync works. Read for
+		// the investigation; KubeBolt's role grants get/list/watch only. v1 is
+		// tried first and v1beta1 after it (resourceYAML), since operators
+		// before v0.16 serve only v1beta1.
+		"externalsecrets":     {Group: "external-secrets.io", Version: "v1", Resource: "externalsecrets"},
+		"secretstores":        {Group: "external-secrets.io", Version: "v1", Resource: "secretstores"},
+		"clustersecretstores": {Group: "external-secrets.io", Version: "v1", Resource: "clustersecretstores"},
 	}
 	gvr, ok := m[resourceType]
 	return gvr, ok
+}
+
+// olderVersionGVR is the version to try when a type's preferred one is not
+// served: External Secrets Operator's v1beta1.
+func olderVersionGVR(resourceType string) (schema.GroupVersionResource, bool) {
+	switch resourceType {
+	case "externalsecrets", "secretstores", "clustersecretstores":
+		gvr, _ := resourceTypeToGVR(resourceType)
+		gvr.Version = "v1beta1"
+		return gvr, true
+	}
+	return schema.GroupVersionResource{}, false
+}
+
+// redactInlineCredentials hides, in a store's spec, every string value under
+// a key that names a credential. A store normally points at its credentials
+// (secretRef: name and key, a role ARN, a service account), and those stay:
+// the redaction only catches a value written inline (the fake provider's
+// data, a webhook header, a token pasted into the spec).
+// It reports whether anything changed.
+func redactInlineCredentials(v interface{}) bool {
+	changed := false
+	switch t := v.(type) {
+	case map[string]interface{}:
+		for k, x := range t {
+			if s, ok := x.(string); ok {
+				if s != "" && s != redactedPlaceholder && (looksLikeSensitiveKey(k) || strings.EqualFold(k, "value")) {
+					t[k] = redactedPlaceholder
+					changed = true
+				}
+				continue
+			}
+			changed = redactInlineCredentials(x) || changed
+		}
+	case []interface{}:
+		for _, x := range t {
+			changed = redactInlineCredentials(x) || changed
+		}
+	}
+	return changed
 }
 
 // isClusterScoped returns true for resource types that are not namespaced.
@@ -4328,7 +4375,7 @@ func looksLikeSensitiveValue(value string) bool {
 func isClusterScoped(resourceType string) bool {
 	switch resourceType {
 	case "nodes", "namespaces", "persistentvolumes", "pvs", "storageclasses", "clusterroles", "clusterrolebindings",
-		"ciliumclusterwidenetworkpolicies":
+		"ciliumclusterwidenetworkpolicies", "clustersecretstores":
 		return true
 	}
 	return false
@@ -4819,6 +4866,22 @@ func (c *Connector) resourceYAML(resourceType, namespace, name string, writes *[
 	default:
 		obj, err = c.dynamicClient.Resource(gvr).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
 	}
+	// A version the cluster does not serve answers NotFound too: try the older
+	// one before reporting it.
+	if apierrors.IsNotFound(err) {
+		if older, ok := olderVersionGVR(resourceType); ok {
+			var o *unstructured.Unstructured
+			var oerr error
+			if isClusterScoped(resourceType) {
+				o, oerr = c.dynamicClient.Resource(older).Get(ctx, name, metav1.GetOptions{})
+			} else {
+				o, oerr = c.dynamicClient.Resource(older).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+			}
+			if oerr == nil {
+				obj, err = o, nil
+			}
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("fetching resource: %w", err)
 	}
@@ -4836,25 +4899,9 @@ func (c *Connector) resourceYAML(resourceType, namespace, name string, writes *[
 		}
 	}
 
-	// Redact secret data values
-	if resourceType == "secrets" {
-		if data, ok := obj.Object["data"].(map[string]interface{}); ok {
-			for k := range data {
-				data[k] = redactedPlaceholder
-			}
-		}
-	}
-
-	// Redact sensitive-looking values in ConfigMap data
-	if resourceType == "configmaps" {
-		if data, ok := obj.Object["data"].(map[string]interface{}); ok {
-			for k, v := range data {
-				if s, ok := v.(string); ok && configMapValueHidden(k, s) {
-					data[k] = redactedPlaceholder
-				}
-			}
-		}
-	}
+	// Every Secret value, a ConfigMap's credentials, a secret store's inline
+	// credentials, an Argo CD Application's values: viewer_redact.go.
+	hideFromViewer(obj.Object)
 
 	yamlBytes, err := sigsyaml.Marshal(obj.Object)
 	if err != nil {
@@ -5131,6 +5178,7 @@ func (c *Connector) ApplyResourceYAML(ctx context.Context, resourceType, namespa
 	// values come back: a stored value may be binary on purpose.
 	var refused refusals
 	refused.add(checkPlaceholdersKept(resourceType, rawObj, live.Object))
+	refused.add(checkSpecHiddenKept(rawObj, live.Object))
 	refused.add(checkBase64Values(resourceType, rawObj))
 	refused.add(checkTextValues(resourceType, rawObj, opts))
 	if err := refused.err(); err != nil {
@@ -5868,7 +5916,7 @@ func (c *Connector) listSecrets(namespace string) []map[string]interface{} {
 		}
 		items = append(items, secretToMap(sec))
 	}
-	return items
+	return append(items, c.helmSecretRows(namespace)...)
 }
 
 func (c *Connector) listPVCs(namespace string) []map[string]interface{} {

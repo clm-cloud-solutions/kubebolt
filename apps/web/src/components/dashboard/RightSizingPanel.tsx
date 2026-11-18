@@ -4,6 +4,8 @@ import { Scale } from 'lucide-react'
 import { useMetricsOnly } from '@/hooks/useMetricsOnly'
 import {
   useRightSizing,
+  historyNeededLabel,
+  historySpanLabel,
   type Recommendation,
   type ResourceFinding,
   type ResourceState,
@@ -41,7 +43,7 @@ const KIND_TO_PATH: Record<string, string> = {
 
 export function RightSizingPanel({ installed, overview }: Props) {
   const isMetricsOnly = useMetricsOnly()
-  const { recs, isLoading, error, insufficientHistory } = useRightSizing(installed, overview)
+  const { recs, isLoading, error, insufficientHistory, minHistoryHours, lowConfidence, windowDays } = useRightSizing(installed, overview)
   const queryClient = useQueryClient()
 
   if (!installed) return null
@@ -79,7 +81,7 @@ export function RightSizingPanel({ installed, overview }: Props) {
   const KOBI_ROW_CAP = 10
 
   if (!isLoading && !error && recs.length === 0) {
-    // Not enough history yet — the cluster has under ~2 days of usage samples
+    // Not enough history yet — the cluster has under minHistoryHours of usage samples
     // (or none at all), so right-sizing makes no recommendations rather than
     // ones built on a quiet snapshot of a barely-run cluster (finding #74). Say
     // so plainly instead of hiding, so an empty panel doesn't read as "broken".
@@ -93,7 +95,7 @@ export function RightSizingPanel({ installed, overview }: Props) {
             <h4 className="text-sm font-semibold text-kb-text-primary">Right-sizing Recommendations</h4>
           </div>
           <p className="text-[11px] text-kb-text-tertiary leading-relaxed">
-            Collecting samples — right-sizing needs about 2 days of usage history before it
+            Collecting samples — right-sizing needs {historyNeededLabel(minHistoryHours)} of usage history before it
             can tell real over-provisioning from a cluster that has only just started running.
             It fills in on its own.
           </p>
@@ -136,9 +138,20 @@ export function RightSizingPanel({ installed, overview }: Props) {
             />
           )}
         </div>
-        <span className="text-[10px] font-mono text-kb-text-tertiary shrink-0">
-          based on 7d agent samples · P95
-        </span>
+        {lowConfidence ? (
+          // The platform lowered the minimum history (a trial cluster): say what
+          // the numbers rest on, without dressing them as a 7-day P95.
+          <span
+            className="text-[10px] font-mono text-kb-text-tertiary shrink-0"
+            title="Fewer than two days of usage history: the P95 has not seen two daily peaks yet. Confirm before resizing a critical workload."
+          >
+            based on {historySpanLabel(windowDays)} of agent samples · P95 · early estimate
+          </span>
+        ) : (
+          <span className="text-[10px] font-mono text-kb-text-tertiary shrink-0">
+            based on 7d agent samples · P95
+          </span>
+        )}
       </div>
 
       {isLoading && (

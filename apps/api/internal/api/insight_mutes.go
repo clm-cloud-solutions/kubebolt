@@ -162,12 +162,72 @@ func applyMuteFilter(items []models.Insight, mutes []insights.Mute) []models.Ins
 	}
 	out := make([]models.Insight, 0, len(items))
 	for _, it := range items {
-		if idx[it.RuleID+"\x00"+it.Resource] && it.Severity != "critical" {
+		if idx[it.RuleID+"\x00"+it.Resource] && !piercesMute(it.Severity) {
 			continue
 		}
 		out = append(out, it)
 	}
 	return out
+}
+
+// piercesMute reports whether a severity shows through a mute (§5): a
+// critical is never silenced. Every path that applies the overlay asks this
+// one function, so the rule cannot drift between them.
+func piercesMute(severity string) bool { return severity == "critical" }
+
+// orgMuteIndex is the org's active mutes across every cluster, keyed by
+// muteKey, for the org-wide reads (the fleet summary, the episode list) that
+// cover many clusters in one request. Nil-safe and fail-open like
+// visibleInsights: nil means "nothing is silenced", never a broken read.
+func (h *handlers) orgMuteIndex(r *http.Request) map[string]bool {
+	if h.mutes == nil {
+		return nil
+	}
+	mutes, err := h.mutes.ListMutes(r.Context(), auth.ContextTenantID(r), "")
+	if err != nil {
+		slog.Warn("mute overlay: could not list the org's mutes; showing everything",
+			slog.String("error", err.Error()))
+		return nil
+	}
+	idx := make(map[string]bool, len(mutes))
+	for _, m := range mutes {
+		idx[muteKey(m.ClusterID, m.RuleID, m.Resource)] = true
+	}
+	return idx
+}
+
+// muteKey names what one mute silences: a rule on a resource, in a cluster.
+// Insight records, episodes and mutes all key the cluster by its kube-system
+// UID, so the three meet without canonicalizing.
+func muteKey(clusterID, ruleID, resource string) string {
+	return clusterID + "\x00" + ruleID + "\x00" + resource
+}
+
+// markSilencedEpisodes sets Muted on each episode the overlay hides: a mute
+// matches it and it never reached critical (a critical pierced the silence
+// while it lasted, so it is not shown as quiet). History keeps every episode;
+// the mark lets a surface that asks for action (Home's «While you were away»)
+// rank it last and say it is silenced (finding #80).
+func (h *handlers) markSilencedEpisodes(r *http.Request, eps []insights.Episode) {
+	if len(eps) == 0 {
+		return
+	}
+	idx := h.orgMuteIndex(r)
+	if len(idx) == 0 {
+		return
+	}
+	for i := range eps {
+		if episodeSilenced(idx, &eps[i]) {
+			eps[i].Muted = true
+		}
+	}
+}
+
+// episodeSilenced reports whether a mute in idx hides this episode: one
+// matches it and it never reached critical.
+func episodeSilenced(idx map[string]bool, ep *insights.Episode) bool {
+	return idx[muteKey(ep.ClusterID, ep.RuleID, ep.Resource)] &&
+		!piercesMute(ep.Severity) && !piercesMute(ep.MaxSeverity)
 }
 
 // visibleInsights applies the org's mutes for the request's cluster.

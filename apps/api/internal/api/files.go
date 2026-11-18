@@ -15,6 +15,7 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/remotecommand"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 )
 
@@ -24,6 +25,17 @@ type fileEntry struct {
 	Size        string `json:"size"`
 	Modified    string `json:"modified,omitempty"`
 	Permissions string `json:"permissions,omitempty"`
+}
+
+// accessClusterUID returns the UID of the cluster this request resolved to, so
+// an access-audit record is stamped with the cluster the access actually
+// reached rather than the install's default. "" when no connector is resolved —
+// the record then falls back to audit.ClusterID() as before.
+func (h *handlers) accessClusterUID(ctx context.Context) string {
+	if conn := h.manager.Connector(ctx); conn != nil {
+		return conn.ClusterUID()
+	}
+	return ""
 }
 
 // execCommand runs a non-interactive command in a pod container and returns stdout/stderr.
@@ -81,6 +93,9 @@ func sanitizePath(p string) string {
 }
 
 func (h *handlers) handleListFiles(w http.ResponseWriter, r *http.Request) {
+	if !filesRoleAllowed(w, r) {
+		return
+	}
 	namespace := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 	container := r.URL.Query().Get("container")
@@ -227,6 +242,9 @@ func parseFindOutput(output, dirPath string) []fileEntry {
 }
 
 func (h *handlers) handleFileContent(w http.ResponseWriter, r *http.Request) {
+	if !filesRoleAllowed(w, r) {
+		return
+	}
 	namespace := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 	container := r.URL.Query().Get("container")
@@ -254,7 +272,7 @@ func (h *handlers) handleFileContent(w http.ResponseWriter, r *http.Request) {
 	// The path and the size, never the bytes. Reading a file out of a running
 	// pod is how data leaves, so it is recorded; recording WHAT was read would
 	// copy the pod's secrets into the audit trail, which outlives them.
-	auditAccess(actorFromRequest(r), "pod_file_read", "pods", namespace, name, map[string]any{
+	auditAccess(actorFromRequest(r).withCluster(h.accessClusterUID(r.Context())), "pod_file_read", "pods", namespace, name, map[string]any{
 		"container": container,
 		"path":      filePath,
 		"bytes":     len(stdout),
@@ -270,6 +288,9 @@ func (h *handlers) handleFileContent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handlers) handleFileDownload(w http.ResponseWriter, r *http.Request) {
+	if !filesRoleAllowed(w, r) {
+		return
+	}
 	namespace := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 	container := r.URL.Query().Get("container")
@@ -281,7 +302,7 @@ func (h *handlers) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 
 	stdout, stderr, err := h.execCommand(r.Context(), namespace, name, container,
 		[]string{"cat", filePath})
-	auditAccess(actorFromRequest(r), "pod_file_download", "pods", namespace, name, map[string]any{
+	auditAccess(actorFromRequest(r).withCluster(h.accessClusterUID(r.Context())), "pod_file_download", "pods", namespace, name, map[string]any{
 		"container": container,
 		"path":      filePath,
 		"bytes":     len(stdout),
@@ -296,4 +317,15 @@ func (h *handlers) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", fileName))
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(stdout))
+}
+
+// filesRoleAllowed answers 403 below Editor. The router already puts the file
+// routes in the Editor group; this holds if a route is ever moved: reading a
+// file is exec, and the terminal checks the same in exec.go.
+func filesRoleAllowed(w http.ResponseWriter, r *http.Request) bool {
+	if auth.RoleLevel(auth.ContextRole(r)) < auth.RoleLevel(auth.RoleEditor) {
+		respondError(w, http.StatusForbidden, "Editor role required to browse a pod's files")
+		return false
+	}
+	return true
 }

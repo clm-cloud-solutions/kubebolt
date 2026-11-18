@@ -114,13 +114,24 @@ func (h *handlers) handleShiftReport(w http.ResponseWriter, r *http.Request) {
 	if resp.Worst, err = h.shiftStats.WorstEpisode(r.Context(), org, from, now); err != nil {
 		slog.Error("shift report: worst episode failed", slog.String("org", org), slog.String("error", err.Error()))
 	}
-	if resp.Worst != nil && narrowed {
+	if resp.Worst != nil {
 		// The worst episode carries a resource name, not its cluster: look the
-		// cluster up, and leave the line out when it is not this caller's.
-		if h.episodes == nil {
-			resp.Worst = nil
-		} else if ep, _, err := h.episodes.Episode(r.Context(), org, resp.Worst.ID); err != nil || !may(ep.ClusterID) {
-			resp.Worst = nil
+		// episode up, and leave the line out when it is not this caller's, or
+		// when a mute silences it — the sentence would otherwise lead the report
+		// with what the person asked not to hear about (finding #80).
+		muted := h.orgMuteIndex(r)
+		if narrowed || len(muted) > 0 {
+			if h.episodes == nil {
+				if narrowed {
+					resp.Worst = nil
+				}
+			} else if ep, _, err := h.episodes.Episode(r.Context(), org, resp.Worst.ID); err != nil {
+				if narrowed {
+					resp.Worst = nil
+				}
+			} else if !may(ep.ClusterID) || episodeSilenced(muted, &ep) {
+				resp.Worst = nil
+			}
 		}
 	}
 	if resp.Mutes, err = h.shiftStats.MuteStats(r.Context(), org, from); err != nil {

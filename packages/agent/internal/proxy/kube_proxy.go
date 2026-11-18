@@ -39,7 +39,9 @@ import (
 // memory. Derived from the channel's max message size (channellimit) minus
 // headroom, so it tracks the gRPC limit automatically and a full-size body
 // never overflows a single AgentChannel message — raise
-// KUBEBOLT_AGENT_MAX_MSG_BYTES and both move together. (A large-cluster Secret
+// KUBEBOLT_AGENT_MAX_MSG_BYTES and both move together — and never more than a
+// quarter of the agent's memory limit, so a body too large for the pod is an
+// error naming the limit rather than an OOMKill. (A large-cluster Secret
 // list exceeded the old fixed 10 MiB and stalled the whole connector's cache
 // sync, which is what surfaced this.)
 var MaxBodyBytes = int64(channellimit.MaxBodyBytes())
@@ -129,7 +131,7 @@ func (p *KubeAPIProxy) loadBearerToken() string {
 // otherwise.
 func (p *KubeAPIProxy) HandleRequest(ctx context.Context, req *agentv2.KubeProxyRequest) *agentv2.KubeProxyResponse {
 	if int64(len(req.GetBody())) > MaxBodyBytes {
-		return &agentv2.KubeProxyResponse{Error: fmt.Sprintf("request body exceeds %d bytes", MaxBodyBytes)}
+		return &agentv2.KubeProxyResponse{Error: channellimit.OverSizeError("request body", MaxBodyBytes)}
 	}
 
 	httpReq, err := p.buildRequest(ctx, req)
@@ -148,7 +150,7 @@ func (p *KubeAPIProxy) HandleRequest(ctx context.Context, req *agentv2.KubeProxy
 		return &agentv2.KubeProxyResponse{Error: fmt.Sprintf("read body: %v", err)}
 	}
 	if int64(len(body)) > MaxBodyBytes {
-		return &agentv2.KubeProxyResponse{Error: fmt.Sprintf("response body exceeds %d bytes", MaxBodyBytes)}
+		return &agentv2.KubeProxyResponse{Error: channellimit.OverSizeError("response body", MaxBodyBytes)}
 	}
 
 	return &agentv2.KubeProxyResponse{

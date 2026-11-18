@@ -108,7 +108,8 @@ type Integration struct {
 	Description string `json:"description"`
 
 	// DocsURL points at the operator-facing docs for this
-	// integration. Rendered as a "Learn more" link.
+	// integration. Rendered as a "Learn more" link. A page on kubebolt.io
+	// (siteDoc) unless the site does not yet carry the guide.
 	DocsURL string `json:"docsUrl,omitempty"`
 
 	// Capabilities advertises what data streams this integration
@@ -286,3 +287,22 @@ const (
 	ManagedByLabel = "app.kubernetes.io/managed-by"
 	ManagedByValue = "kubebolt"
 )
+
+// siteDocs is the base of KubeBolt's published documentation. The catalog
+// used to point at guides in the GitHub repository. Pages
+// live at /docs/<slug>/ — with the trailing slash, which the bare path
+// redirects to.
+const siteDocs = "https://kubebolt.io/docs/"
+
+func siteDoc(slug, anchor string) string {
+	u := siteDocs + slug + "/"
+	if anchor != "" {
+		u += "#" + anchor
+	}
+	return u
+}
+
+// prometheusGuide stays in the repository until the site carries what it does
+// (prometheus.yml snippets, retry_on_http_429, the limits table, the
+// self-metrics queries): the site's Metrics page covers a fraction of it.
+const prometheusGuide = "https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/integrations/prometheus.md"

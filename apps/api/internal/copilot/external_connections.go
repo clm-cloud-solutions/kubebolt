@@ -193,7 +193,12 @@ type ExternalConnectionsResult struct {
 	// ClusterNetwork names where this cluster's own network lives in its
 	// cloud, when a row above is a resource of that cloud.
 	ClusterNetwork *ClusterNetwork `json:"clusterNetwork,omitempty"`
-	Notes          []string        `json:"notes,omitempty"`
+	// ClusterProvider is the connector id of the cloud this cluster runs in
+	// (aws, gcp, azure), "" when it is not one of them. A resource the cluster
+	// names without dialing it (a Secret synced from Secrets Manager) lives
+	// there.
+	ClusterProvider string   `json:"clusterProvider,omitempty"`
+	Notes           []string `json:"notes,omitempty"`
 }
 
 // ExternalEntry is an Ingress or a Service of type LoadBalancer in front of

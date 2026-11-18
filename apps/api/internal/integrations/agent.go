@@ -132,7 +132,7 @@ func (a *agentProvider) Meta() Integration {
 		ID:          AgentID,
 		Name:        "KubeBolt Agent",
 		Description: "Per-node DaemonSet that ships kubelet stats, cAdvisor metrics, and Cilium Hubble flows to KubeBolt. Optionally acts as the cluster's K8s API gateway for SaaS multi-cluster — exec / port-forward / files routed through the agent's outbound channel when proxy is enabled.",
-		DocsURL:     "https://github.com/clm-cloud-solutions/kubebolt/tree/main/deploy/helm/kubebolt-agent",
+		DocsURL:     siteDoc("agent", ""),
 		Capabilities: []string{
 			"metrics.historical",
 			"metrics.network",

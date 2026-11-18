@@ -293,7 +293,7 @@ var _ UserStore = (*Store)(nil)
 
 // CreateUser creates a new user with a bcrypt-hashed password.
 func (s *Store) CreateUser(_ context.Context, username, email, name, password string, role Role) (*User, error) {
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), passwordHashCost)
 	if err != nil {
 		return nil, fmt.Errorf("hash password: %w", err)
 	}
@@ -466,7 +466,7 @@ func (s *Store) UpdateUser(_ context.Context, id, username, email, name string, 
 
 // UpdatePassword changes a user's password.
 func (s *Store) UpdatePassword(_ context.Context, id, newPassword string) error {
-	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), 12)
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), passwordHashCost)
 	if err != nil {
 		return fmt.Errorf("hash password: %w", err)
 	}

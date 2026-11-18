@@ -137,21 +137,41 @@ func toSummary(rls *helmReleaseJSON) Release {
 	}
 }
 
+// DecodeSummary decodes one release storage Secret into the summary of the
+// revision it holds. ok is false when the Secret holds no decodable release.
+func DecodeSummary(sec *corev1.Secret) (Release, bool) {
+	raw, ok := sec.Data["release"]
+	if !ok {
+		return Release{}, false
+	}
+	rls, err := decodeReleaseData(raw)
+	if err != nil {
+		return Release{}, false
+	}
+	return toSummary(rls), true
+}
+
+// SortReleases orders releases the way the list view shows them: by
+// namespace, then name.
+func SortReleases(releases []Release) {
+	sort.Slice(releases, func(i, j int) bool {
+		if releases[i].Namespace != releases[j].Namespace {
+			return releases[i].Namespace < releases[j].Namespace
+		}
+		return releases[i].Name < releases[j].Name
+	})
+}
+
 // DecodeReleases decodes a set of Helm release storage Secrets into the
 // LATEST revision per (namespace, name) — the list view. Secrets that fail
 // to decode are skipped (a single bad value shouldn't blank the list).
 func DecodeReleases(secrets []corev1.Secret) []Release {
 	latest := make(map[string]Release) // key ns/name → highest-revision summary
 	for i := range secrets {
-		raw, ok := secrets[i].Data["release"]
+		sum, ok := DecodeSummary(&secrets[i])
 		if !ok {
 			continue
 		}
-		rls, err := decodeReleaseData(raw)
-		if err != nil {
-			continue
-		}
-		sum := toSummary(rls)
 		key := sum.Namespace + "/" + sum.Name
 		if cur, ok := latest[key]; !ok || sum.Revision > cur.Revision {
 			latest[key] = sum
@@ -161,18 +181,17 @@ func DecodeReleases(secrets []corev1.Secret) []Release {
 	for _, r := range latest {
 		out = append(out, r)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Namespace != out[j].Namespace {
-			return out[i].Namespace < out[j].Namespace
-		}
-		return out[i].Name < out[j].Name
-	})
+	SortReleases(out)
 	return out
 }
 
 // DecodeReleaseDetail decodes the detail view for one release: the latest
 // revision's values/manifest/notes/dependencies plus the full revision
 // history, from all storage Secrets that belong to (namespace, name).
+//
+// The result is RAW: the values and the rendered manifest carry every
+// credential the chart was given, its Secrets' data included. Nothing leaves
+// the process without cluster.RedactHelmRelease.
 func DecodeReleaseDetail(namespace, name string, secrets []corev1.Secret) (*Release, error) {
 	var revisions []helmReleaseJSON
 	for i := range secrets {
