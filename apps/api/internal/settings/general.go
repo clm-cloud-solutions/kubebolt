@@ -40,8 +40,9 @@ type StoredGeneralSettings struct {
 	// UpdateCheckEnabled toggles the GitHub releases poller that
 	// drives the "new version available" chip. PLATFORM (install-global).
 	UpdateCheckEnabled *bool `json:"updateCheckEnabled,omitempty"`
-	// CacheSyncTimeoutSeconds is the cold-connect informer cache-sync
-	// deadline. PLATFORM (install-global) — applies on the next cluster
+	// CacheSyncTimeoutSeconds is how long a cold connect's informer sync may
+	// go without receiving anything (a budget of silence, capped at 10 min
+	// overall). PLATFORM (install-global) — applies on the next cluster
 	// connect, no request org.
 	CacheSyncTimeoutSeconds *int `json:"cacheSyncTimeoutSeconds,omitempty"`
 	// RightSizingMinHistoryHours is the usage history right-sizing needs before

@@ -8,6 +8,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A large cluster behind a slow agent tunnel connects.** The connect and
+  cache-sync timeouts were fixed deadlines, so a cluster whose objects take
+  longer than that to arrive failed at the same point on every attempt while
+  pages were still arriving. Both are now budgets of silence: a connect fails
+  when nothing arrives from the cluster for that long (a successful response
+  that is not a watch) and carries on while pages arrive, up to 10 minutes. A
+  stuck agent still fails at the same point. Every failed attempt to start a
+  cluster's background runtime is logged (`cluster runtime failed to
+  connect`, with the reason); that path used to drop the error.
 - **A failed namespace LIST no longer scopes a cluster to guessed
   namespaces.** When a type was denied cluster-wide, the permission probe
   listed namespaces to look for namespace-level access, and on any error it

@@ -1838,8 +1838,17 @@ func (m *Manager) getOrSpinPooled(tenant, contextName string) *clusterRuntime {
 	m.mu.Unlock()
 
 	// Build outside the lock (connector.Start ~20s).
+	started := time.Now()
 	built, err := m.startRuntime(access, contextName, agentProxyCID, insightStore, tenantID, cacheSyncTimeout, connectTimeout)
 	if err != nil {
+		// Every failed attempt is logged: this path used to drop the error, so a
+		// cluster whose always-on runtime never came up left no trace at all.
+		slog.Warn("cluster runtime failed to connect",
+			slog.String("org", tenant),
+			slog.String("context", contextName),
+			slog.Duration("after", time.Since(started).Round(time.Millisecond)),
+			slog.String("error", err.Error()),
+		)
 		m.mu.Lock()
 		delete(m.runtimes, pk) // drop the failed placeholder so a retry rebuilds
 		m.mu.Unlock()
@@ -2188,17 +2197,22 @@ func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID
 	// fast so getOrSpinPooled's error path closes the placeholder ready (cluster shown
 	// unreachable) instead of hanging. The buffered chan keeps the Start goroutine from
 	// leaking when we time out — it sends and exits once Start unwinds.
+	//
+	// The deadline is an idle budget: the connect
+	// fails when the cluster sends nothing for `to`, and keeps going while pages
+	// arrive, up to maxConnectDuration. A fixed deadline cut a large cluster
+	// behind a slow tunnel at the same point on every attempt.
 	connectDone := make(chan error, 1)
 	go func() { connectDone <- connector.Start() }()
 	var connectErr error
 	if to := connectDeadline(agentProxyCID, connectTimeout); to > 0 {
-		timer := time.NewTimer(to)
+		budget, stopBudget := progressContext(context.Background(), connector.progress, to, maxConnectDuration)
 		select {
 		case connectErr = <-connectDone:
-			timer.Stop()
-		case <-timer.C:
+			stopBudget()
+		case <-budget.Done():
 			connector.Stop() // best-effort: closes stopCh, unblocks WaitForCacheSync
-			return nil, fmt.Errorf("connect timed out after %s for context %s — agent may be stuck", to, contextName)
+			return nil, fmt.Errorf("connect to context %s stopped: %v — agent may be stuck", contextName, context.Cause(budget))
 		}
 	} else {
 		connectErr = <-connectDone
