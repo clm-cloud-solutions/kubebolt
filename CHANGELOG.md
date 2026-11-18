@@ -23,6 +23,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Secrets went from 7.1 MiB to 12 KiB per minute through the agent tunnel
   with the Overview open, and a loaded Applications list answers in under a
   millisecond (it took ~140 ms).
+- **A Helm release's History tab spaces its columns.** Revision, status,
+  chart and date ran into each other, and a long description (a failed
+  upgrade's error) squeezed them further; the table now follows the
+  Applications list's layout and wraps the description.
 - **An agent short of memory says so, with the command that fixes it.** When
   a KubeBolt agent pod is OOMKilled or stays near its memory limit, the
   *OOMKilled* and *Memory Near Limit* insights give the `helm upgrade` that
