@@ -8,6 +8,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Namespaces on a large cluster.** The Overview's *Workloads by namespace*
+  drew every namespace at once (131 on a test cluster) and pushed the rest of
+  the page down: it now shows the first 12, the ones that need attention
+  first, and *Show all* for the rest (saying how many hidden ones need
+  attention). The Namespaces page asked for the list without a page, got the
+  API's first 50 and had no way to the others while saying "50 total": it now
+  pages 50 at a time like every other list, counts them all and filters by
+  name.
 - **A burst of insights is one notification, not hundreds.** When a cluster
   opens 5 or more insights within 60 seconds (its first evaluation, a
   reconnect after its episodes expired, a node failure), Slack, Discord and
