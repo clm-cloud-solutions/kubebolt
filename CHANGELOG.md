@@ -6,6 +6,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.6.4] — 2026-11-18
+
+A large cluster connects through its agent, and a burst of insights is one
+notification. A fix release: drop-in, no migration; the agent stays on 1.4.9.
+Full note: [docs/releases/v2.6.4.md](docs/releases/v2.6.4.md).
+
 ### Fixed
 
 - **Namespaces on a large cluster.** The Overview's *Workloads by namespace*
