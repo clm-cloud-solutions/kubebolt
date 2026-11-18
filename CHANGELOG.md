@@ -8,6 +8,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **An agent short of memory says so, with the command that fixes it.** When
+  a KubeBolt agent pod is OOMKilled or stays near its memory limit, the
+  *OOMKilled* and *Memory Near Limit* insights give the `helm upgrade` that
+  raises its limit (twice the current one, at least 256Mi; the promread
+  pod's own values key; pinned to the chart version it runs) instead of the
+  generic advice. The agent chart's default limits rise to 256Mi / 500m and
+  the agent caps one relayed response at a quarter of its memory limit,
+  answering with an error past it instead of being OOMKilled (agent
+  changelog, next agent release). The Advanced setup's resource hints say
+  the same.
 - **Documentation links open kubebolt.io.** The integration catalog, Cost,
   Reliability and the add-cluster wizard linked guides in the GitHub
   repository; they now open the published docs (agent, Trivy, Kyverno,
