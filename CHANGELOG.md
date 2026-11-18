@@ -6,6 +6,67 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **An agent short of memory says so, with the command that fixes it.** When
+  a KubeBolt agent pod is OOMKilled or stays near its memory limit, the
+  *OOMKilled* and *Memory Near Limit* insights give the `helm upgrade` that
+  raises its limit (twice the current one, at least 256Mi; the promread
+  pod's own values key; pinned to the chart version it runs) instead of the
+  generic advice. The agent chart's default limits rise to 256Mi / 500m and
+  the agent caps one relayed response at a quarter of its memory limit,
+  answering with an error past it instead of being OOMKilled (agent
+  changelog, next agent release). The Advanced setup's resource hints say
+  the same.
+- **Documentation links open kubebolt.io.** The integration catalog, Cost,
+  Reliability and the add-cluster wizard linked guides in the GitHub
+  repository; they now open the published docs (agent, Trivy, Kyverno,
+  Falco, OpenCost, the Reliability tab). Reliability's link also pointed at
+  an anchor the chart README does not have. The Prometheus remote_write
+  cards and Ingest activity keep the repository guide until the site carries
+  its `prometheus.yml` snippets, `retry_on_http_429`, limits and
+  self-metrics queries.
+- **A wizard's agent token stops working if no agent uses it within a week,
+  and *Advanced setup* has a way back.** The onboarding and the add-cluster
+  wizard issue a token on every attempt and none expired: each abandoned
+  attempt left an ingest credential that worked until someone revoked it. A
+  token those wizards hand over to copy now stops working after 7 days unless
+  an agent uses it first; once one has, it keeps working. The wizards say
+  until when, and Agents › Tokens shows it (*if unused, in 7d*). A token the
+  API writes straight into the connected cluster's Secret (install,
+  configure) has no such window. *Advanced setup* opened from the onboarding
+  reuses the token the onboarding issued instead of issuing a second one,
+  keeps the name, and has *Back to the simple setup*. The issue-token
+  endpoint also honours the `ttlSeconds` it declared and ignored. Agents ›
+  Tokens read a future expiry as "just now"; it now reads "in 6d".
+- **A failed connect is not restarted by every request.** While a cluster's
+  connect kept failing, every request for it (the UI polls every few
+  seconds) started another full connect, each one restarting the initial LIST
+  through the agent: hundreds of MB in minutes without ever connecting. After
+  a failed attempt, requests now wait 30 s, then 1, 2 and 4 minutes, at most
+  5, and are told why (`… (next attempt in 40s)`). An agent's Hello and an
+  explicit switch to the cluster still try at once.
+- **A large cluster behind a slow agent tunnel connects.** The connect and
+  cache-sync timeouts were fixed deadlines, so a cluster whose objects take
+  longer than that to arrive failed at the same point on every attempt while
+  pages were still arriving. Both are now budgets of silence: a connect fails
+  when nothing arrives from the cluster for that long (a successful response
+  that is not a watch) and carries on while pages arrive, up to 10 minutes. A
+  stuck agent still fails at the same point. Every failed attempt to start a
+  cluster's background runtime is logged (`cluster runtime failed to
+  connect`, with the reason); that path used to drop the error.
+- **A failed namespace LIST no longer scopes a cluster to guessed
+  namespaces.** When a type was denied cluster-wide, the permission probe
+  listed namespaces to look for namespace-level access, and on any error it
+  fell back to `default`, `kube-system` and `kube-public` in silence. Through
+  a slow agent tunnel the LIST could time out, and a large cluster connected
+  with some types served from two namespaces: lists that looked complete and
+  were not. The LIST is now retried; if it keeps failing those types stay
+  without access (the views say so and the limited-access banner counts
+  them). The common namespaces are tried only when the ServiceAccount may not
+  list namespaces at all (403). The log names the types instead of counting
+  them.
+
 ## [2.6.4] — 2026-11-18
 
 A large cluster connects through its agent, and a burst of insights is one

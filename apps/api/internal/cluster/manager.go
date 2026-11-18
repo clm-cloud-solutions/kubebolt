@@ -92,6 +92,10 @@ type Manager struct {
 	// (m.connector/collector/engine/cancelFn); lazy spin-up into this pool
 	// lands in A.3b. nil until first use — reads of a nil map are safe.
 	runtimes map[poolKey]*clusterRuntime
+	// spinFailures remembers each pooled runtime's last failed connect, so the
+	// requests that keep arriving for it do not each start another one
+	// (spin_backoff.go).
+	spinFailures map[poolKey]*spinFailure
 
 	// poolIdleTimeout / poolMaxRuntimes bound the parked-runtime pool (A.3d).
 	// Each pooled runtime keeps live informers (memory + apiserver watches),
@@ -425,6 +429,10 @@ func (m *Manager) AddAgentProxyCluster(clusterID, displayName string) (string, e
 	// is already healthy. The retry runs in a goroutine so we don't
 	// hold mu across ~5-20s of cache-sync I/O while every other agent
 	// register and ListClusters call piles up behind it.
+	// The Hello is the signal that the channel is up again: it may retry a
+	// connect the backoff is holding back (spin_backoff.go), on the active
+	// context's retry below as on the always-on spin further down.
+	delete(m.spinFailures, poolKey{tenant: m.tenantID, cluster: contextName})
 	if contextName == m.activeContext && m.connector == nil {
 		go m.retryAgentProxyConnect(contextName, clusterID)
 	}
@@ -1340,6 +1348,9 @@ func (m *Manager) switchCluster(contextName string, onlyIfUnselected bool) error
 	// connect froze every OTHER cluster during a switch. The defer'd Unlock balances the
 	// Lock re-acquired below.
 	m.activeContext = contextName
+	// An explicit switch is a person asking for this cluster now: it is not
+	// held back by the backoff of an earlier failed connect.
+	delete(m.spinFailures, poolKey{tenant: m.tenantID, cluster: contextName})
 	m.mu.Unlock()
 
 	rt := m.getOrSpinPooled(m.tenantID, contextName)
@@ -1717,10 +1728,11 @@ func (m *Manager) ConnErrorFor(ctx context.Context) error {
 	if contextName == m.activeContext {
 		return m.connErr
 	}
-	if rt, ok := m.runtimes[poolKey{tenant: key.Tenant, cluster: contextName}]; ok && rt != nil {
+	pk := poolKey{tenant: key.Tenant, cluster: contextName}
+	if rt, ok := m.runtimes[pk]; ok && rt != nil {
 		return rt.connErr
 	}
-	return nil
+	return m.spinFailureErrLocked(pk, time.Now())
 }
 
 // ActiveAgentProxyClusterIDFor is the per-request replacement for
@@ -1827,6 +1839,14 @@ func (m *Manager) getOrSpinPooled(tenant, contextName string) *clusterRuntime {
 		m.mu.Unlock()
 		return nil
 	}
+	// A connect that just failed is not restarted by every request that
+	// arrives for the cluster: the UI polls every few seconds, and each new
+	// attempt restarts the whole initial LIST through the agent. An agent's
+	// Hello and an explicit switch clear the backoff.
+	if m.spinBackingOffLocked(pk, time.Now()) {
+		m.mu.Unlock()
+		return nil
+	}
 	// Snapshot the mutable bits startRuntime needs, reserve the placeholder.
 	agentProxyCID := m.agentProxyContexts[contextName]
 	insightStore := m.insightStore
@@ -1838,10 +1858,20 @@ func (m *Manager) getOrSpinPooled(tenant, contextName string) *clusterRuntime {
 	m.mu.Unlock()
 
 	// Build outside the lock (connector.Start ~20s).
+	started := time.Now()
 	built, err := m.startRuntime(access, contextName, agentProxyCID, insightStore, tenantID, cacheSyncTimeout, connectTimeout)
 	if err != nil {
+		// Every failed attempt is logged: this path used to drop the error, so a
+		// cluster whose always-on runtime never came up left no trace at all.
+		slog.Warn("cluster runtime failed to connect",
+			slog.String("org", tenant),
+			slog.String("context", contextName),
+			slog.Duration("after", time.Since(started).Round(time.Millisecond)),
+			slog.String("error", err.Error()),
+		)
 		m.mu.Lock()
 		delete(m.runtimes, pk) // drop the failed placeholder so a retry rebuilds
+		m.recordSpinFailureLocked(pk, err, time.Now())
 		m.mu.Unlock()
 		placeholder.connErr = err
 		close(placeholder.ready)
@@ -1862,6 +1892,7 @@ func (m *Manager) getOrSpinPooled(tenant, contextName string) *clusterRuntime {
 	// runtime's engine so an insight on this cluster notifies even though it's not
 	// the active one. Re-read the manager hooks under the lock.
 	m.mu.Lock()
+	delete(m.spinFailures, pk)
 	placeholder.connector = built.connector
 	placeholder.collector = built.collector
 	placeholder.engine = built.engine
@@ -2188,17 +2219,22 @@ func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID
 	// fast so getOrSpinPooled's error path closes the placeholder ready (cluster shown
 	// unreachable) instead of hanging. The buffered chan keeps the Start goroutine from
 	// leaking when we time out — it sends and exits once Start unwinds.
+	//
+	// The deadline is an idle budget: the connect
+	// fails when the cluster sends nothing for `to`, and keeps going while pages
+	// arrive, up to maxConnectDuration. A fixed deadline cut a large cluster
+	// behind a slow tunnel at the same point on every attempt.
 	connectDone := make(chan error, 1)
 	go func() { connectDone <- connector.Start() }()
 	var connectErr error
 	if to := connectDeadline(agentProxyCID, connectTimeout); to > 0 {
-		timer := time.NewTimer(to)
+		budget, stopBudget := progressContext(context.Background(), connector.progress, to, maxConnectDuration)
 		select {
 		case connectErr = <-connectDone:
-			timer.Stop()
-		case <-timer.C:
+			stopBudget()
+		case <-budget.Done():
 			connector.Stop() // best-effort: closes stopCh, unblocks WaitForCacheSync
-			return nil, fmt.Errorf("connect timed out after %s for context %s — agent may be stuck", to, contextName)
+			return nil, fmt.Errorf("connect to context %s stopped: %v — agent may be stuck", contextName, context.Cause(budget))
 		}
 	} else {
 		connectErr = <-connectDone

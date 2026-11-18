@@ -21,6 +21,7 @@ import { OverviewHeader } from './OverviewHeader'
 import { CostKpis } from './CostKpis'
 import { CostBreakdown } from './CostBreakdown'
 import { CostRightsizing } from './CostRightsizing'
+import { siteDoc } from '@/utils/docs'
 
 // CostPage is the fourth dashboard sub-tab — the per-cluster FinOps
 // lens on the spend the other tabs generate (design/
@@ -216,7 +217,7 @@ function CostUnavailablePlaceholder() {
         </p>
         <p>
           <a
-            href="https://github.com/clm-cloud-solutions/kubebolt/tree/main/deploy/helm/kubebolt-agent#opencost"
+            href={siteDoc('cost', 'three-ways-to-connect-opencost')}
             target="_blank"
             rel="noreferrer"
             className="text-kb-accent hover:underline"

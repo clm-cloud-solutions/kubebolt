@@ -709,9 +709,11 @@ func oomText(pod *corev1.Pod, cs *corev1.ContainerStatus, term *corev1.Container
 			ev
 	}
 	ev = append(ev, models.Evidence{Kind: models.EvidenceConfig, Label: "Memory limit", Detail: limit, Source: "pod.spec.containers[].resources.limits.memory"})
-	return message + fmt.Sprintf(" with a memory limit of %s.", limit),
-		"Most often it reached that limit: raise it to what the process needs, or find what keeps growing (a leak, a cache, a burst). If its usage was well below the limit, the node itself ran out of memory.",
-		ev
+	suggestion = "Most often it reached that limit: raise it to what the process needs, or find what keeps growing (a leak, a cache, a burst). If its usage was well below the limit, the node itself ran out of memory."
+	if agent, ok := agentMemorySuggestion(pod); ok {
+		suggestion = agent
+	}
+	return message + fmt.Sprintf(" with a memory limit of %s.", limit), suggestion, ev
 }
 
 // sustainedMetricWindow is how long a pod's metric must stay over a rule's
@@ -825,13 +827,17 @@ func memoryPressureRule() Rule {
 				if limited && memLimit > 0 && float64(metrics.MemUsage)/float64(memLimit) > memBar {
 					pct := float64(metrics.MemUsage) / float64(memLimit) * 100
 					over[key] = true
+					suggestion := "This is the pod's own limit, not memory pressure on the node. Raise the limit to what the process needs, or find what keeps growing, before the container is OOMKilled at 100%."
+					if agent, ok := agentMemorySuggestion(pod); ok {
+						suggestion = agent
+					}
 					pending[key] = newInsight(
 						"warning",
 						fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
 						"Memory Near Limit",
 						fmt.Sprintf("Pod %s/%s is using %.0f%% of its own memory limit (%s of %s)", pod.Namespace, pod.Name, pct,
 							formatBytes(metrics.MemUsage), formatBytes(memLimit)),
-						"This is the pod's own limit, not memory pressure on the node. Raise the limit to what the process needs, or find what keeps growing, before the container is OOMKilled at 100%.",
+						suggestion,
 						usageEvidence("Memory", formatBytes(metrics.MemUsage), formatBytes(memLimit), pct, memBar),
 					)
 				}

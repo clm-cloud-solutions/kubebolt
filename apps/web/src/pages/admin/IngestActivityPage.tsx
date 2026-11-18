@@ -7,6 +7,7 @@ import { DonutGauge } from '@/components/shared/DonutGauge'
 import { MetricChart, METRIC_ACCENTS } from '@/components/shared/MetricChart'
 import { RangeSelector, OVERVIEW_RANGE_OPTIONS } from '@/components/shared/RangeSelector'
 import { liveProcess, SERVER_OWNED_SERIES_MATCHER } from '@/utils/promql'
+import { PROMETHEUS_GUIDE } from '@/utils/docs'
 
 // IngestActivityPage answers "what is my ingest doing right now?" —
 // spec #09 V2 Item 5b. The companion piece to Item 5a's Prometheus
@@ -103,7 +104,7 @@ export function IngestActivityPage() {
             channel and Prom remote_write receiver. Refreshes every 30s. Empty cards mean no
             activity in the selected window — see{' '}
             <a
-              href="https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/integrations/prometheus.md"
+              href={PROMETHEUS_GUIDE}
               target="_blank"
               rel="noopener noreferrer"
               className="text-kb-accent underline"
@@ -555,7 +556,7 @@ function EmptyTenantState() {
         If this tenant should be active, give the backend a few seconds after startup to ship
         its first self-write to VM. See{' '}
         <a
-          href="https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/integrations/prometheus.md"
+          href={PROMETHEUS_GUIDE}
           target="_blank"
           rel="noopener noreferrer"
           className="underline"

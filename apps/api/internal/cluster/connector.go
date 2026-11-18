@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"reflect"
 	"regexp"
 	"sort"
@@ -125,6 +126,9 @@ type Connector struct {
 	// subscribe by (X-KubeBolt-Cluster), not the kube-system clusterUID.
 	wsTenant  string
 	wsCluster string
+	// progress is when the connector last received a successful non-watch
+	// response; Start and the manager's connect budget read it.
+	progress *connectProgress
 	// cacheSyncTimeout overrides the Start() informer-sync deadline. Set by the
 	// manager per-connect from the live General setting; 0 → defaultCacheSyncTimeout.
 	cacheSyncTimeout time.Duration
@@ -299,6 +303,15 @@ func newConnectorFromConfig(restConfig *rest.Config, clusterName string, wsHub *
 		restConfig.Timeout = 15 * time.Second
 	}
 
+	// Every successful non-watch response marks progress, so the connect's
+	// budgets measure silence, not total duration.
+	// Wrapped before any client is built: the dedicated probe and UID clients
+	// copy the config, wrapper included.
+	progress := newConnectProgress()
+	restConfig.Wrap(func(rt http.RoundTripper) http.RoundTripper {
+		return &progressRoundTripper{next: rt, p: progress}
+	})
+
 	clientset, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
 		return nil, fmt.Errorf("creating kubernetes client: %w", err)
@@ -327,6 +340,7 @@ func newConnectorFromConfig(restConfig *rest.Config, clusterName string, wsHub *
 		stopCh:        make(chan struct{}),
 		recentWrites:  NewRecentWritesOverlay(),
 		clusterName:   clusterName,
+		progress:      progress,
 	}
 
 	// Read kube-system namespace UID to scope VM queries. Same value
@@ -1347,28 +1361,17 @@ func (c *Connector) effectiveCacheSyncTimeout() time.Duration {
 	return defaultCacheSyncTimeout
 }
 
-// Start begins the shared informer factory. Returns an error if cache sync does
-// not complete within the configured timeout (default 45s; e.g. cluster
-// unreachable).
+// Start begins the shared informer factory. Returns an error if the cache sync
+// receives nothing for the configured timeout (default 45s; e.g. cluster
+// unreachable) or runs past maxConnectDuration.
 func (c *Connector) Start() error {
 	c.factory.Start(c.stopCh)
 	for _, f := range c.nsFactories {
 		f.Start(c.stopCh)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), c.effectiveCacheSyncTimeout())
-	defer cancel()
-	for _, ok := range c.factory.WaitForCacheSync(ctx.Done()) {
-		if !ok {
-			return fmt.Errorf("timed out waiting for cache sync — cluster may be unreachable")
-		}
-	}
-	for _, f := range c.nsFactories {
-		for _, ok := range f.WaitForCacheSync(ctx.Done()) {
-			if !ok {
-				return fmt.Errorf("timed out waiting for namespace cache sync")
-			}
-		}
+	if err := c.waitForCacheSync(c.effectiveCacheSyncTimeout()); err != nil {
+		return err
 	}
 	log.Println("Informer caches synced")
 	// …and that claim is exactly what needs auditing: on 2026-08-05 it was
@@ -1379,6 +1382,32 @@ func (c *Connector) Start() error {
 	// not stay "not installed" for the connector's life. See optional_crds.go.
 	c.StartOptionalCRDRefresh()
 	c.rebuildTopology()
+	return nil
+}
+
+// waitForCacheSync waits for every informer's first LIST. idle is a budget of
+// silence, not of duration: the sync fails when no page has arrived for that
+// long and keeps going while pages arrive, up to maxConnectDuration. A fixed deadline failed a large cluster behind a slow
+// tunnel on every attempt while it was still receiving pages.
+func (c *Connector) waitForCacheSync(idle time.Duration) error {
+	if c.progress == nil {
+		c.progress = newConnectProgress()
+	}
+	c.progress.touch()
+	ctx, cancel := progressContext(context.Background(), c.progress, idle, maxConnectDuration)
+	defer cancel()
+	for _, ok := range c.factory.WaitForCacheSync(ctx.Done()) {
+		if !ok {
+			return fmt.Errorf("cache sync stopped: %v — cluster may be unreachable", context.Cause(ctx))
+		}
+	}
+	for _, f := range c.nsFactories {
+		for _, ok := range f.WaitForCacheSync(ctx.Done()) {
+			if !ok {
+				return fmt.Errorf("namespace cache sync stopped: %v", context.Cause(ctx))
+			}
+		}
+	}
 	return nil
 }
 

@@ -364,7 +364,7 @@ function GeneralSettingsForm({
         <Field
           label="Cluster connect timeout"
           dirty={dirtyMap.cacheSyncTimeoutSeconds}
-          helper="How long a cold connect waits for a cluster's resources to sync before giving up. Raise it (e.g. 60–90s) for large clusters that flake with 'cluster may be unreachable' on the first switch. Applies on the next connect — no restart. Range 5–600s. Boot override via KUBEBOLT_CACHE_SYNC_TIMEOUT_SECONDS."
+          helper="How long a cold connect may wait without receiving anything from the cluster before giving up. A connect that keeps receiving data carries on, up to 10 minutes, so a large cluster behind a slow link still connects. Applies on the next connect — no restart. Range 5–600s. Boot override via KUBEBOLT_CACHE_SYNC_TIMEOUT_SECONDS."
         >
           <div className="flex items-center gap-2">
             <input

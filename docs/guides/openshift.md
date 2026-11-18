@@ -263,7 +263,9 @@ The agent-proxy deadline no longer applies to direct connections (in-cluster
 and kubeconfig contexts): they are bounded by the cache-sync deadline alone,
 the **Cluster connect timeout** setting (45s by default). A sync that finishes at 30s now finishes. If Events on your cluster
 take longer than that, raise **Cluster connect timeout** — the right knob now —
-rather than the agent-proxy one. The message "agent may be stuck" is only
+rather than the agent-proxy one. Since 2.6.5 both are budgets of silence: a
+sync that keeps receiving pages carries on, up to 10 minutes, and only one
+that receives nothing for that long fails. The message "agent may be stuck" is only
 shown for agent-proxy clusters.
 
 ### Memory: size the API to its Events
