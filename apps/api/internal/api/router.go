@@ -325,6 +325,10 @@ func NewRouter(
 			// para que la etiqueta siga el mismo criterio que el dato que rotula.
 			r.With(h.WithClusterScope).Get("/clusters/names", h.handleClusterNames)
 			r.Post("/clusters/switch", h.switchCluster)
+			// How far the request's cluster's connect has gone. Outside
+			// requireConnector by design: it answers while the cluster is
+			// prepared, and never starts or waits for a connect.
+			r.Get("/clusters/progress", h.handleClusterProgress)
 
 			// Update check — reports the latest stable KubeBolt release
 			// on GitHub. Any logged-in role can read; admin toggles the
