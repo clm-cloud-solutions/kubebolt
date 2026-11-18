@@ -57,10 +57,18 @@ type IngestToken struct {
 	// unassigned until an org admin assigns it. The agent's identity carries
 	// this through and the first registration seeds cluster_ownership from it.
 	TeamID string `json:"teamId,omitempty"`
+
+	// UnusedExpiresAt is when the token stops working if nothing has used it
+	// yet. The add-cluster and onboarding wizards issue
+	// one per attempt; an abandoned attempt used to leave a credential that
+	// worked forever. Once an agent or a remote_write sender has used it
+	// (LastUsedAt set) it no longer applies: the token is then that agent's
+	// long-lived credential. Nil = no such window.
+	UnusedExpiresAt *time.Time `json:"unusedExpiresAt,omitempty"`
 }
 
-// Active reports whether the token is currently valid: not revoked and not
-// past its optional expiration.
+// Active reports whether the token is currently valid: not revoked, not past
+// its optional expiration, and not past its use-by date while still unused.
 func (t *IngestToken) Active(now time.Time) bool {
 	if t.RevokedAt != nil {
 		return false
@@ -68,7 +76,20 @@ func (t *IngestToken) Active(now time.Time) bool {
 	if t.ExpiresAt != nil && now.After(*t.ExpiresAt) {
 		return false
 	}
-	return true
+	return !t.expiredUnused(now)
+}
+
+// expiredUnused reports whether the token was never used and its use-by date
+// has passed.
+func (t *IngestToken) expiredUnused(now time.Time) bool {
+	return t.UnusedExpiresAt != nil && t.LastUsedAt == nil && now.After(*t.UnusedExpiresAt)
+}
+
+// IngestTokenUseByIssuer is implemented by the stores that can issue a token
+// that stops working unless it is used before useBy (IngestToken.
+// UnusedExpiresAt). Optional, so the many Issue callers stay as they are.
+type IngestTokenUseByIssuer interface {
+	IssueUseBy(ctx context.Context, tenantID, clusterID, teamID, label, createdBy string, ttl *time.Duration, useBy time.Time) (string, *IngestToken, error)
 }
 
 // IngestTokenStore is the W1 seam for ingest tokens. Lookup validates the TOKEN
@@ -114,7 +135,16 @@ func NewIngestTokenStore(db *bolt.DB) (*BoltIngestTokenStore, error) {
 	return &BoltIngestTokenStore{db: db, nowFn: time.Now, markUsedAt: map[string]time.Time{}}, nil
 }
 
-func (s *BoltIngestTokenStore) Issue(_ context.Context, tenantID, clusterID, teamID, label, createdBy string, ttl *time.Duration) (string, *IngestToken, error) {
+func (s *BoltIngestTokenStore) Issue(ctx context.Context, tenantID, clusterID, teamID, label, createdBy string, ttl *time.Duration) (string, *IngestToken, error) {
+	return s.issue(tenantID, clusterID, teamID, label, createdBy, ttl, nil)
+}
+
+// IssueUseBy implements IngestTokenUseByIssuer.
+func (s *BoltIngestTokenStore) IssueUseBy(_ context.Context, tenantID, clusterID, teamID, label, createdBy string, ttl *time.Duration, useBy time.Time) (string, *IngestToken, error) {
+	return s.issue(tenantID, clusterID, teamID, label, createdBy, ttl, &useBy)
+}
+
+func (s *BoltIngestTokenStore) issue(tenantID, clusterID, teamID, label, createdBy string, ttl *time.Duration, useBy *time.Time) (string, *IngestToken, error) {
 	if tenantID == "" {
 		return "", nil, fmt.Errorf("tenantID is required")
 	}
@@ -138,6 +168,10 @@ func (s *BoltIngestTokenStore) Issue(_ context.Context, tenantID, clusterID, tea
 	if ttl != nil {
 		exp := now.Add(*ttl)
 		tok.ExpiresAt = &exp
+	}
+	if useBy != nil {
+		u := useBy.UTC()
+		tok.UnusedExpiresAt = &u
 	}
 	if err := s.db.Update(func(tx *bolt.Tx) error {
 		enc, err := json.Marshal(tok)
@@ -239,6 +273,9 @@ func (s *BoltIngestTokenStore) Lookup(_ context.Context, plaintext string) (*Ing
 		return nil, ErrTokenRevoked
 	}
 	if tok.ExpiresAt != nil && now.After(*tok.ExpiresAt) {
+		return nil, ErrTokenExpired
+	}
+	if tok.expiredUnused(now) {
 		return nil, ErrTokenExpired
 	}
 	return tok, nil

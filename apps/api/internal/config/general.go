@@ -43,14 +43,14 @@ type GeneralConfig struct {
 	// toggle at runtime via Settings → General.
 	UpdateCheckEnabled bool
 
-	// CacheSyncTimeoutSeconds is how long a cold cluster connect waits for
-	// informer caches to sync before failing ("cluster may be unreachable").
-	// Default 45s — a cold connect to a large cluster (many resource types)
-	// can need 20-30s, so the old hard-coded 20s left big EKS/GKE clusters
-	// right at the edge and they flaked on the first switch after a restart.
-	// The warm connector pool makes repeat switches instant regardless. Set
-	// via KUBEBOLT_CACHE_SYNC_TIMEOUT_SECONDS; admins override at runtime (no
-	// restart) via Settings → General. Floored at 5s.
+	// CacheSyncTimeoutSeconds is how long a cold cluster connect's informer
+	// sync may go without receiving anything before failing ("cluster may be
+	// unreachable"). It is a budget of silence, not of duration: a sync that
+	// keeps receiving pages continues, up to cluster.maxConnectDuration
+	// (10 min), so a large cluster behind a slow agent tunnel connects
+	//. Default 45s. Set via
+	// KUBEBOLT_CACHE_SYNC_TIMEOUT_SECONDS; admins override at runtime (no
+	// restart) from the platform settings. Floored at 5s.
 	CacheSyncTimeoutSeconds int
 
 	// RightSizingMinHistoryHours is how much usage history right-sizing needs

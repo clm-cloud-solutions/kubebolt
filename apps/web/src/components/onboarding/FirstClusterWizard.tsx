@@ -13,6 +13,7 @@ import {
   LOCAL_BACKEND_URL,
   LOCAL_CLUSTER_TOOLS,
   type LocalClusterTool,
+  tokenUseByText,
 } from '@/utils/agentInstall'
 
 // FirstClusterWizard — the add-cluster flow while no cluster is registered.
@@ -155,7 +156,17 @@ export function FirstClusterWizard({ onClose, initialWhere = 'own' }: Props) {
   // modal closes once the switch went through.
   const switchCluster = useSwitchCluster()
 
-  if (alternative === 'advanced') return <AddClusterWizard onClose={onClose} />
+  if (alternative === 'advanced') {
+    return (
+      <AddClusterWizard
+        onClose={onClose}
+        onBack={() => setAlternative(null)}
+        initialToken={token}
+        initialClusterName={name.trim() || undefined}
+        onTokenIssued={setToken}
+      />
+    )
+  }
   if (alternative === 'kubeconfig') return <AddKubeconfigModal onClose={onClose} />
 
   const nameValid = NAME_RE.test(name.trim())
@@ -325,6 +336,9 @@ export function FirstClusterWizard({ onClose, initialWhere = 'own' }: Props) {
                   {hostedMode ? ' over HTTPS' : ''}; you need <span className="font-mono">kubectl</span>,{' '}
                   <span className="font-mono">helm</span> and rights to create a namespace and a ClusterRole.
                 </p>
+                {tokenUseByText(token.unusedExpiresAt) && (
+                  <p className="text-[11px] text-kb-text-tertiary leading-relaxed">{tokenUseByText(token.unusedExpiresAt)}</p>
+                )}
               </div>
 
               <button

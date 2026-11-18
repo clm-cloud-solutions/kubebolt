@@ -6,6 +6,107 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.6.5] — 2026-11-18
+
+A large cluster connects behind a slow agent tunnel, Helm's release history
+stays in the cluster until a view needs it, and the wait while a cluster
+loads says how far it is. A fix release: drop-in, no migration; the agent
+stays on 1.4.9. Full note: [docs/releases/v2.6.5.md](docs/releases/v2.6.5.md).
+
+### Fixed
+
+- **Helm's release history no longer crosses the agent tunnel at every
+  connect and again every minute**. Helm keeps every revision
+  of every release as a Secret holding the whole release (chart, values,
+  rendered manifests). The Secrets cache downloaded all of them at connect,
+  and the insight tick (every cluster, parked ones included) and the
+  Overview/Applications cache listed them again, payload included, every
+  minute. The Secrets cache now leaves Helm's storage out; lists and counts
+  read its metadata, once a minute; a release's payload is read when
+  something needs it — its latest revision, once, for the Applications list
+  or for an insight about a failed or stuck release — and the detail view
+  reads only that release. The Secrets list, a storage Secret's detail and
+  the Overview's counts still show them. On a lab cluster with 10 releases,
+  Secrets went from 7.1 MiB to 12 KiB per minute through the agent tunnel
+  with the Overview open, and a loaded Applications list answers in under a
+  millisecond (it took ~140 ms).
+- **A Helm release's History tab spaces its columns.** Revision, status,
+  chart and date ran into each other, and a long description (a failed
+  upgrade's error) squeezed them further; the table now follows the
+  Applications list's layout and wraps the description.
+- **An agent short of memory says so, with the command that fixes it.** When
+  a KubeBolt agent pod is OOMKilled or stays near its memory limit, the
+  *OOMKilled* and *Memory Near Limit* insights give the `helm upgrade` that
+  raises its limit (twice the current one, at least 256Mi; the promread
+  pod's own values key; pinned to the chart version it runs) instead of the
+  generic advice. The agent chart's default limits rise to 256Mi / 500m and
+  the agent caps one relayed response at a quarter of its memory limit,
+  answering with an error past it instead of being OOMKilled (agent
+  changelog, next agent release). The Advanced setup's resource hints say
+  the same.
+- **Documentation links open kubebolt.io.** The integration catalog, Cost,
+  Reliability and the add-cluster wizard linked guides in the GitHub
+  repository; they now open the published docs (agent, Trivy, Kyverno,
+  Falco, OpenCost, the Reliability tab). Reliability's link also pointed at
+  an anchor the chart README does not have. The Prometheus remote_write
+  cards and Ingest activity keep the repository guide until the site carries
+  its `prometheus.yml` snippets, `retry_on_http_429`, limits and
+  self-metrics queries.
+- **A wizard's agent token stops working if no agent uses it within a week,
+  and *Advanced setup* has a way back.** The onboarding and the add-cluster
+  wizard issue a token on every attempt and none expired: each abandoned
+  attempt left an ingest credential that worked until someone revoked it. A
+  token those wizards hand over to copy now stops working after 7 days unless
+  an agent uses it first; once one has, it keeps working. The wizards say
+  until when, and Agents › Tokens shows it (*if unused, in 7d*). A token the
+  API writes straight into the connected cluster's Secret (install,
+  configure) has no such window. *Advanced setup* opened from the onboarding
+  reuses the token the onboarding issued instead of issuing a second one,
+  keeps the name, and has *Back to the simple setup*. The issue-token
+  endpoint also honours the `ttlSeconds` it declared and ignored. Agents ›
+  Tokens read a future expiry as "just now"; it now reads "in 6d".
+- **A failed connect is not restarted by every request.** While a cluster's
+  connect kept failing, every request for it (the UI polls every few
+  seconds) started another full connect, each one restarting the initial LIST
+  through the agent: hundreds of MB in minutes without ever connecting. After
+  a failed attempt, requests now wait 30 s, then 1, 2 and 4 minutes, at most
+  5, and are told why (`… (next attempt in 40s)`). An agent's Hello and an
+  explicit switch to the cluster still try at once.
+- **A large cluster behind a slow agent tunnel connects.** The connect and
+  cache-sync timeouts were fixed deadlines, so a cluster whose objects take
+  longer than that to arrive failed at the same point on every attempt while
+  pages were still arriving. Both are now budgets of silence: a connect fails
+  when nothing arrives from the cluster for that long (a successful response
+  that is not a watch) and carries on while pages arrive, up to 10 minutes. A
+  stuck agent still fails at the same point. Every failed attempt to start a
+  cluster's background runtime is logged (`cluster runtime failed to
+  connect`, with the reason); that path used to drop the error.
+- **The wait while a cluster loads says how far it is, instead of a
+  spinner.** While KubeBolt loads a cluster's
+  cache — its first connect, after KubeBolt restarts, or after the connection
+  was lost — its pages show what is happening and why the wait is worth it,
+  the steps (agents, access, loading, first health check), a bar weighted by
+  the objects that have arrived (the API server's `remainingItemCount`),
+  the types loaded, the data received and its rate, the elapsed time, an
+  Activity log, and the cluster's CPU and memory, which the agents ship
+  before the cache has synced. Nothing about what the API serves changes:
+  the cluster's views still open together when it is ready. New read-only
+  `GET /clusters/progress`, which never starts or waits for a connect. A
+  switch to a cluster KubeBolt already holds stays instant, without the
+  card; the menu no longer shows the previous cluster's counts during a
+  switch, and the state pill says *Connecting* instead of *Disconnected*.
+- **A failed namespace LIST no longer scopes a cluster to guessed
+  namespaces.** When a type was denied cluster-wide, the permission probe
+  listed namespaces to look for namespace-level access, and on any error it
+  fell back to `default`, `kube-system` and `kube-public` in silence. Through
+  a slow agent tunnel the LIST could time out, and a large cluster connected
+  with some types served from two namespaces: lists that looked complete and
+  were not. The LIST is now retried; if it keeps failing those types stay
+  without access (the views say so and the limited-access banner counts
+  them). The common namespaces are tried only when the ServiceAccount may not
+  list namespaces at all (403). The log names the types instead of counting
+  them.
+
 ## [2.6.4] — 2026-11-18
 
 A large cluster connects through its agent, and a burst of insights is one

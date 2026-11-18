@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"sync"
 	"time"
 
 	authorizationv1 "k8s.io/api/authorization/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
@@ -142,22 +144,52 @@ var resourceDefs = map[string]resourceDef{
 	"clusterrolebindings": {group: "rbac.authorization.k8s.io", resource: "clusterrolebindings", clusterScope: true},
 }
 
-// discoverAccessibleNamespaces returns a list of namespace names to use for
-// namespace-scoped permission probing. It tries listing namespaces from the API;
-// if that fails, it falls back to a small set of common namespaces.
-func discoverAccessibleNamespaces(clientset kubernetes.Interface) []string {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	nsList, err := clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
-	if err == nil && len(nsList.Items) > 0 {
-		names := make([]string, 0, len(nsList.Items))
-		for _, ns := range nsList.Items {
-			names = append(names, ns.Name)
+// Namespace discovery for the probe's phase 2. A failed namespace LIST used to
+// fall back to a fixed list in silence, whatever the error. On a large cluster
+// reached through its agent the LIST can time out; the probe then "found"
+// access in two of 125 namespaces and the cluster connected with five types
+// served from those two — mostly empty lists that looked normal.
+var (
+	nsDiscoveryAttempts = 3
+	nsDiscoveryTimeout  = 5 * time.Second
+	nsDiscoveryBackoff  = 500 * time.Millisecond
+)
+
+// commonNamespaces are the ones tried when the ServiceAccount may not list
+// namespaces at all — a namespace-scoped ServiceAccount, whose RoleBindings
+// usually live in one of them.
+var commonNamespaces = []string{"default", "kube-system", "kube-public"}
+
+// discoverAccessibleNamespaces returns the namespaces to probe for
+// namespace-level access:
+//   - the LIST works: every namespace;
+//   - the ServiceAccount may not list namespaces (403/401): commonNamespaces,
+//     the best a namespace-scoped ServiceAccount allows;
+//   - any other error (a timeout, the tunnel): retried, and if it keeps
+//     failing, an error. Guessing there would scope informers to a few
+//     namespaces of a cluster that has hundreds.
+func discoverAccessibleNamespaces(clientset kubernetes.Interface) ([]string, error) {
+	var lastErr error
+	for attempt := 1; attempt <= nsDiscoveryAttempts; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), nsDiscoveryTimeout)
+		nsList, err := clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+		cancel()
+		if err == nil {
+			names := make([]string, 0, len(nsList.Items))
+			for _, ns := range nsList.Items {
+				names = append(names, ns.Name)
+			}
+			return names, nil
 		}
-		return names
+		if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) {
+			return commonNamespaces, nil
+		}
+		lastErr = err
+		if attempt < nsDiscoveryAttempts {
+			time.Sleep(nsDiscoveryBackoff * time.Duration(attempt))
+		}
 	}
-	// Fallback: common namespaces
-	return []string{"default", "kube-system", "kube-public"}
+	return nil, fmt.Errorf("namespace discovery failed after %d attempts: %w", nsDiscoveryAttempts, lastErr)
 }
 
 // checkSSAR runs a single SelfSubjectAccessReview and returns whether access is allowed.
@@ -305,9 +337,16 @@ func probePermissions(clientset kubernetes.Interface) ResourcePermissions {
 	}
 
 	if len(nsRetries) > 0 {
-		probeNamespaces := discoverAccessibleNamespaces(clientset)
+		sort.Strings(nsRetries)
+		probeNamespaces, nsErr := discoverAccessibleNamespaces(clientset)
+		if nsErr != nil {
+			// Leave them denied: the views say "no access" and the limited-access
+			// banner counts them, instead of lists that look complete and are not.
+			log.Printf("Warning: %v — %d namespace-scoped types stay without access instead of being scoped to guessed namespaces: %v",
+				nsErr, len(nsRetries), nsRetries)
+		}
 		if len(probeNamespaces) > 0 {
-			log.Printf("Probing %d namespace-scoped resources for namespace-level access...", len(nsRetries))
+			log.Printf("Probing %d namespace-scoped resources for namespace-level access: %v", len(nsRetries), nsRetries)
 			// Pick one resource (pods) to find which namespaces this SA can access
 			var accessibleNS []string
 			for _, ns := range probeNamespaces {
@@ -342,12 +381,16 @@ func probePermissions(clientset kubernetes.Interface) ResourcePermissions {
 
 				// Store the accessible namespaces for informer creation
 				mu.Lock()
-				for _, p := range perms {
+				var scoped []string
+				for key, p := range perms {
 					if p.NamespaceScoped {
 						p.Namespaces = accessibleNS
+						scoped = append(scoped, key)
 					}
 				}
 				mu.Unlock()
+				sort.Strings(scoped)
+				log.Printf("Namespace-scoped access (%d namespaces) for %d types: %v", len(accessibleNS), len(scoped), scoped)
 			}
 		}
 	}

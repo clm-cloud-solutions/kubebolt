@@ -89,7 +89,7 @@ func (p *prometheusReadProvider) Meta() Integration {
 		ID:          PrometheusReadID,
 		Name:        PrometheusReadName,
 		Description: "Agent reads samples FROM a customer-managed Prometheus via /api/v1/query_range (Mode C). The only path for AMP / Azure Managed Prometheus / GMP where remote_write outbound isn't an option. Enabled via the kubebolt-agent helm chart (agent.promRead.enabled=true) with one of 6 auth modes: none / basicAuth / bearer / awsSigV4 / gcpIam / azureWorkloadIdentity.",
-		DocsURL:     "https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/integrations/prometheus.md",
+		DocsURL:     prometheusGuide,
 		Capabilities: []string{
 			"metrics.scraped",
 			"metrics.historical",

@@ -196,3 +196,13 @@ export function agentAddressProblem(addr: string): string | null {
   }
   return null
 }
+
+// tokenUseByText says how long a copied wizard token works if no agent ever
+// uses it (the server's unusedExpiresAt), or null when it has no such window.
+export function tokenUseByText(unusedExpiresAt?: string): string | null {
+  if (!unusedExpiresAt) return null
+  const d = new Date(unusedExpiresAt)
+  if (Number.isNaN(d.getTime())) return null
+  const date = d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+  return `This token works until ${date} unless an agent uses it first; once one has, it keeps working.`
+}

@@ -77,6 +77,14 @@ spec:
               value: {{ .Values.logLevel | quote }}
             - name: KUBEBOLT_AGENT_MODE
               value: "promread"
+            # The container's own memory limit (downward API): the agent caps
+            # one proxied API-server body at a quarter of it and answers with
+            # an error naming the limit, instead of being OOMKilled reading it.
+            - name: KUBEBOLT_AGENT_MEMORY_LIMIT_BYTES
+              valueFrom:
+                resourceFieldRef:
+                  containerName: agent
+                  resource: limits.memory
             # Downward API — promread uses these for self-metrics labels
             # and for the lease holderIdentity. The kubelet endpoint
             # itself isn't used in promread mode (no Mode A collectors).

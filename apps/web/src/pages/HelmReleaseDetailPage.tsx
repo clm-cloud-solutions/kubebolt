@@ -201,28 +201,37 @@ export function HelmReleaseDetailPage() {
 
       {tab === 'history' && (
         <Section title="Revision History">
-          <table className="w-full text-[11px]">
-            <thead>
-              <tr className="text-kb-text-tertiary text-left">
-                <th className="pb-2 font-normal">Rev</th>
-                <th className="pb-2 font-normal">Status</th>
-                <th className="pb-2 font-normal">Chart</th>
-                <th className="pb-2 font-normal">Updated</th>
-                <th className="pb-2 font-normal">Description</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.history?.map((h) => (
-                <tr key={h.revision} className="border-t border-kb-border">
-                  <td className="py-2 font-mono">{h.revision}</td>
-                  <td className="py-2"><HelmStatusBadge status={h.status} /></td>
-                  <td className="py-2 text-kb-text-secondary font-mono">{h.chartVersion}</td>
-                  <td className="py-2 text-kb-text-tertiary">{h.updated ? new Date(h.updated).toLocaleString() : '—'}</td>
-                  <td className="py-2 text-kb-text-secondary">{h.description || '—'}</td>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-kb-border">
+                  {['Rev', 'Status', 'Chart', 'Updated', 'Description'].map((h) => (
+                    <th
+                      key={h}
+                      className="px-3 first:pl-0 last:pr-0 pb-2.5 text-left text-[10px] font-mono font-medium uppercase tracking-[0.08em] text-kb-text-secondary whitespace-nowrap"
+                    >
+                      {h}
+                    </th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {data.history?.map((h) => (
+                  <tr key={h.revision} className="border-b border-kb-border last:border-0 align-top">
+                    <td className="pl-0 pr-3 py-2.5 text-xs font-mono text-kb-text-secondary whitespace-nowrap">{h.revision}</td>
+                    <td className="px-3 py-2.5 text-xs whitespace-nowrap"><HelmStatusBadge status={h.status} /></td>
+                    <td className="px-3 py-2.5 text-xs font-mono text-kb-text-secondary whitespace-nowrap">{h.chartVersion}</td>
+                    <td className="px-3 py-2.5 text-xs text-kb-text-tertiary whitespace-nowrap">
+                      {h.updated ? new Date(h.updated).toLocaleString() : '—'}
+                    </td>
+                    <td className="pl-3 pr-0 py-2.5 text-xs text-kb-text-secondary min-w-[16rem] [overflow-wrap:anywhere]">
+                      {h.description || '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </Section>
       )}
 

@@ -132,6 +132,17 @@ func argoOutOfSyncRule() Rule {
 	}
 }
 
+// HelmStatusNeedsAttention reports whether a release whose latest revision is
+// in this status is one a Helm rule reports on: failed, or pending-* (an
+// install, upgrade or rollback that never finished). The insight tick decodes
+// only these releases' storage, so a Helm rule that reports on
+// another status widens this predicate in the same change —
+// TestHelmStatusNeedsAttention_CoversEveryHelmRule fails until it does.
+func HelmStatusNeedsAttention(status string) bool {
+	s := strings.ToLower(status)
+	return s == "failed" || strings.HasPrefix(s, "pending-")
+}
+
 // helmReleaseFailedRule flags Helm releases whose last action ended in a
 // failed state — an install/upgrade that errored or rolled back, leaving the
 // release unusable until an operator addresses it. (Sprint 4 insight.)
@@ -709,9 +720,11 @@ func oomText(pod *corev1.Pod, cs *corev1.ContainerStatus, term *corev1.Container
 			ev
 	}
 	ev = append(ev, models.Evidence{Kind: models.EvidenceConfig, Label: "Memory limit", Detail: limit, Source: "pod.spec.containers[].resources.limits.memory"})
-	return message + fmt.Sprintf(" with a memory limit of %s.", limit),
-		"Most often it reached that limit: raise it to what the process needs, or find what keeps growing (a leak, a cache, a burst). If its usage was well below the limit, the node itself ran out of memory.",
-		ev
+	suggestion = "Most often it reached that limit: raise it to what the process needs, or find what keeps growing (a leak, a cache, a burst). If its usage was well below the limit, the node itself ran out of memory."
+	if agent, ok := agentMemorySuggestion(pod); ok {
+		suggestion = agent
+	}
+	return message + fmt.Sprintf(" with a memory limit of %s.", limit), suggestion, ev
 }
 
 // sustainedMetricWindow is how long a pod's metric must stay over a rule's
@@ -825,13 +838,17 @@ func memoryPressureRule() Rule {
 				if limited && memLimit > 0 && float64(metrics.MemUsage)/float64(memLimit) > memBar {
 					pct := float64(metrics.MemUsage) / float64(memLimit) * 100
 					over[key] = true
+					suggestion := "This is the pod's own limit, not memory pressure on the node. Raise the limit to what the process needs, or find what keeps growing, before the container is OOMKilled at 100%."
+					if agent, ok := agentMemorySuggestion(pod); ok {
+						suggestion = agent
+					}
 					pending[key] = newInsight(
 						"warning",
 						fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
 						"Memory Near Limit",
 						fmt.Sprintf("Pod %s/%s is using %.0f%% of its own memory limit (%s of %s)", pod.Namespace, pod.Name, pct,
 							formatBytes(metrics.MemUsage), formatBytes(memLimit)),
-						"This is the pod's own limit, not memory pressure on the node. Raise the limit to what the process needs, or find what keeps growing, before the container is OOMKilled at 100%.",
+						suggestion,
 						usageEvidence("Memory", formatBytes(metrics.MemUsage), formatBytes(memLimit), pct, memBar),
 					)
 				}

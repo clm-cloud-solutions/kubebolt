@@ -51,7 +51,7 @@ func (p *kyvernoProvider) Meta() Integration {
 		ID:          KyvernoID,
 		Name:        KyvernoName,
 		Description: "Policy enforcement. Failed PolicyReport results (Kyverno, or Gatekeeper via the same wgpolicyk8s.io standard) surface as policy-violation findings.",
-		DocsURL:     "https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/integrations/kyverno.md",
+		DocsURL:     siteDoc("kyverno", ""),
 		Capabilities: []string{
 			"security.policy",
 		},

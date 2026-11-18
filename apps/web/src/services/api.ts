@@ -2,6 +2,7 @@ import type {
   ClusterOverview,
   ClusterHealth,
   ClusterInfo,
+  ClusterProgress,
   ResourceList,
   Topology,
   Insight,
@@ -811,6 +812,8 @@ export const api = {
   // está. Éste sólo rotula historial. Viene indexado por las dos identidades
   // (contexto y UID).
   getClusterNames: () => fetchJSON<Record<string, string>>(`${API_BASE}/clusters/names`),
+  // How far the selected cluster's connect has gone; never starts or waits for one.
+  getClusterProgress: () => fetchJSON<ClusterProgress>(`${API_BASE}/clusters/progress`),
 
   switchCluster: (context: string) =>
     postJSON<{ status: string; context: string }>(`${API_BASE}/clusters/switch`, { context }),
@@ -2681,6 +2684,8 @@ export interface AgentIssueTokenResponse {
   tokenPrefix: string
   tokenLabel: string
   tenantId: string
+  // When the token stops working if no agent uses it (copy path only).
+  unusedExpiresAt?: string
 }
 
 // Live agent registry entry — one per currently-connected gRPC stream.
@@ -3147,6 +3152,9 @@ export interface IngestToken {
   expiresAt?: string
   revokedAt?: string
   active: boolean
+  // Present only while the token has never been used: when it stops working
+  // unless an agent uses it first (the wizards' tokens).
+  unusedExpiresAt?: string
 }
 
 export interface TenantWithTokens extends Tenant {
