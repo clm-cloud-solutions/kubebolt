@@ -15,7 +15,6 @@ import (
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
-	"github.com/kubebolt/kubebolt/apps/api/internal/helm"
 	"github.com/kubebolt/kubebolt/apps/api/internal/insights"
 	"github.com/kubebolt/kubebolt/apps/api/internal/metrics"
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
@@ -2349,13 +2348,12 @@ func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID
 }
 
 func evaluateInsights(connector *Connector, collector *metrics.Collector, engine *insights.Engine) {
-	// Helm releases aren't informer-backed (decoded on demand from storage
-	// Secrets) — fetch them here so the helm-release insight rules can run.
-	// A single label-selected Secret list per tick; cheap and best-effort.
-	var helmReleases []helm.Release
-	if secrets, err := connector.ListHelmReleaseSecrets(context.Background()); err == nil {
-		helmReleases = helm.DecodeReleases(secrets)
-	}
+	// Helm releases come from their storage's metadata; only the releases a
+	// Helm rule reports on (failed, pending-*) are decoded, each the first time
+	// it is seen. Best-effort: a failed read keeps the last decode.
+	helmCtx, helmCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	helmReleases, _ := connector.HelmReleasesWithStatus(helmCtx, insights.HelmStatusNeedsAttention)
+	helmCancel()
 	state := &insights.ClusterState{
 		Pods:            connector.GetPods(),
 		Deployments:     connector.GetDeployments(),

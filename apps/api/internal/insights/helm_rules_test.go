@@ -41,3 +41,33 @@ func TestHelmReleaseHookPendingRule(t *testing.T) {
 		t.Fatalf("expected only the stale-pending release flagged, got %+v", got)
 	}
 }
+
+// The insight tick decodes only the releases HelmStatusNeedsAttention accepts.
+// Every rule that reads HelmReleases, given a release in any
+// status Helm writes, must report only on statuses the predicate accepts —
+// otherwise it would never see the release in production.
+func TestHelmStatusNeedsAttention_CoversEveryHelmRule(t *testing.T) {
+	statuses := []string{
+		"unknown", "deployed", "uninstalled", "superseded", "failed",
+		"uninstalling", "pending-install", "pending-upgrade", "pending-rollback",
+	}
+	long := time.Now().Add(-time.Hour)
+	for _, rule := range AllRules() {
+		for _, st := range statuses {
+			rel := helm.Release{Name: "r", Namespace: "ns", Status: st, Updated: long, Chart: "c", ChartVersion: "1"}
+			if got := rule.Evaluate(&ClusterState{HelmReleases: []helm.Release{rel}}); len(got) > 0 && !HelmStatusNeedsAttention(st) {
+				t.Errorf("rule %s reports on status %q, which HelmStatusNeedsAttention leaves undecoded", rule.ID, st)
+			}
+		}
+	}
+	for _, st := range []string{"failed", "FAILED", "pending-install", "pending-upgrade", "pending-rollback"} {
+		if !HelmStatusNeedsAttention(st) {
+			t.Errorf("HelmStatusNeedsAttention(%q) = false", st)
+		}
+	}
+	for _, st := range []string{"deployed", "superseded", "uninstalled", "uninstalling", ""} {
+		if HelmStatusNeedsAttention(st) {
+			t.Errorf("HelmStatusNeedsAttention(%q) = true: the tick would decode releases no rule reads", st)
+		}
+	}
+}

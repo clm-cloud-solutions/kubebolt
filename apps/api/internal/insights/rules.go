@@ -132,6 +132,17 @@ func argoOutOfSyncRule() Rule {
 	}
 }
 
+// HelmStatusNeedsAttention reports whether a release whose latest revision is
+// in this status is one a Helm rule reports on: failed, or pending-* (an
+// install, upgrade or rollback that never finished). The insight tick decodes
+// only these releases' storage, so a Helm rule that reports on
+// another status widens this predicate in the same change —
+// TestHelmStatusNeedsAttention_CoversEveryHelmRule fails until it does.
+func HelmStatusNeedsAttention(status string) bool {
+	s := strings.ToLower(status)
+	return s == "failed" || strings.HasPrefix(s, "pending-")
+}
+
 // helmReleaseFailedRule flags Helm releases whose last action ended in a
 // failed state — an install/upgrade that errored or rolled back, leaving the
 // release unusable until an operator addresses it. (Sprint 4 insight.)
