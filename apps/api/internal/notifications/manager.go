@@ -2,7 +2,6 @@ package notifications
 
 import (
 	"context"
-	"log"
 	"sync"
 	"time"
 
@@ -28,6 +27,13 @@ type Manager struct {
 	baseURL         string        // optional base URL to include in notifications
 	includeResolved bool          // also notify when an insight transitions to resolved
 	lastSent        map[string]time.Time // dedup key → last sent timestamp
+
+	// Burst summaries (burst.go): per-cluster runs of held insights.
+	burst  BurstConfig
+	bursts map[burstKey]*burstRun
+	// Clock and timer seams, replaced in tests.
+	now       func() time.Time
+	afterFunc func(time.Duration, func()) stopper
 }
 
 // Config holds runtime settings for the manager.
@@ -37,6 +43,18 @@ type Config struct {
 	Cooldown        time.Duration
 	BaseURL         string
 	IncludeResolved bool
+	// Burst decides when a cluster's insights are summarised instead of sent
+	// one by one. The zero value means the defaults. It cannot be turned off.
+	Burst BurstConfig
+}
+
+// burstFrom resolves the Config's Burst: a threshold below 2 (the zero value
+// included) takes the default, unset durations too.
+func burstFrom(c BurstConfig) BurstConfig {
+	if c.Threshold < 2 {
+		c.Threshold = DefaultBurstThreshold
+	}
+	return c.normalized()
 }
 
 // NewManager creates a notification manager with the given notifiers and config.
@@ -59,6 +77,10 @@ func NewManager(notifiers []Notifier, cfg Config) *Manager {
 		baseURL:         cfg.BaseURL,
 		includeResolved: cfg.IncludeResolved,
 		lastSent:        make(map[string]time.Time),
+		burst:           burstFrom(cfg.Burst),
+		bursts:          make(map[burstKey]*burstRun),
+		now:             time.Now,
+		afterFunc:       func(d time.Duration, f func()) stopper { return time.AfterFunc(d, f) },
 	}
 }
 
@@ -147,6 +169,7 @@ func (m *Manager) SetConfig(cfg Config) {
 	m.cooldown = cooldown
 	m.baseURL = cfg.BaseURL
 	m.includeResolved = cfg.IncludeResolved
+	m.burst = burstFrom(cfg.Burst)
 	m.mu.Unlock()
 }
 
@@ -209,28 +232,20 @@ func (m *Manager) Enqueue(clusterName string, insight models.Insight) {
 		m.purgeExpiredLocked()
 	}
 	// Snapshot what we need for dispatch.
-	baseURL := m.baseURL
 	notifiers := make([]Notifier, len(m.notifiers))
 	copy(notifiers, m.notifiers)
-	m.mu.Unlock()
-
 	event := Event{
 		Insight:     insight,
 		ClusterName: clusterName,
-		BaseURL:     baseURL,
+		BaseURL:     m.baseURL,
 	}
+	held := m.holdForBurstLocked(clusterName, false, event, notifiers)
+	m.mu.Unlock()
 
 	// Fire-and-forget dispatch per notifier. Each notifier has its own 10s HTTP
-	// timeout so one slow channel can't block others.
-	for _, n := range notifiers {
-		go func(n Notifier) {
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
-			if err := n.Send(ctx, event); err != nil {
-				log.Printf("Notification via %s failed: %v", n.Name(), err)
-			}
-		}(n)
-	}
+	// timeout so one slow channel can't block others. An insight held for a
+	// burst summary skips the per-insight channels; the summary carries it.
+	m.deliver(notifiers, event, held, "Notification")
 }
 
 // EnqueueResolved dispatches a notification when an insight transitions to
@@ -254,10 +269,8 @@ func (m *Manager) EnqueueResolved(clusterName string, insight models.Insight) {
 		return
 	}
 	m.lastSent[key] = time.Now()
-	baseURL := m.baseURL
 	notifiers := make([]Notifier, len(m.notifiers))
 	copy(notifiers, m.notifiers)
-	m.mu.Unlock()
 
 	// Prefix the title so existing notifiers visually distinguish the event
 	// without needing a template refactor. Preserves all other fields.
@@ -268,18 +281,12 @@ func (m *Manager) EnqueueResolved(clusterName string, insight models.Insight) {
 	event := Event{
 		Insight:     annotated,
 		ClusterName: clusterName,
-		BaseURL:     baseURL,
+		BaseURL:     m.baseURL,
 	}
+	held := m.holdForBurstLocked(clusterName, true, event, notifiers)
+	m.mu.Unlock()
 
-	for _, n := range notifiers {
-		go func(n Notifier) {
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
-			if err := n.Send(ctx, event); err != nil {
-				log.Printf("Resolved notification via %s failed: %v", n.Name(), err)
-			}
-		}(n)
-	}
+	m.deliver(notifiers, event, held, "Resolved notification")
 }
 
 // SendTest sends a synthetic test event to one specific notifier, bypassing
@@ -317,12 +324,20 @@ func (m *Manager) SendTest(ctx context.Context, channelName string) error {
 }
 
 // Stop shuts down any notifiers that need cleanup (e.g. email digest flusher).
+// Bursts still being held are summarised and sent first, so a settings change
+// (which rebuilds the Manager) or a shutdown never drops them.
 // Safe to call at any time; idempotent.
 func (m *Manager) Stop() {
 	m.mu.Lock()
 	notifiers := make([]Notifier, len(m.notifiers))
 	copy(notifiers, m.notifiers)
+	pending := m.flushAllBurstsLocked()
 	m.mu.Unlock()
+	perInsight := perInsightChannels(notifiers)
+	for _, s := range pending {
+		logSummary(s, len(perInsight))
+		m.deliverSummary(perInsight, s, true)
+	}
 	for _, n := range notifiers {
 		if s, ok := n.(interface{ Stop() }); ok {
 			s.Stop()
