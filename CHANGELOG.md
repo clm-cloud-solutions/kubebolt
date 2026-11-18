@@ -6,6 +6,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A failed namespace LIST no longer scopes a cluster to guessed
+  namespaces.** When a type was denied cluster-wide, the permission probe
+  listed namespaces to look for namespace-level access, and on any error it
+  fell back to `default`, `kube-system` and `kube-public` in silence. Through
+  a slow agent tunnel the LIST could time out, and a large cluster connected
+  with some types served from two namespaces: lists that looked complete and
+  were not. The LIST is now retried; if it keeps failing those types stay
+  without access (the views say so and the limited-access banner counts
+  them). The common namespaces are tried only when the ServiceAccount may not
+  list namespaces at all (403). The log names the types instead of counting
+  them.
+
 ## [2.6.4] — 2026-11-18
 
 A large cluster connects through its agent, and a burst of insights is one
