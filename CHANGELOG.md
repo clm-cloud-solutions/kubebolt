@@ -8,6 +8,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A failed connect is not restarted by every request.** While a cluster's
+  connect kept failing, every request for it (the UI polls every few
+  seconds) started another full connect, each one restarting the initial LIST
+  through the agent: hundreds of MB in minutes without ever connecting. After
+  a failed attempt, requests now wait 30 s, then 1, 2 and 4 minutes, at most
+  5, and are told why (`… (next attempt in 40s)`). An agent's Hello and an
+  explicit switch to the cluster still try at once.
 - **A large cluster behind a slow agent tunnel connects.** The connect and
   cache-sync timeouts were fixed deadlines, so a cluster whose objects take
   longer than that to arrive failed at the same point on every attempt while
