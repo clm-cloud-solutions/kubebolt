@@ -49,7 +49,10 @@ type ClusterState struct {
 	CiliumPolicies            map[string]int
 	CiliumClusterwidePolicies int
 	CiliumPoliciesKnown       bool
-	HelmReleases              []helm.Release
+	// HelmReleases holds the latest revision of every release whose status
+	// HelmStatusNeedsAttention accepts, decoded. The other releases' storage
+	// is not read: a rule that needs them changes that predicate.
+	HelmReleases []helm.Release
 	// Optional dynamic CRDs (Sprint 3), as generic maps from the dynamic
 	// lister — present only when the CRD is installed.
 	Certificates []map[string]interface{}

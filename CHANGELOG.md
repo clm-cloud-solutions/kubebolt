@@ -8,6 +8,25 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Helm's release history no longer crosses the agent tunnel at every
+  connect and again every minute**. Helm keeps every revision
+  of every release as a Secret holding the whole release (chart, values,
+  rendered manifests). The Secrets cache downloaded all of them at connect,
+  and the insight tick (every cluster, parked ones included) and the
+  Overview/Applications cache listed them again, payload included, every
+  minute. The Secrets cache now leaves Helm's storage out; lists and counts
+  read its metadata, once a minute; a release's payload is read when
+  something needs it — its latest revision, once, for the Applications list
+  or for an insight about a failed or stuck release — and the detail view
+  reads only that release. The Secrets list, a storage Secret's detail and
+  the Overview's counts still show them. On a lab cluster with 10 releases,
+  Secrets went from 7.1 MiB to 12 KiB per minute through the agent tunnel
+  with the Overview open, and a loaded Applications list answers in under a
+  millisecond (it took ~140 ms).
+- **A Helm release's History tab spaces its columns.** Revision, status,
+  chart and date ran into each other, and a long description (a failed
+  upgrade's error) squeezed them further; the table now follows the
+  Applications list's layout and wraps the description.
 - **An agent short of memory says so, with the command that fixes it.** When
   a KubeBolt agent pod is OOMKilled or stays near its memory limit, the
   *OOMKilled* and *Memory Near Limit* insights give the `helm upgrade` that
