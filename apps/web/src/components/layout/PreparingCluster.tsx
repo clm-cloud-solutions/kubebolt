@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { CheckCircle2, Circle, Cpu, Loader2, MemoryStick } from 'lucide-react'
+import { CheckCircle2, Circle, Cpu, Loader2, MemoryStick, ShieldCheck } from 'lucide-react'
 import { api } from '@/services/api'
 import type { ClusterProgress } from '@/types/kubernetes'
 import { MetricChart, METRIC_ACCENTS } from '@/components/shared/MetricChart'
@@ -274,10 +274,25 @@ export function PreparingCluster({ name, context }: { name: string; context?: st
           </ul>
         </div>
 
-        <p className="text-xs text-kb-text-tertiary leading-relaxed">
-          <span className="font-semibold text-kb-text-secondary">Not on every visit:</span> KubeBolt loads this when it connects to the
-          cluster — the first time, after KubeBolt restarts, or after the connection was lost. Afterwards, changes stream in as they happen.
-        </p>
+        <div className="flex flex-col gap-1.5 text-xs text-kb-text-tertiary leading-relaxed">
+          <p>
+            <span className="font-semibold text-kb-text-secondary">Not on every visit:</span> KubeBolt loads this when it connects to the
+            cluster — the first time, after KubeBolt restarts, or after the connection was lost. Afterwards, changes stream in as they
+            happen.
+          </p>
+          {/* What the load carries, said as it is: the objects include Secret
+              values, so the line promises what holds (they are never shown;
+              a reveal takes an editor and is audited), not that nothing
+              sensitive travels. */}
+          <p className="flex gap-1.5">
+            <ShieldCheck className="w-3.5 h-3.5 mt-px shrink-0 text-kb-text-secondary" aria-hidden="true" />
+            <span>
+              <span className="font-semibold text-kb-text-secondary">What travels:</span> the objects KubeBolt&apos;s role can read,{' '}
+              {viaAgent ? 'through the agent’s outbound channel' : 'with the credentials of its kubeconfig context'}. They stay in
+              KubeBolt&apos;s memory; Secret values are never displayed, and revealing one takes an editor and is audited.
+            </span>
+          </p>
+        </div>
       </div>
 
       {viaAgent && (

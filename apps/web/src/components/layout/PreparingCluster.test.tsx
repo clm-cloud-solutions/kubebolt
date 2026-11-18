@@ -55,6 +55,10 @@ describe('PreparingCluster', () => {
     expect(screen.getByText('Access checked · 2 kinds not readable')).toBeInTheDocument()
     expect(screen.getAllByTestId('metric-chart')).toHaveLength(2)
     expect(screen.getByText('Metrics come from the agents, not from this load.')).toBeInTheDocument()
+    // What travels is said as it is: Secret values are loaded, never shown.
+    expect(screen.getByText(/through the agent’s outbound channel/)).toHaveTextContent(
+      /Secret values are never displayed, and revealing one takes an editor and is audited/,
+    )
   })
 
   it('says when a connect stopped and when it tries again', async () => {
