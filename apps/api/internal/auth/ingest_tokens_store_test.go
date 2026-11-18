@@ -242,3 +242,62 @@ func TestIngestActive_Helper(t *testing.T) {
 		}
 	}
 }
+
+// A wizard's token stops working if nothing uses it before
+// its use-by date: an abandoned onboarding no longer leaves a credential that
+// works forever.
+func TestIngestIssueUseBy_AnUnusedTokenStopsAtItsUseByDate(t *testing.T) {
+	its := newTestIngestTokenStore(t)
+	fixed := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	its.nowFn = func() time.Time { return fixed }
+	plaintext, tok, err := its.IssueUseBy(context.Background(), "tenant-1", "", "", "first-cluster", "admin", nil, fixed.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok.UnusedExpiresAt == nil || !tok.UnusedExpiresAt.Equal(fixed.Add(time.Hour)) || tok.ExpiresAt != nil {
+		t.Fatalf("token = use-by %v, expires %v; want use-by +1h and no hard expiry", tok.UnusedExpiresAt, tok.ExpiresAt)
+	}
+	its.nowFn = func() time.Time { return fixed.Add(30 * time.Minute) }
+	if _, err := its.Lookup(context.Background(), plaintext); err != nil {
+		t.Fatalf("before its use-by date: %v", err)
+	}
+	its.nowFn = func() time.Time { return fixed.Add(2 * time.Hour) }
+	if _, err := its.Lookup(context.Background(), plaintext); !errors.Is(err, ErrTokenExpired) {
+		t.Fatalf("unused past its use-by date: err = %v, want ErrTokenExpired", err)
+	}
+}
+
+// Once an agent has used it, the token is that agent's long-lived credential:
+// the use-by date no longer applies.
+func TestIngestIssueUseBy_AUsedTokenOutlivesItsUseByDate(t *testing.T) {
+	its := newTestIngestTokenStore(t)
+	fixed := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	its.nowFn = func() time.Time { return fixed }
+	plaintext, tok, err := its.IssueUseBy(context.Background(), "tenant-1", "", "", "first-cluster", "admin", nil, fixed.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := its.MarkUsed(context.Background(), "tenant-1", tok.ID, fixed.Add(10*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	its.nowFn = func() time.Time { return fixed.Add(30 * 24 * time.Hour) }
+	got, err := its.Lookup(context.Background(), plaintext)
+	if err != nil {
+		t.Fatalf("a used token stopped working at its use-by date: %v", err)
+	}
+	if !got.Active(fixed.Add(30 * 24 * time.Hour)) {
+		t.Fatal("Active() = false for a used token past its use-by date")
+	}
+}
+
+// Issue (every other caller) sets no use-by date.
+func TestIngestIssue_HasNoUseByDate(t *testing.T) {
+	its := newTestIngestTokenStore(t)
+	_, tok, err := its.Issue(context.Background(), "tenant-1", "", "", "prod", "admin", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok.UnusedExpiresAt != nil {
+		t.Fatalf("Issue set a use-by date: %v", tok.UnusedExpiresAt)
+	}
+}

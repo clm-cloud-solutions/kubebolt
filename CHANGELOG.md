@@ -8,6 +8,19 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A wizard's agent token stops working if no agent uses it within a week,
+  and *Advanced setup* has a way back.** The onboarding and the add-cluster
+  wizard issue a token on every attempt and none expired: each abandoned
+  attempt left an ingest credential that worked until someone revoked it. A
+  token those wizards hand over to copy now stops working after 7 days unless
+  an agent uses it first; once one has, it keeps working. The wizards say
+  until when, and Agents › Tokens shows it (*if unused, in 7d*). A token the
+  API writes straight into the connected cluster's Secret (install,
+  configure) has no such window. *Advanced setup* opened from the onboarding
+  reuses the token the onboarding issued instead of issuing a second one,
+  keeps the name, and has *Back to the simple setup*. The issue-token
+  endpoint also honours the `ttlSeconds` it declared and ignored. Agents ›
+  Tokens read a future expiry as "just now"; it now reads "in 6d".
 - **A failed connect is not restarted by every request.** While a cluster's
   connect kept failing, every request for it (the UI polls every few
   seconds) started another full connect, each one restarting the initial LIST

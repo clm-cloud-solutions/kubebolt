@@ -2681,6 +2681,8 @@ export interface AgentIssueTokenResponse {
   tokenPrefix: string
   tokenLabel: string
   tenantId: string
+  // When the token stops working if no agent uses it (copy path only).
+  unusedExpiresAt?: string
 }
 
 // Live agent registry entry — one per currently-connected gRPC stream.
@@ -3147,6 +3149,9 @@ export interface IngestToken {
   expiresAt?: string
   revokedAt?: string
   active: boolean
+  // Present only while the token has never been used: when it stops working
+  // unless an agent uses it first (the wizards' tokens).
+  unusedExpiresAt?: string
 }
 
 export interface TenantWithTokens extends Tenant {
