@@ -47,18 +47,26 @@ func WithConnectorSkill(history []Message, round []ToolResult, call ToolCall, re
 // WithoutConnectorSkill is a result's content without the procedure
 // WithConnectorSkill put in front of it: what the call itself answered. How a
 // call ended is read from that, never from the procedure, whose own words
-// ("an AccessDenied names the action") made a failed first AWS call read as a
-// denial and named the procedure as the reason.
+// (a "`not found`" an ECR tag gives, "an AccessDenied names the action") made a
+// failed first AWS call read as something it was not and named the procedure
+// as the reason. The header names the procedure; only a connector's procedure
+// (skills.IsConnectorProcedure) is ever put there.
 func WithoutConnectorSkill(content string) string {
-	for _, name := range connectorSkills {
-		skill, ok := skills.Get(name)
-		if !ok {
-			continue
-		}
-		prefix := fmt.Sprintf(connectorSkillHeader, name, name) + "\n\n" + skill.Body + "\n\n"
-		if rest, ok := strings.CutPrefix(content, prefix); ok {
-			return rest
-		}
+	rest, ok := strings.CutPrefix(content, "[KubeBolt] ")
+	if !ok {
+		return content
+	}
+	name, _, ok := strings.Cut(rest, ",")
+	if !ok || !skills.IsConnectorProcedure(name) {
+		return content
+	}
+	skill, ok := skills.Get(name)
+	if !ok {
+		return content
+	}
+	prefix := fmt.Sprintf(connectorSkillHeader, name, name) + "\n\n" + skill.Body + "\n\n"
+	if answer, ok := strings.CutPrefix(content, prefix); ok {
+		return answer
 	}
 	return content
 }
