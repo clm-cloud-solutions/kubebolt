@@ -6,6 +6,23 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **A cluster that is being prepared says how far it is, instead of a
+  spinner.** While KubeBolt loads a cluster's
+  cache — its first connect, after KubeBolt restarts, or after the connection
+  was lost — its pages show what is happening and why the wait is worth it,
+  the steps (agents, access, loading, first health check), a bar weighted by
+  the objects that have arrived (the API server's `remainingItemCount`),
+  the types loaded, the data received and its rate, the elapsed time, an
+  Activity log, and the cluster's CPU and memory, which the agents ship
+  before the cache has synced. Nothing about what the API serves changes:
+  the cluster's views still open together when it is ready. New read-only
+  `GET /clusters/progress`, which never starts or waits for a connect. A
+  switch to a cluster KubeBolt already holds stays instant, without the
+  card; the menu no longer shows the previous cluster's counts during a
+  switch, and the state pill says *Connecting* instead of *Disconnected*.
+
 ### Fixed
 
 - **An agent short of memory says so, with the command that fixes it.** When

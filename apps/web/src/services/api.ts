@@ -2,6 +2,7 @@ import type {
   ClusterOverview,
   ClusterHealth,
   ClusterInfo,
+  ClusterProgress,
   ResourceList,
   Topology,
   Insight,
@@ -811,6 +812,8 @@ export const api = {
   // está. Éste sólo rotula historial. Viene indexado por las dos identidades
   // (contexto y UID).
   getClusterNames: () => fetchJSON<Record<string, string>>(`${API_BASE}/clusters/names`),
+  // How far the selected cluster's connect has gone; never starts or waits for one.
+  getClusterProgress: () => fetchJSON<ClusterProgress>(`${API_BASE}/clusters/progress`),
 
   switchCluster: (context: string) =>
     postJSON<{ status: string; context: string }>(`${API_BASE}/clusters/switch`, { context }),

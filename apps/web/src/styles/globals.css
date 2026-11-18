@@ -1102,3 +1102,19 @@ input:-webkit-autofill:active {
     radial-gradient(900px 460px at 10% -10%, rgba(245, 242, 236, 0.045), transparent 60%),
     var(--kb-bg);
 }
+
+/* Preparing a cluster (PreparingCluster.tsx): the bar's fill carries a slow
+   flow while the load runs, so a collection that takes a while still reads as
+   work going on. Reduced motion keeps the plain fill. */
+@keyframes kb-progress-flow {
+  from { background-position: 0 0; }
+  to { background-position: 28px 0; }
+}
+.kb-progress-flow {
+  background-image: repeating-linear-gradient(-45deg, rgba(255, 255, 255, 0.22) 0 7px, transparent 7px 14px);
+  background-size: 28px 100%;
+  animation: kb-progress-flow 0.9s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .kb-progress-flow { animation: none; }
+}
