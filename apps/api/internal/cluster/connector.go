@@ -1396,6 +1396,9 @@ func (c *Connector) waitForCacheSync(idle time.Duration) error {
 	c.progress.touch()
 	ctx, cancel := progressContext(context.Background(), c.progress, idle, maxConnectDuration)
 	defer cancel()
+	// What the initial LISTs bring is counted for the connect's progress only
+	// (prepare_progress.go): a relist later is not a connect.
+	defer c.progress.listsDone.Store(true)
 	for _, ok := range c.factory.WaitForCacheSync(ctx.Done()) {
 		if !ok {
 			return fmt.Errorf("cache sync stopped: %v — cluster may be unreachable", context.Cause(ctx))

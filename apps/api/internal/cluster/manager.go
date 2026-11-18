@@ -157,6 +157,12 @@ type clusterRuntime struct {
 	// of each launching a connector. nil for the active runtime (built
 	// synchronously under the lock).
 	ready chan struct{}
+	// startedAt is when a pooled runtime's build began, and building the
+	// connector it is building, published once the permission probe is done:
+	// the connect progress reads them without waiting on ready
+	// (prepare_progress.go).
+	startedAt time.Time
+	building  atomic.Pointer[Connector]
 }
 
 // SetInsightStore wires the persistent insights store + tenant scope. The
@@ -1853,13 +1859,13 @@ func (m *Manager) getOrSpinPooled(tenant, contextName string) *clusterRuntime {
 	tenantID := m.tenantID
 	cacheSyncTimeout := m.resolveCacheSyncTimeoutLocked()
 	connectTimeout := m.resolveConnectTimeoutLocked()
-	placeholder := &clusterRuntime{ready: make(chan struct{})}
+	started := time.Now()
+	placeholder := &clusterRuntime{ready: make(chan struct{}), startedAt: started}
 	m.runtimes[pk] = placeholder
 	m.mu.Unlock()
 
 	// Build outside the lock (connector.Start ~20s).
-	started := time.Now()
-	built, err := m.startRuntime(access, contextName, agentProxyCID, insightStore, tenantID, cacheSyncTimeout, connectTimeout)
+	built, err := m.startRuntime(access, contextName, agentProxyCID, insightStore, tenantID, cacheSyncTimeout, connectTimeout, placeholder.building.Store)
 	if err != nil {
 		// Every failed attempt is logged: this path used to drop the error, so a
 		// cluster whose always-on runtime never came up left no trace at all.
@@ -2151,7 +2157,7 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 	// prior behavior (the ~20s connector.Start runs under the lock for a
 	// switch). Pooled spins (getOrSpinPooled) call startRuntime OUTSIDE the
 	// lock instead.
-	rt, err := m.startRuntime(access, contextName, m.agentProxyContexts[contextName], m.insightStore, m.tenantID, m.resolveCacheSyncTimeoutLocked(), m.resolveConnectTimeoutLocked())
+	rt, err := m.startRuntime(access, contextName, m.agentProxyContexts[contextName], m.insightStore, m.tenantID, m.resolveCacheSyncTimeoutLocked(), m.resolveConnectTimeoutLocked(), nil)
 	if err != nil {
 		return err
 	}
@@ -2203,10 +2209,16 @@ func connectDeadline(agentProxyCID string, connectTimeout time.Duration) time.Du
 	return connectTimeout
 }
 
-func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID string, insightStore insights.InsightStore, tenantID string, cacheSyncTimeout, connectTimeout time.Duration) (*clusterRuntime, error) {
+// publish, when not nil, receives the connector as soon as it exists (the
+// permission probe done, the informers not yet started), so the connect's
+// progress can be read while Start runs.
+func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID string, insightStore insights.InsightStore, tenantID string, cacheSyncTimeout, connectTimeout time.Duration, publish func(*Connector)) (*clusterRuntime, error) {
 	connector, err := NewConnectorFromAccess(access, m.wsHub)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to context %s: %w", contextName, err)
+	}
+	if publish != nil {
+		publish(connector)
 	}
 	// Apply the live cache-sync deadline before Start() (default when 0).
 	connector.SetCacheSyncTimeout(cacheSyncTimeout)
