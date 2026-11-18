@@ -6,6 +6,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.7.0] — 2026-11-18
+
+A cluster being prepared says how far it is, a large cluster connects behind a
+slow agent tunnel, and Helm's release history stays in the cluster until a
+view needs it. Drop-in, no migration; the agent stays on 1.4.9. Full note:
+[docs/releases/v2.7.0.md](docs/releases/v2.7.0.md).
+
 ### Added
 
 - **A cluster that is being prepared says how far it is, instead of a
