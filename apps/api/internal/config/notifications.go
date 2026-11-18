@@ -49,6 +49,51 @@ type NotificationsConfig struct {
 	Cooldown        time.Duration // dedup window for the same insight
 	BaseURL         string        // optional — included as a link in messages
 	IncludeResolved bool          // also notify when an insight is resolved
+
+	// Burst summaries: when a cluster sends BurstThreshold or more insights
+	// within BurstWindow, the per-insight channels (Slack, Discord, instant
+	// email) get one summary once it has been quiet for BurstQuiet, or after
+	// BurstMaxWait. Summaries cannot be turned off: a threshold below 2 is
+	// ignored, and the settings layer bounds every knob (settings.BurstLimits).
+	BurstThreshold int
+	BurstWindow    time.Duration
+	BurstQuiet     time.Duration
+	BurstMaxWait   time.Duration
+	// DigestListLimit: a digest with more insights than this is sent as a
+	// summary instead of one card per insight. Below 1 it is ignored.
+	DigestListLimit int
+}
+
+// Install defaults for burst summaries and the digest list limit. They match
+// the notifications package's own defaults (DefaultBurst*, DefaultDigestListLimit).
+const (
+	DefaultBurstThreshold  = 5
+	DefaultBurstWindow     = 60 * time.Second
+	DefaultBurstQuiet      = 30 * time.Second
+	DefaultBurstMaxWait    = 5 * time.Minute
+	DefaultDigestListLimit = 20
+)
+
+// WithBurstDefaults returns c with every unset or invalid burst knob at its
+// default. A zero threshold must never reach a clamp, which would read it as
+// the most aggressive setting (2) rather than "not configured".
+func (c NotificationsConfig) WithBurstDefaults() NotificationsConfig {
+	if c.BurstThreshold < 2 {
+		c.BurstThreshold = DefaultBurstThreshold
+	}
+	if c.BurstWindow <= 0 {
+		c.BurstWindow = DefaultBurstWindow
+	}
+	if c.BurstQuiet <= 0 {
+		c.BurstQuiet = DefaultBurstQuiet
+	}
+	if c.BurstMaxWait <= 0 {
+		c.BurstMaxWait = DefaultBurstMaxWait
+	}
+	if c.DigestListLimit < 1 {
+		c.DigestListLimit = DefaultDigestListLimit
+	}
+	return c
 }
 
 // Enabled returns true if at least one notification channel is configured.
@@ -92,7 +137,42 @@ func LoadNotificationsConfig() NotificationsConfig {
 		}
 	}
 
+	cfg.BurstThreshold = parseIntAtLeast(os.Getenv("KUBEBOLT_NOTIFICATIONS_BURST_THRESHOLD"), 2, DefaultBurstThreshold)
+	cfg.BurstWindow = parseDurationDefault(os.Getenv("KUBEBOLT_NOTIFICATIONS_BURST_WINDOW"), DefaultBurstWindow)
+	cfg.BurstQuiet = parseDurationDefault(os.Getenv("KUBEBOLT_NOTIFICATIONS_BURST_QUIET"), DefaultBurstQuiet)
+	cfg.BurstMaxWait = parseDurationDefault(os.Getenv("KUBEBOLT_NOTIFICATIONS_BURST_MAX_WAIT"), DefaultBurstMaxWait)
+	cfg.DigestListLimit = parseIntAtLeast(os.Getenv("KUBEBOLT_NOTIFICATIONS_DIGEST_LIST_LIMIT"), 1, DefaultDigestListLimit)
+
 	return cfg
+}
+
+// parseIntAtLeast parses an integer of at least min, returning def on empty or
+// invalid input, or below min. A burst threshold of 0 used to turn summaries
+// off; it now falls back to the default like any other invalid value.
+func parseIntAtLeast(s string, min, def int) int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return def
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < min {
+		return def
+	}
+	return n
+}
+
+// parseDurationDefault parses a positive Go duration ("30s", "5m"), returning
+// def on empty or invalid input.
+func parseDurationDefault(s string, def time.Duration) time.Duration {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return def
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d <= 0 {
+		return def
+	}
+	return d
 }
 
 // parseBoolDefault parses a string as a boolean, returning def on any parse

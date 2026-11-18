@@ -167,6 +167,13 @@ func (h *Handlers) ValidatePortForwardToken(tokenStr string) (orgID string, ok b
 	return orgID, true
 }
 
+// WithClaims puts validated claims into ctx, as RequireAuth does, for a door
+// that authenticates outside that middleware: /ws takes its token from the
+// query string because a browser cannot send a Bearer header on the upgrade.
+func WithClaims(ctx context.Context, claims *Claims) context.Context {
+	return context.WithValue(ctx, claimsKey, claims)
+}
+
 // ContextClaims returns the JWT claims from the request context, or nil if not present.
 func ContextClaims(r *http.Request) *Claims {
 	claims, _ := r.Context().Value(claimsKey).(*Claims)

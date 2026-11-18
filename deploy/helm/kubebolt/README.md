@@ -95,6 +95,7 @@ target. In 2.x, these ask something of you:
 | 2.5.2 | OpenShift: the web runs under its own ServiceAccount (`<release>-web`), which needs no SCC. |
 | 2.6.0 | A VictoriaMetrics you run yourself needs `-maxLabelsPerTimeseries=60`. |
 | 2.6.1 | An AWS connector role created earlier needs `ecr:GetLifecyclePolicy` and `ecr:List*` for Kobi's new ECR reads (the drawer prints the updated policy). |
+| 2.6.3 | RBAC you manage yourself (`rbac.create=false`): grant `get`, `list` and `watch` on `externalsecrets`, `secretstores` and `clustersecretstores` (`external-secrets.io`), or Kobi cannot read them. |
 
 Coming from 1.x, read
 [COMPATIBILITY.md](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/COMPATIBILITY.md)

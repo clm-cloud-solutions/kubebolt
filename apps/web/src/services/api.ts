@@ -2154,6 +2154,19 @@ export interface CopilotSettingsPutRequest {
 // trip plaintext; only masked previews on the way out, plaintext on
 // the way in via dedicated top-level fields.
 
+export interface BurstLimits {
+  thresholdMin: number
+  thresholdMax: number
+  windowMinSeconds: number
+  windowMaxSeconds: number
+  quietMinSeconds: number
+  quietMaxSeconds: number
+  maxWaitMinSeconds: number
+  maxWaitMaxSeconds: number
+  listLimitMin: number
+  listLimitMax: number
+}
+
 export interface NotificationsSettingsResponse {
   effective: {
     masterEnabled: boolean
@@ -2161,6 +2174,15 @@ export interface NotificationsSettingsResponse {
     cooldownSeconds: number
     baseURL?: string
     includeResolved: boolean
+    // Burst summaries: a cluster that opens burstThreshold insights within
+    // burstWindowSeconds gets one summary instead. A digest with more than
+    // digestListLimit insights is summarised too. Always on; burstLimits
+    // bounds every value.
+    burstThreshold: number
+    burstWindowSeconds: number
+    burstQuietSeconds: number
+    burstMaxWaitSeconds: number
+    digestListLimit: number
 
     // Tri-state per channel:
     //   configured = required fields are filled
@@ -2198,6 +2220,11 @@ export interface NotificationsSettingsResponse {
       cooldownSeconds?: number
       baseURL?: string
       includeResolved?: boolean
+      burstThreshold?: number
+      burstWindowSeconds?: number
+      burstQuietSeconds?: number
+      burstMaxWaitSeconds?: number
+      digestListLimit?: number
     }
     slack?: {
       webhookConfigured: boolean
@@ -2219,6 +2246,9 @@ export interface NotificationsSettingsResponse {
     }
   }
   secretsReadable: boolean
+  /** The bounds the burst settings must stay within. Absent from an older
+   *  backend. */
+  burstLimits?: BurstLimits
 }
 
 export interface NotificationsSettingsPutRequest {
@@ -2229,6 +2259,11 @@ export interface NotificationsSettingsPutRequest {
       cooldownSeconds?: number
       baseURL?: string
       includeResolved?: boolean
+      burstThreshold?: number
+      burstWindowSeconds?: number
+      burstQuietSeconds?: number
+      burstMaxWaitSeconds?: number
+      digestListLimit?: number
     }
     slack?: {
       enabled?: boolean

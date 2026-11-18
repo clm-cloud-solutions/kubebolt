@@ -66,6 +66,43 @@ var stripManagedFieldsOption = informers.WithTransform(func(obj interface{}) (in
 	return obj, nil
 })
 
+// paginateInitialListOption makes the informers' initial LIST paginate instead
+// of arriving as one body. client-go's reflector lists with resourceVersion=0 on
+// its first pass, which the API server serves from its watch cache — ignoring
+// `limit` and returning every object in a single response. On a large cluster
+// (tens of MiB of ReplicaSets) that body is too big for an agent-proxy tunnel's
+// per-request timeout and for the agent's memory. Blanking resourceVersion makes
+// the server honour the pager's limit=500 and paginate: a consistent read,
+// served from the watch cache where ConsistentListFromCache is on, otherwise a
+// bounded etcd range read per page.
+var paginateInitialListOption = informers.WithTweakListOptions(listFromServerNotWatchCache)
+
+// listFromServerNotWatchCache implements paginateInitialListOption.
+// WithTweakListOptions runs on the reflector's List AND Watch calls, so it
+// rewrites only a request that is both resourceVersion=0 and paginated
+// (Limit > 0), which is the reflector's initial LIST page:
+//   - a watch never carries a limit, so it is left alone whatever its
+//     resourceVersion;
+//   - continuation pages already carry resourceVersion="" (the pager clears it);
+//   - when a continue token expires the pager falls back to one LIST with
+//     Limit=0 and resourceVersion=0. Blanking that one would turn it into a
+//     full read of the collection from storage (etcd, or kine on k3s) instead of
+//     the watch cache, for the same single body, so it keeps resourceVersion=0.
+func listFromServerNotWatchCache(opts *metav1.ListOptions) {
+	if opts.ResourceVersion == "0" && opts.Limit > 0 {
+		opts.ResourceVersion = ""
+	}
+}
+
+// newInformerFactory builds every typed informer factory the connector uses, so
+// none of them can miss the shared options: managedFields stripped from the
+// cache and the initial LIST paginated. extra carries the per-factory ones,
+// such as the namespace of a namespace-scoped factory.
+func newInformerFactory(cs kubernetes.Interface, extra ...informers.SharedInformerOption) informers.SharedInformerFactory {
+	opts := append([]informers.SharedInformerOption{stripManagedFieldsOption, paginateInitialListOption}, extra...)
+	return informers.NewSharedInformerFactoryWithOptions(cs, informerResync, opts...)
+}
+
 // Connector manages the Kubernetes cluster connection and informers.
 type Connector struct {
 	restConfig    *rest.Config
@@ -277,7 +314,7 @@ func newConnectorFromConfig(restConfig *rest.Config, clusterName string, wsHub *
 		log.Printf("Warning: metrics client creation failed: %v", err)
 	}
 
-	factory := informers.NewSharedInformerFactoryWithOptions(clientset, informerResync, stripManagedFieldsOption)
+	factory := newInformerFactory(clientset)
 
 	c := &Connector{
 		restConfig:    restConfig,
@@ -562,9 +599,7 @@ func (c *Connector) setupInformers() {
 	if len(nsNamespaces) > 0 {
 		nsFactories = make(map[string]informers.SharedInformerFactory, len(nsNamespaces))
 		for _, ns := range nsNamespaces {
-			nsFactories[ns] = informers.NewSharedInformerFactoryWithOptions(
-				c.clientset, informerResync, informers.WithNamespace(ns), stripManagedFieldsOption,
-			)
+			nsFactories[ns] = newInformerFactory(c.clientset, informers.WithNamespace(ns))
 		}
 	}
 
@@ -4290,34 +4325,32 @@ func olderVersionGVR(resourceType string) (schema.GroupVersionResource, bool) {
 	return schema.GroupVersionResource{}, false
 }
 
-// isExternalSecretsStore reports a type whose spec may carry an inline
-// credential (a store's provider configuration).
-func isExternalSecretsStore(resourceType string) bool {
-	return resourceType == "secretstores" || resourceType == "clustersecretstores"
-}
-
 // redactInlineCredentials hides, in a store's spec, every string value under
 // a key that names a credential. A store normally points at its credentials
 // (secretRef: name and key, a role ARN, a service account), and those stay:
 // the redaction only catches a value written inline (the fake provider's
 // data, a webhook header, a token pasted into the spec).
-func redactInlineCredentials(v interface{}) {
+// It reports whether anything changed.
+func redactInlineCredentials(v interface{}) bool {
+	changed := false
 	switch t := v.(type) {
 	case map[string]interface{}:
 		for k, x := range t {
 			if s, ok := x.(string); ok {
-				if s != "" && (looksLikeSensitiveKey(k) || strings.EqualFold(k, "value")) {
+				if s != "" && s != redactedPlaceholder && (looksLikeSensitiveKey(k) || strings.EqualFold(k, "value")) {
 					t[k] = redactedPlaceholder
+					changed = true
 				}
 				continue
 			}
-			redactInlineCredentials(x)
+			changed = redactInlineCredentials(x) || changed
 		}
 	case []interface{}:
 		for _, x := range t {
-			redactInlineCredentials(x)
+			changed = redactInlineCredentials(x) || changed
 		}
 	}
+	return changed
 }
 
 // isClusterScoped returns true for resource types that are not namespaced.
@@ -4902,30 +4935,9 @@ func (c *Connector) resourceYAML(resourceType, namespace, name string, writes *[
 		}
 	}
 
-	// Redact secret data values
-	if resourceType == "secrets" {
-		if data, ok := obj.Object["data"].(map[string]interface{}); ok {
-			for k := range data {
-				data[k] = redactedPlaceholder
-			}
-		}
-	}
-
-	// A secret store's spec may carry a credential written inline.
-	if isExternalSecretsStore(resourceType) {
-		redactInlineCredentials(obj.Object["spec"])
-	}
-
-	// Redact sensitive-looking values in ConfigMap data
-	if resourceType == "configmaps" {
-		if data, ok := obj.Object["data"].(map[string]interface{}); ok {
-			for k, v := range data {
-				if s, ok := v.(string); ok && configMapValueHidden(k, s) {
-					data[k] = redactedPlaceholder
-				}
-			}
-		}
-	}
+	// Every Secret value, a ConfigMap's credentials, a secret store's inline
+	// credentials, an Argo CD Application's values: viewer_redact.go.
+	hideFromViewer(obj.Object)
 
 	yamlBytes, err := sigsyaml.Marshal(obj.Object)
 	if err != nil {
@@ -5202,6 +5214,7 @@ func (c *Connector) ApplyResourceYAML(ctx context.Context, resourceType, namespa
 	// values come back: a stored value may be binary on purpose.
 	var refused refusals
 	refused.add(checkPlaceholdersKept(resourceType, rawObj, live.Object))
+	refused.add(checkSpecHiddenKept(rawObj, live.Object))
 	refused.add(checkBase64Values(resourceType, rawObj))
 	refused.add(checkTextValues(resourceType, rawObj, opts))
 	if err := refused.err(); err != nil {

@@ -6,6 +6,82 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.6.4] — 2026-11-18
+
+A large cluster connects through its agent, and a burst of insights is one
+notification. A fix release: drop-in, no migration; the agent stays on 1.4.9.
+Full note: [docs/releases/v2.6.4.md](docs/releases/v2.6.4.md).
+
+### Fixed
+
+- **Namespaces on a large cluster.** The Overview's *Workloads by namespace*
+  drew every namespace at once (131 on a test cluster) and pushed the rest of
+  the page down: it now shows the first 12, the ones that need attention
+  first, and *Show all* for the rest (saying how many hidden ones need
+  attention). The Namespaces page asked for the list without a page, got the
+  API's first 50 and had no way to the others while saying "50 total": it now
+  pages 50 at a time like every other list, counts them all and filters by
+  name.
+- **A burst of insights is one notification, not hundreds.** When a cluster
+  opens 5 or more insights within 60 seconds (its first evaluation, a
+  reconnect after its episodes expired, a node failure), Slack, Discord and
+  instant email get one summary once the cluster has been quiet for 30
+  seconds (5 minutes at most, then a partial "still going" summary): the
+  count by severity, every critical named (up to 10), every rule with its
+  count and most affected namespaces. The first insights, sent before the
+  burst was clear, are counted and marked. Below the threshold every insight
+  is still sent at once. An hourly or daily digest with more than 20
+  insights is summarised the same way. Summaries cannot be turned off; the
+  thresholds come from `KUBEBOLT_NOTIFICATIONS_BURST_*` and
+  `KUBEBOLT_NOTIFICATIONS_DIGEST_LIST_LIMIT` and can be moved, within fixed
+  ranges, in Settings › Notifications › *Summaries*. The Notifications page
+  is laid out by what each setting does: what is sent on the left, where it
+  goes on the right.
+- **The initial informer LIST is paginated.** The same `resourceVersion=0` made
+  a large cluster's first LIST arrive as one body, too big for the agent's
+  memory and for the tunnel's per-request timeout. It now arrives 500 objects
+  at a time.
+- **The informer cache audit no longer downloads every list.** It asked for one
+  item with `resourceVersion=0`, which the API server answers from its watch
+  cache while ignoring the limit, so every 5 minutes it pulled the full Pod,
+  Deployment and ReplicaSet lists, through the agent on an agent-connected
+  cluster: on a large cluster, enough to exhaust the agent's memory. It now
+  reads the count from `remainingItemCount`, a few KB per type.
+- **A cluster switch no longer tears down more than it should.** Switching
+  clusters stopped every active port-forward and cancelled every in-flight
+  drain; it now scopes that teardown (and the switch notification) to the caller
+  itself, so another organization's forwards, drains and sockets are left alone.
+  A switch to the cluster that is already active is now a no-op, so returning to
+  a cluster view no longer closes the port-forwards you have open on it.
+  Single-tenant installs are unaffected.
+- **The active port-forward list is scoped to the caller.** `GET /portforward`
+  returned every organization's forwards; it now returns only the caller's own,
+  so one organization's indicator never shows another's tunnels. Single-tenant
+  installs are unaffected.
+- **Access-audit records carry the cluster the access reached.** Terminal,
+  port-forward and pod file-read records stamped the install's default cluster
+  rather than the one the access actually touched; they now record the resolved
+  cluster.
+- **Saving a secret store from the YAML editor keeps its inline credential.**
+  The viewer hides a store's inline credentials, and the save wrote the
+  placeholder back over them. A hidden value left as shown now keeps the
+  stored one, as with Secrets; one edited while still hidden is refused,
+  naming the field.
+
+### Security
+
+- The Helm release view shows a release's values and rendered manifest the way
+  the YAML viewer shows the objects themselves: Secret values hidden, and
+  credentials in the values hidden by name and shape.
+- The pod file browser requires the Editor role, like the terminal.
+- The audit trail and the API log no longer keep the values of environment
+  variables changed with set-env, only their names and sources. Older records
+  are cleaned at startup.
+- Runtime events are filtered for credentials when stored and when read.
+- An Argo CD Application's Helm values, parameters and plugin environment are
+  hidden in the YAML view, in describe and to Kobi.
+- Describe hides the ConfigMap values the YAML view hides.
+
 ## [2.6.3] — 2026-11-16
 
 Kobi traces a rotated credential to its source through External Secrets, and

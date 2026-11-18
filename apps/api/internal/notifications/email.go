@@ -35,6 +35,27 @@ type EmailConfig struct {
 	From       string
 	To         []string // one or more recipient addresses
 	DigestMode DigestMode
+	// DigestListLimit: a digest with more insights than this is sent as a
+	// summary (counted by rule, criticals named) instead of one card per
+	// insight. Below 1 = DefaultDigestListLimit: a large digest is always
+	// summarised.
+	DigestListLimit int
+}
+
+// DefaultDigestListLimit is how many insights a digest lists one by one before
+// it turns into a summary.
+const DefaultDigestListLimit = 20
+
+func (n *EmailNotifier) digestListLimit() int {
+	if l := n.cfg.DigestListLimit; l >= 1 {
+		return l
+	}
+	return DefaultDigestListLimit
+}
+
+// summarisesDigest: a digest (never instant mail) longer than its list limit.
+func (n *EmailNotifier) summarisesDigest(count int) bool {
+	return n.cfg.DigestMode != DigestInstant && count > n.digestListLimit()
 }
 
 // EmailNotifier sends insights by SMTP. In digest mode it buffers events in
@@ -154,18 +175,38 @@ func (n *EmailNotifier) flushLoop() {
 	}
 }
 
-// sendEmail performs the SMTP transaction. Handles both STARTTLS (587) and
-// implicit TLS (465). Single email can carry 1..N events (digest or instant).
+// sendEmail renders and sends one email for 1..N events (instant or digest).
+// A digest longer than its list limit is rendered as a summary.
 func (n *EmailNotifier) sendEmail(ctx context.Context, events []Event) error {
 	if len(events) == 0 {
 		return nil
 	}
+	subject, htmlBody, textBody := n.render(events)
+	return n.deliver(ctx, subject, htmlBody, textBody)
+}
+
+// render picks the email for a batch: the card list, or the summary for a
+// digest past its list limit.
+func (n *EmailNotifier) render(events []Event) (subject, htmlBody, textBody string) {
+	if n.summarisesDigest(len(events)) {
+		return summaryEmail(viewFromDigest(events, n.cfg.DigestMode, "", n.digestListLimit()))
+	}
+	htmlBody, textBody = buildBodies(events)
+	return buildSubject(events), htmlBody, textBody
+}
+
+// SendSummary sends one email for a burst of insights from one cluster.
+func (n *EmailNotifier) SendSummary(ctx context.Context, s Summary) error {
+	subject, htmlBody, textBody := summaryEmail(viewFromBurst(s))
+	return n.deliver(ctx, subject, htmlBody, textBody)
+}
+
+// deliver performs the SMTP transaction. Handles both STARTTLS (587) and
+// implicit TLS (465).
+func (n *EmailNotifier) deliver(ctx context.Context, subject, htmlBody, textBody string) error {
 	if n.cfg.From == "" || len(n.cfg.To) == 0 || n.cfg.Host == "" {
 		return fmt.Errorf("email: missing required config (from/to/host)")
 	}
-
-	subject := buildSubject(events)
-	htmlBody, textBody := buildBodies(events)
 
 	// Split "Display Name <addr@host>" into envelope (addr only) and header
 	// (full form with display name). SMTP MAIL FROM does not accept the

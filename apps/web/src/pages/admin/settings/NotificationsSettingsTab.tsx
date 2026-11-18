@@ -13,9 +13,10 @@ import {
   Send,
   Check,
   Mail,
+  Layers,
 } from 'lucide-react'
 import { api } from '@/services/api'
-import type { NotificationsSettingsPutRequest, NotificationsSettingsResponse } from '@/services/api'
+import type { BurstLimits, NotificationsSettingsPutRequest, NotificationsSettingsResponse } from '@/services/api'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ConfirmDialog } from './ConfirmDialog'
 import { Field, UnsavedChip } from './SettingsField'
@@ -38,6 +39,13 @@ interface FormState {
   cooldownSeconds: string // string for editable input
   baseURL: string
   includeResolved: boolean
+
+  // Burst summaries (numbers kept as strings for editable inputs). Always on.
+  burstThreshold: string
+  burstWindowSeconds: string
+  burstQuietSeconds: string
+  burstMaxWaitSeconds: string
+  digestListLimit: string
 
   // Slack
   slackEnabled: boolean
@@ -66,6 +74,11 @@ function stateFromResponse(data: NotificationsSettingsResponse): FormState {
     cooldownSeconds: String(eff.cooldownSeconds ?? 3600),
     baseURL: eff.baseURL || '',
     includeResolved: eff.includeResolved,
+    burstThreshold: String(eff.burstThreshold || 5),
+    burstWindowSeconds: String(eff.burstWindowSeconds ?? 60),
+    burstQuietSeconds: String(eff.burstQuietSeconds ?? 30),
+    burstMaxWaitSeconds: String(eff.burstMaxWaitSeconds ?? 300),
+    digestListLimit: String(eff.digestListLimit ?? 20),
     slackEnabled: eff.slackEnabled,
     slackWebhookURL: '',
     discordEnabled: eff.discordEnabled,
@@ -100,6 +113,20 @@ function buildPatch(initial: FormState, current: FormState): NotificationsSettin
   if (!isNaN(cd) && cd >= 0 && cd !== parseInt(initial.cooldownSeconds, 10)) globalPatch.cooldownSeconds = cd
   if (current.baseURL !== initial.baseURL) globalPatch.baseURL = current.baseURL
   if (current.includeResolved !== initial.includeResolved) globalPatch.includeResolved = current.includeResolved
+  const changedInt = (cur: string, init: string) => {
+    const n = parseInt(cur, 10)
+    return !isNaN(n) && n >= 0 && n !== parseInt(init, 10) ? n : undefined
+  }
+  const threshold = changedInt(current.burstThreshold, initial.burstThreshold)
+  if (threshold !== undefined) globalPatch.burstThreshold = threshold
+  const win = changedInt(current.burstWindowSeconds, initial.burstWindowSeconds)
+  if (win !== undefined) globalPatch.burstWindowSeconds = win
+  const quiet = changedInt(current.burstQuietSeconds, initial.burstQuietSeconds)
+  if (quiet !== undefined) globalPatch.burstQuietSeconds = quiet
+  const maxWait = changedInt(current.burstMaxWaitSeconds, initial.burstMaxWaitSeconds)
+  if (maxWait !== undefined) globalPatch.burstMaxWaitSeconds = maxWait
+  const listLimit = changedInt(current.digestListLimit, initial.digestListLimit)
+  if (listLimit !== undefined) globalPatch.digestListLimit = listLimit
   if (Object.keys(globalPatch).length > 0) patch.global = globalPatch
 
   if (current.slackEnabled !== initial.slackEnabled) {
@@ -184,6 +211,11 @@ function NotificationsSettingsForm({
     cooldownSeconds: form.cooldownSeconds !== initial.cooldownSeconds,
     baseURL: form.baseURL !== initial.baseURL,
     includeResolved: form.includeResolved !== initial.includeResolved,
+    burstThreshold: form.burstThreshold !== initial.burstThreshold,
+    burstWindowSeconds: form.burstWindowSeconds !== initial.burstWindowSeconds,
+    burstQuietSeconds: form.burstQuietSeconds !== initial.burstQuietSeconds,
+    burstMaxWaitSeconds: form.burstMaxWaitSeconds !== initial.burstMaxWaitSeconds,
+    digestListLimit: form.digestListLimit !== initial.digestListLimit,
     slackEnabled: form.slackEnabled !== initial.slackEnabled,
     slackWebhookURL: form.slackWebhookURL.trim() !== '',
     discordEnabled: form.discordEnabled !== initial.discordEnabled,
@@ -247,12 +279,14 @@ function NotificationsSettingsForm({
         </div>
       )}
 
-      {/* Two-column layout on md+: Global on the left (low-density,
-          severity + cooldown + base URL + resolved toggle), channel
-          cards stacked on the right. On narrow screens everything
-          collapses to a single column. items-start so unequal-height
-          columns don't stretch each other. */}
+      {/* Two columns on md+, in the order the settings apply. Left, WHAT is
+          sent: the dispatch rules (Global) and how a burst is grouped
+          (Summaries). Right, WHERE it goes: Email, Slack, Discord. On narrow
+          screens the left stack comes first. items-start so the columns
+          don't stretch each other. */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5 items-start">
+      {/* Left column: what is sent. */}
+      <div className="space-y-5">
       {/* Global */}
       <SectionCard
         icon={<Bell className="w-4 h-4 text-kb-accent" />}
@@ -336,75 +370,12 @@ function NotificationsSettingsForm({
         </Field>
       </SectionCard>
 
-      {/* Channels stack — sits in the right column on md+, falls in
-          line below Global on narrow. Stacked space-y-5 mirrors the
-          outer grid's gap so the rhythm is consistent. */}
+      <BurstSummariesSection form={form} setForm={setForm} dirty={dirtyMap} limits={data.burstLimits} />
+      </div>{/* /left column */}
+
+      {/* Right column: where it goes. space-y-5 mirrors the outer grid's
+          gap so the rhythm is consistent. */}
       <div className="space-y-5">
-      {/* Slack */}
-      <ChannelCard
-        title="Slack"
-        icon={<SlackIcon />}
-        configured={eff.slackConfigured}
-        enabled={form.slackEnabled}
-        enabledDirty={dirtyMap.slackEnabled}
-        onToggleEnabled={(v) => setForm({ ...form, slackEnabled: v })}
-        // Gate derives from FORM state so chip + button always agree.
-        // !isDirty ensures the form matches the saved state — when
-        // that holds, form.slackEnabled IS what the live notifier
-        // respects. Reading server state (eff.slackActive) was racy:
-        // it lags behind by one query refetch after save.
-        canTest={form.slackEnabled && eff.slackConfigured && !isDirty}
-        onTest={() => api.testNotification('slack').then(() => undefined)}
-      >
-        <Field
-          label="Webhook URL"
-          dirty={dirtyMap.slackWebhookURL}
-          helper={
-            eff.slackWebhookMasked
-              ? `Currently set: ${eff.slackWebhookMasked}. Leave blank to keep, or paste a new URL to replace.`
-              : 'Paste an incoming-webhook URL from your Slack app to enable delivery.'
-          }
-        >
-          <SecretInput
-            value={form.slackWebhookURL}
-            onChange={(v) => setForm({ ...form, slackWebhookURL: v })}
-            reveal={revealSlack}
-            onToggleReveal={() => setRevealSlack((v) => !v)}
-            placeholder={eff.slackWebhookMasked ? '••••••••' : 'https://hooks.slack.com/services/...'}
-          />
-        </Field>
-      </ChannelCard>
-
-      {/* Discord */}
-      <ChannelCard
-        title="Discord"
-        icon={<DiscordIcon />}
-        configured={eff.discordConfigured}
-        enabled={form.discordEnabled}
-        enabledDirty={dirtyMap.discordEnabled}
-        onToggleEnabled={(v) => setForm({ ...form, discordEnabled: v })}
-        canTest={form.discordEnabled && eff.discordConfigured && !isDirty}
-        onTest={() => api.testNotification('discord').then(() => undefined)}
-      >
-        <Field
-          label="Webhook URL"
-          dirty={dirtyMap.discordWebhookURL}
-          helper={
-            eff.discordWebhookMasked
-              ? `Currently set: ${eff.discordWebhookMasked}. Leave blank to keep, or paste a new URL to replace.`
-              : 'Paste an incoming-webhook URL from your Discord channel integration to enable delivery.'
-          }
-        >
-          <SecretInput
-            value={form.discordWebhookURL}
-            onChange={(v) => setForm({ ...form, discordWebhookURL: v })}
-            reveal={revealDiscord}
-            onToggleReveal={() => setRevealDiscord((v) => !v)}
-            placeholder={eff.discordWebhookMasked ? '••••••••' : 'https://discord.com/api/webhooks/...'}
-          />
-        </Field>
-      </ChannelCard>
-
       {/* Email */}
       <ChannelCard
         title="Email (SMTP)"
@@ -519,7 +490,73 @@ function NotificationsSettingsForm({
           </select>
         </Field>
       </ChannelCard>
-      </div>{/* /channels stack */}
+
+      {/* Slack */}
+      <ChannelCard
+        title="Slack"
+        icon={<SlackIcon />}
+        configured={eff.slackConfigured}
+        enabled={form.slackEnabled}
+        enabledDirty={dirtyMap.slackEnabled}
+        onToggleEnabled={(v) => setForm({ ...form, slackEnabled: v })}
+        // Gate derives from FORM state so chip + button always agree.
+        // !isDirty ensures the form matches the saved state — when
+        // that holds, form.slackEnabled IS what the live notifier
+        // respects. Reading server state (eff.slackActive) was racy:
+        // it lags behind by one query refetch after save.
+        canTest={form.slackEnabled && eff.slackConfigured && !isDirty}
+        onTest={() => api.testNotification('slack').then(() => undefined)}
+      >
+        <Field
+          label="Webhook URL"
+          dirty={dirtyMap.slackWebhookURL}
+          helper={
+            eff.slackWebhookMasked
+              ? `Currently set: ${eff.slackWebhookMasked}. Leave blank to keep, or paste a new URL to replace.`
+              : 'Paste an incoming-webhook URL from your Slack app to enable delivery.'
+          }
+        >
+          <SecretInput
+            value={form.slackWebhookURL}
+            onChange={(v) => setForm({ ...form, slackWebhookURL: v })}
+            reveal={revealSlack}
+            onToggleReveal={() => setRevealSlack((v) => !v)}
+            placeholder={eff.slackWebhookMasked ? '••••••••' : 'https://hooks.slack.com/services/...'}
+          />
+        </Field>
+      </ChannelCard>
+
+      {/* Discord */}
+      <ChannelCard
+        title="Discord"
+        icon={<DiscordIcon />}
+        configured={eff.discordConfigured}
+        enabled={form.discordEnabled}
+        enabledDirty={dirtyMap.discordEnabled}
+        onToggleEnabled={(v) => setForm({ ...form, discordEnabled: v })}
+        canTest={form.discordEnabled && eff.discordConfigured && !isDirty}
+        onTest={() => api.testNotification('discord').then(() => undefined)}
+      >
+        <Field
+          label="Webhook URL"
+          dirty={dirtyMap.discordWebhookURL}
+          helper={
+            eff.discordWebhookMasked
+              ? `Currently set: ${eff.discordWebhookMasked}. Leave blank to keep, or paste a new URL to replace.`
+              : 'Paste an incoming-webhook URL from your Discord channel integration to enable delivery.'
+          }
+        >
+          <SecretInput
+            value={form.discordWebhookURL}
+            onChange={(v) => setForm({ ...form, discordWebhookURL: v })}
+            reveal={revealDiscord}
+            onToggleReveal={() => setRevealDiscord((v) => !v)}
+            placeholder={eff.discordWebhookMasked ? '••••••••' : 'https://discord.com/api/webhooks/...'}
+          />
+        </Field>
+      </ChannelCard>
+
+      </div>{/* /right column */}
       </div>{/* /grid */}
 
       {/* Action card with banners */}
@@ -597,6 +634,99 @@ function NotificationsSettingsForm({
 }
 
 // ─── Shared form primitives ────────────────────────────────────────────
+
+// BurstSummariesSection: when a cluster opens many insights at once (its first
+// evaluation, a node failure), Slack, Discord and instant email get one message
+// that counts and classifies them instead of one per insight. Below the
+// threshold nothing changes. The digest gets the same summary past its list
+// limit. Always on: the values move inside the install-wide ranges.
+const DEFAULT_BURST_LIMITS: BurstLimits = {
+  thresholdMin: 2,
+  thresholdMax: 1000,
+  windowMinSeconds: 10,
+  windowMaxSeconds: 3600,
+  quietMinSeconds: 5,
+  quietMaxSeconds: 600,
+  maxWaitMinSeconds: 30,
+  maxWaitMaxSeconds: 3600,
+  listLimitMin: 1,
+  listLimitMax: 500,
+}
+
+function BurstSummariesSection({
+  form,
+  setForm,
+  dirty,
+  limits,
+}: {
+  form: FormState
+  setForm: (f: FormState) => void
+  dirty: Record<string, boolean>
+  limits?: BurstLimits
+}) {
+  const l = limits ?? DEFAULT_BURST_LIMITS
+  const inputCls =
+    'w-full px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent'
+  return (
+    <SectionCard
+      icon={<Layers className="w-4 h-4 text-kb-accent" />}
+      title="Summaries"
+      subtitle="When many insights arrive at once, Slack, Discord and instant email get one message that counts them. Always on."
+    >
+      <div className="grid grid-cols-2 gap-4">
+        <Field
+          label="Burst threshold"
+          stacked
+          dirty={dirty.burstThreshold}
+          helper={`Insights from one cluster within the window that start a summary; fewer go out one by one. ${l.thresholdMin}–${l.thresholdMax}.`}
+        >
+          <input id="burst-threshold" type="number" min={l.thresholdMin} max={l.thresholdMax} className={inputCls}
+            value={form.burstThreshold} onChange={(e) => setForm({ ...form, burstThreshold: e.target.value })} />
+        </Field>
+        <Field
+          label="Window (seconds)"
+          stacked
+          dirty={dirty.burstWindowSeconds}
+          helper={`How far back the count looks. ${l.windowMinSeconds}–${l.windowMaxSeconds}.`}
+        >
+          <input id="burst-window" type="number" min={l.windowMinSeconds} max={l.windowMaxSeconds} className={inputCls}
+            value={form.burstWindowSeconds} onChange={(e) => setForm({ ...form, burstWindowSeconds: e.target.value })} />
+        </Field>
+        <Field
+          label="Quiet before sending (s)"
+          stacked
+          dirty={dirty.burstQuietSeconds}
+          helper={`The summary goes out once the cluster has been quiet this long. ${l.quietMinSeconds}–${l.quietMaxSeconds}.`}
+        >
+          <input id="burst-quiet" type="number" min={l.quietMinSeconds} max={l.quietMaxSeconds} className={inputCls}
+            value={form.burstQuietSeconds} onChange={(e) => setForm({ ...form, burstQuietSeconds: e.target.value })} />
+        </Field>
+        <Field
+          label="Longest wait (s)"
+          stacked
+          dirty={dirty.burstMaxWaitSeconds}
+          helper={`A burst that never settles gets a partial summary after this long. ${l.maxWaitMinSeconds}–${l.maxWaitMaxSeconds}.`}
+        >
+          <input id="burst-max-wait" type="number" min={l.maxWaitMinSeconds} max={l.maxWaitMaxSeconds} className={inputCls}
+            value={form.burstMaxWaitSeconds} onChange={(e) => setForm({ ...form, burstMaxWaitSeconds: e.target.value })} />
+        </Field>
+        <Field
+          label="Digest: list up to"
+          stacked
+          dirty={dirty.digestListLimit}
+          helper={`A larger hourly or daily digest is sent as a summary. ${l.listLimitMin}–${l.listLimitMax}.`}
+        >
+          <input id="digest-list-limit" type="number" min={l.listLimitMin} max={l.listLimitMax} className={inputCls}
+            value={form.digestListLimit} onChange={(e) => setForm({ ...form, digestListLimit: e.target.value })} />
+        </Field>
+        {/* Fills the cell beside the digest field rather than adding a row. */}
+        <p className="self-center text-[11px] text-kb-text-tertiary leading-relaxed">
+          Every summary names its critical insights one by one, up to 10, with a link to each.
+        </p>
+      </div>
+    </SectionCard>
+  )
+}
 
 function SecretInput({
   value,
