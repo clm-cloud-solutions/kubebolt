@@ -8,6 +8,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Documentation links open kubebolt.io.** The integration catalog, Cost,
+  Reliability and the add-cluster wizard linked guides in the GitHub
+  repository; they now open the published docs (agent, Trivy, Kyverno,
+  Falco, OpenCost, the Reliability tab). Reliability's link also pointed at
+  an anchor the chart README does not have. The Prometheus remote_write
+  cards and Ingest activity keep the repository guide until the site carries
+  its `prometheus.yml` snippets, `retry_on_http_429`, limits and
+  self-metrics queries.
 - **A wizard's agent token stops working if no agent uses it within a week,
   and *Advanced setup* has a way back.** The onboarding and the add-cluster
   wizard issue a token on every attempt and none expired: each abandoned

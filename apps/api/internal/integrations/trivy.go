@@ -150,7 +150,7 @@ func (p *trivyProvider) Meta() Integration {
 		ID:          TrivyID,
 		Name:        TrivyName,
 		Description: "Vulnerability and misconfiguration scanning. The operator's VulnerabilityReports feed KubeBolt's Security & Compliance dashboard as normalized CVE findings.",
-		DocsURL:     "https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/integrations/trivy.md",
+		DocsURL:     siteDoc("trivy", ""),
 		Capabilities: []string{
 			"security.cve",
 			"security.misconfig",

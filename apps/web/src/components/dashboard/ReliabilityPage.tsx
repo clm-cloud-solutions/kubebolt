@@ -17,6 +17,7 @@ import { TopWorkloadsTraffic } from './TopWorkloadsTraffic'
 import { ErrorHotspots } from './ErrorHotspots'
 import { TopLatencyWorkloads } from './TopLatencyWorkloads'
 import { NetworkDrops } from './NetworkDrops'
+import { siteDoc } from '@/utils/docs'
 
 // ReliabilityPage is the third dashboard sub-tab — the L7 lens on
 // what the cluster is actually serving. Driven entirely by Hubble
@@ -415,7 +416,7 @@ function HubbleL7UnavailablePlaceholder() {
         </p>
         <p className="pt-1">
           <a
-            href="https://github.com/clm-cloud-solutions/kubebolt/tree/main/deploy/helm/kubebolt-agent#hubble-l7"
+            href={siteDoc('dashboard', 'reliability--golden-signals-honest-colors')}
             target="_blank"
             rel="noreferrer"
             className="text-kb-accent hover:underline"

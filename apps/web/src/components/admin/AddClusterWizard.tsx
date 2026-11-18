@@ -8,6 +8,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { Modal } from '@/components/shared/Modal'
 import { AgentConfigFields } from '@/components/admin/AgentConfigFields'
 import { Link } from 'react-router-dom'
+import { siteDoc } from '@/utils/docs'
 
 interface Props {
   onClose: () => void
@@ -428,7 +429,7 @@ export function AddClusterWizard({ onClose, onBack, initialToken, initialCluster
             </button>
           )}
           <a
-            href="https://github.com/clm-cloud-solutions/kubebolt/blob/main/deploy/helm/kubebolt-agent/README.md"
+            href={siteDoc('agent')}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-1 px-3 py-1.5 text-[11px] text-kb-text-secondary hover:text-kb-text-primary border border-kb-border rounded transition-colors"
