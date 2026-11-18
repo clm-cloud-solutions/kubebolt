@@ -289,6 +289,8 @@ export interface ClusterProgress {
   accessChecked: boolean
   readable: number
   probed: number
+  // The resource types KubeBolt may not list.
+  denied?: string[]
   types: ClusterTypeProgress[] | null
   // Bytes of the initial LISTs received so far.
   bytesReceived?: number
@@ -301,6 +303,8 @@ export interface ClusterTypeProgress {
   synced: boolean
   loaded: number
   total: number
+  // Bytes its pages weighed so far.
+  bytes?: number
 }
 
 export interface ClusterInfo {

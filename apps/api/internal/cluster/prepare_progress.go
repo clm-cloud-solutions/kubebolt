@@ -37,10 +37,13 @@ type ConnectProgress struct {
 	ViaAgent bool `json:"viaAgent"`
 	Agents   int  `json:"agents"`
 	// AccessChecked is true once the permission probe is done; Readable of
-	// Probed resource types may be listed.
+	// Probed resource types may be listed. An optional CRD the cluster does not
+	// have installed is not counted: it is not a permission KubeBolt lacks.
 	AccessChecked bool `json:"accessChecked"`
 	Readable      int  `json:"readable"`
 	Probed        int  `json:"probed"`
+	// Denied names the resource types KubeBolt may not list, sorted.
+	Denied []string `json:"denied,omitempty"`
 	// Types is every resource type the cache loads, with what has arrived.
 	Types []TypeProgress `json:"types"`
 	// BytesReceived is what the initial LISTs have brought so far.
@@ -56,9 +59,12 @@ type TypeProgress struct {
 	Synced bool   `json:"synced"`
 	// Loaded objects so far (from the pages; exact once synced when Total is
 	// known) and Total, 0 while the API server has not said (a type that fits
-	// in one page never says).
+	// in one page never says). Bytes is what its pages weighed so far: with
+	// Loaded and Total it says how much is left in bytes, which is what the
+	// tunnel takes time to carry.
 	Loaded int64 `json:"loaded"`
 	Total  int64 `json:"total"`
+	Bytes  int64 `json:"bytes"`
 }
 
 // ConnectProgressFor is the connect of the request's cluster, resolved like
@@ -165,12 +171,18 @@ func isClosed(ch chan struct{}) bool {
 func (c *Connector) fillPrepareProgress(out *ConnectProgress) {
 	perms := c.Permissions()
 	out.AccessChecked = true
-	out.Probed = len(perms)
-	for _, p := range perms {
-		if p != nil && p.CanList {
+	for key, p := range perms {
+		if p == nil || p.Absent {
+			continue
+		}
+		out.Probed++
+		if p.CanList {
 			out.Readable++
+		} else {
+			out.Denied = append(out.Denied, key)
 		}
 	}
+	sort.Strings(out.Denied)
 	var lists map[string]ListCount
 	if c.progress != nil {
 		lists = c.progress.listCounts()
@@ -198,7 +210,7 @@ func (c *Connector) fillPrepareProgress(out *ConnectProgress) {
 			seen[kind] = true
 			plural, _ := meta.UnsafeGuessKindToResource(schema.GroupVersionKind{Kind: kind})
 			lc := lists[plural.Resource]
-			tp := TypeProgress{Kind: kind, Synced: synced, Loaded: lc.Loaded, Total: lc.Total}
+			tp := TypeProgress{Kind: kind, Synced: synced, Loaded: lc.Loaded, Total: lc.Total, Bytes: lc.Bytes}
 			out.Types = append(out.Types, tp)
 		}
 	}

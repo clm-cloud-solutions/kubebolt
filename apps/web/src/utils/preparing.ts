@@ -15,6 +15,10 @@ export interface PrepareStep {
 
 export interface PrepareView {
   pct: number
+  // Bytes received, and the estimate of what the sized collections still
+  // have to send (bytes per object seen × objects left).
+  receivedBytes: number
+  remainingBytes: number
   what: string
   why: string
   steps: PrepareStep[]
@@ -22,8 +26,16 @@ export interface PrepareView {
   totalObjects: number
 }
 
-// A type the API server has not sized yet fits in one page at most.
-const UNSIZED_WEIGHT = 500
+// A type the API server has not sized fits in one page, and is usually far
+// smaller than one: weighing it as a full page let 25 small types fill the bar
+// before a cluster's one big collection had said its size.
+const SMALL_WEIGHT = 25
+// While a type has not answered its first page, the bar does not know how big
+// it is: for the first EARLY_SECONDS of the load, the load part stops at
+// EARLY_CAP. After that a type that has still said nothing is taken as small
+// (a single heavy page, which no count can size).
+const EARLY_CAP = 0.35
+const EARLY_SECONDS = 8
 // A collection this big gets named while the rest waits for it.
 const LARGE_COLLECTION = 1000
 
@@ -36,8 +48,8 @@ export function kindPlural(kind: string): string {
 }
 
 function weightOf(t: ClusterTypeProgress) {
-  const w = t.total > 0 ? t.total : UNSIZED_WEIGHT
-  return { w, got: t.synced ? w : Math.min(t.loaded, w) }
+  if (t.total > 0) return { w: t.total, got: t.synced ? t.total : Math.min(t.loaded, t.total) }
+  return { w: SMALL_WEIGHT, got: t.synced ? SMALL_WEIGHT : 0 }
 }
 
 // The type the load is waiting on, when it is the large one: the last
@@ -49,6 +61,18 @@ function waitingOn(types: ClusterTypeProgress[]): ClusterTypeProgress | null {
   return big.total >= LARGE_COLLECTION ? big : null
 }
 
+// accessLine says what the permission probe found, as what is missing: its
+// totals count kinds the cache does not load, and printing them next to the
+// types loaded read as two different counts of the same thing.
+function accessLine(p: ClusterProgress, named = false): string {
+  const denied = Math.max(0, p.probed - p.readable)
+  if (denied === 0) return 'full read access'
+  const head = `${denied} kind${denied === 1 ? '' : 's'} not readable`
+  const names = p.denied ?? []
+  if (!named || names.length === 0) return head
+  return `${head}: ${names.slice(0, 3).join(', ')}${names.length > 3 ? ` and ${names.length - 3} more` : ''}`
+}
+
 function syncedCountOf(types: ClusterTypeProgress[]) {
   return types.filter((t) => t.synced).length
 }
@@ -57,7 +81,7 @@ function andList(names: string[]) {
   return names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
 }
 
-export function prepareView(p: ClusterProgress | undefined, name: string, prevPct = 0): PrepareView {
+export function prepareView(p: ClusterProgress | undefined, name: string, prevPct = 0, nowMs = Date.now()): PrepareView {
   const types = p?.types ?? []
   const ready = p?.state === 'ready'
   // A kubeconfig cluster has no agents to wait for.
@@ -79,7 +103,31 @@ export function prepareView(p: ClusterProgress | undefined, name: string, prevPc
       loadedObjects += t.synced ? t.total : Math.min(t.loaded, t.total)
     }
   }
-  const frac = allSynced ? 1 : sumW > 0 ? sumGot / sumW : 0
+  // The bar follows bytes when the API reports them: they are what the tunnel
+  // takes time to carry. Objects weigh very differently by kind (a
+  // ReplicaSet is many times an Event), so counting them let a cluster's
+  // light kinds fill the bar while its heavy one was still arriving.
+  let receivedBytes = 0
+  let remainingBytes = 0
+  for (const t of types) {
+    const b = t.bytes ?? 0
+    receivedBytes += b
+    if (!t.synced && t.total > 0 && t.loaded > 0 && b > 0) {
+      const seen = Math.min(t.loaded, t.total)
+      remainingBytes += (b / seen) * Math.max(0, t.total - seen)
+    }
+  }
+  let frac = allSynced
+    ? 1
+    : receivedBytes > 0
+      ? receivedBytes / (receivedBytes + remainingBytes)
+      : sumW > 0
+        ? sumGot / sumW
+        : 0
+  // Types that have not answered their first page: neither loaded nor sized.
+  const unanswered = types.filter((t) => !t.synced && t.total === 0 && t.loaded === 0).length
+  const loadingFor = p?.startedAt ? (nowMs - Date.parse(p.startedAt)) / 1000 : 0
+  if (!allSynced && unanswered > 0 && loadingFor < EARLY_SECONDS) frac = Math.min(frac, EARLY_CAP)
   let pct = (agentsDone ? 4 : 0) + (accessDone ? 6 : 0) + 84 * frac + (ready ? 6 : allSynced ? 3 : 0)
   pct = ready ? 100 : Math.min(99, Math.max(prevPct, Math.round(pct)))
 
@@ -124,7 +172,7 @@ export function prepareView(p: ClusterProgress | undefined, name: string, prevPc
     {
       key: 'access',
       label: 'Access checked',
-      detail: accessDone && p?.probed ? `${p.readable} of ${p.probed} resource types` : 'checking permissions',
+      detail: accessDone && p?.probed ? accessLine(p) : 'checking permissions',
       state: step(accessDone, agentsDone),
     },
     {
@@ -149,7 +197,7 @@ export function prepareView(p: ClusterProgress | undefined, name: string, prevPc
     },
   ]
   const steps = allSteps.filter((s) => viaAgent || s.key !== 'agents')
-  return { pct, what, why, steps, loadedObjects, totalObjects }
+  return { pct, what, why, steps, loadedObjects, totalObjects, receivedBytes, remainingBytes }
 }
 
 // prepareEvents is what happened between two readings of a connect, as the
@@ -163,7 +211,7 @@ export function prepareEvents(prev: ClusterProgress | undefined, next: ClusterPr
     out.push(`${next.agents} agent${next.agents === 1 ? '' : 's'} connected`)
   }
   if (!prev?.accessChecked && next.accessChecked && next.probed > 0) {
-    out.push(`Access checked · ${next.readable} of ${next.probed} resource types readable`)
+    out.push(`Access checked · ${accessLine(next, true)}`)
   }
 
   const fresh = types.filter((t) => t.synced && !prevTypes.get(t.kind)?.synced)

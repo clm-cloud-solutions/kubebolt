@@ -115,6 +115,9 @@ func TestConnectProgress_CountsTheInitialListPages(t *testing.T) {
 	if got := p.listCounts()["replicasets"]; got.Loaded != 1600 || got.Total != 1600 {
 		t.Errorf("after the last page: %+v, want 1600 of 1600 (capped at the total)", got)
 	}
+	if got := p.listCounts()["replicasets"].Bytes; got != int64(len(first)+3*4) {
+		t.Errorf("replicasets bytes = %d, want %d", got, len(first)+3*4)
+	}
 	if want := int64(len(first) + 3*4); p.listBytesReceived() != want {
 		t.Errorf("bytes received = %d, want %d (every page's body)", p.listBytesReceived(), want)
 	}
@@ -166,7 +169,7 @@ func buildingConnector(t *testing.T) *Connector {
 		time.Sleep(10 * time.Millisecond)
 	}
 	c := &Connector{factory: f, nsFactories: []informers.SharedInformerFactory{fs}, progress: newConnectProgress(),
-		permissions: ResourcePermissions{"pods": {CanList: true}, "replicasets": {CanList: true}, "secrets": {CanList: false}}}
+		permissions: ResourcePermissions{"pods": {CanList: true}, "replicasets": {CanList: true}, "secrets": {CanList: false}, "vpas": {Absent: true}}}
 	c.progress.lists = map[string]*initialList{"replicasets": {pages: 3, limit: 500, total: 5632}}
 	return c
 }
@@ -196,7 +199,7 @@ func TestConnectProgressFor_States(t *testing.T) {
 
 	ph.building.Store(buildingConnector(t))
 	got = m.ConnectProgressFor(progressCtx())
-	if got.State != PrepareConnecting || !got.AccessChecked || got.Readable != 2 || got.Probed != 3 {
+	if got.State != PrepareConnecting || !got.AccessChecked || got.Readable != 2 || got.Probed != 3 || len(got.Denied) != 1 || got.Denied[0] != "secrets" {
 		t.Fatalf("loading: %+v, want access checked, 2 of 3 readable", got)
 	}
 	kinds := map[string]TypeProgress{}

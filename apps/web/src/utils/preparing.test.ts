@@ -70,6 +70,47 @@ describe('prepareView', () => {
     expect(prepareEvents(base, { ...base, viaAgent: false, agents: 0 }, 'prod')).toEqual([])
   })
 
+  it('does not fill the bar before the big collection has said its size', () => {
+    const early: ClusterProgress = {
+      ...loading(0),
+      types: [
+        ...['Pod', 'Service', 'Node', 'Namespace', 'Event', 'Secret'].map((kind) => ({ kind, synced: true, loaded: 0, total: 0 })),
+        ...['ReplicaSet', 'Deployment', 'ConfigMap', 'Job'].map((kind) => ({ kind, synced: false, loaded: 0, total: 0 })),
+      ],
+    }
+    const justStarted = { ...early, startedAt: new Date(Date.now() - 2000).toISOString() }
+    expect(prepareView(justStarted, 'prod').pct).toBeLessThanOrEqual(40)
+    // Small types weigh little next to a sized one: 2,500 of 5,503 ReplicaSets
+    // with 25 small types loaded is about half way, not 90 %.
+    const sb: ClusterProgress = {
+      ...loading(0),
+      types: [
+        ...Array.from({ length: 25 }, (_, i) => ({ kind: `Small${i}`, synced: true, loaded: 0, total: 0 })),
+        { kind: 'ReplicaSet', synced: false, loaded: 2500, total: 5503 },
+      ],
+    }
+    const pct = prepareView(sb, 'prod').pct
+    expect(pct).toBeGreaterThan(40)
+    expect(pct).toBeLessThan(60)
+  })
+
+  it('follows the bytes the tunnel still has to carry', () => {
+    // 2,500 of 5,503 ReplicaSets in 15 MB, and 25 light kinds in 4 MB: about
+    // 18 MB are left of ~37, so the load is half way whatever the object counts say.
+    const sb: ClusterProgress = {
+      ...loading(0),
+      types: [
+        ...Array.from({ length: 25 }, (_, i) => ({ kind: `Small${i}`, synced: true, loaded: 0, total: i === 0 ? 40_000 : 0, bytes: 160_000 })),
+        { kind: 'ReplicaSet', synced: false, loaded: 2500, total: 5503, bytes: 15_000_000 },
+      ],
+    }
+    const v = prepareView(sb, 'prod')
+    expect(v.remainingBytes).toBeGreaterThan(17_000_000)
+    expect(v.remainingBytes).toBeLessThan(19_000_000)
+    expect(v.pct).toBeGreaterThan(45)
+    expect(v.pct).toBeLessThan(60)
+  })
+
   it('never moves the bar back', () => {
     expect(prepareView(loading(500), 'prod', 60).pct).toBe(60)
   })
@@ -83,8 +124,11 @@ describe('prepareView', () => {
 describe('prepareEvents', () => {
   it('logs agents, access, loaded types, the halfway point and the end', () => {
     expect(prepareEvents(base, { ...base, agents: 2 }, 'prod')).toEqual(['2 agents connected'])
-    expect(prepareEvents({ ...base, agents: 2 }, { ...base, agents: 2, accessChecked: true, readable: 29, probed: 31 }, 'prod')).toEqual([
-      'Access checked · 29 of 31 resource types readable',
+    expect(
+      prepareEvents({ ...base, agents: 2 }, { ...base, agents: 2, accessChecked: true, readable: 29, probed: 31, denied: ['secrets', 'configmaps'] }, 'prod'),
+    ).toEqual(['Access checked · 2 kinds not readable: secrets, configmaps'])
+    expect(prepareEvents({ ...base, agents: 2 }, { ...base, agents: 2, accessChecked: true, readable: 26, probed: 26 }, 'prod')).toEqual([
+      'Access checked · full read access',
     ])
     const before = { ...loading(1000), types: loading(1000).types!.map((t) => (t.kind === 'Deployment' ? { ...t, synced: false, loaded: 500 } : t)) }
     expect(prepareEvents(before, loading(1000), 'prod')).toEqual(['Deployments loaded · 612 objects'])

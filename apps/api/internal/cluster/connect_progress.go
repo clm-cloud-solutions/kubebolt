@@ -49,13 +49,16 @@ type initialList struct {
 	pages int
 	limit int
 	total int64
+	bytes atomic.Int64
 }
 
 // ListCount is initialList as reported: objects received (an estimate from the
-// pages, exact once the type has synced) and the total, 0 when not known.
+// pages, exact once the type has synced), the total (0 when not known), and the
+// bytes of its pages so far.
 type ListCount struct {
 	Loaded int64
 	Total  int64
+	Bytes  int64
 }
 
 func newConnectProgress() *connectProgress {
@@ -126,10 +129,10 @@ func (p *connectProgress) observeListPage(req *http.Request, resp *http.Response
 		return
 	}
 	if q.Get("continue") != "" {
-		resp.Body = &prefixTap{rc: resp.Body, counted: &p.listBytes}
+		resp.Body = &prefixTap{rc: resp.Body, counted: &p.listBytes, alsoCounted: &lc.bytes}
 		return
 	}
-	resp.Body = &prefixTap{rc: resp.Body, counted: &p.listBytes, onDone: func(prefix []byte) {
+	resp.Body = &prefixTap{rc: resp.Body, counted: &p.listBytes, alsoCounted: &lc.bytes, onDone: func(prefix []byte) {
 		if rest, ok := remainingItemCount(prefix); ok {
 			p.listsMu.Lock()
 			lc.total += int64(limit) + rest
@@ -148,7 +151,7 @@ func (p *connectProgress) listCounts() map[string]ListCount {
 		if lc.total > 0 && loaded > lc.total {
 			loaded = lc.total
 		}
-		out[r] = ListCount{Loaded: loaded, Total: lc.total}
+		out[r] = ListCount{Loaded: loaded, Total: lc.total, Bytes: lc.bytes.Load()}
 	}
 	return out
 }
@@ -182,17 +185,23 @@ func (p *connectProgress) listBytesReceived() int64 { return p.listBytes.Load() 
 // its first listPrefixBytes to onDone (when set) once, when they are in or
 // the body ends.
 type prefixTap struct {
-	rc      io.ReadCloser
-	buf     bytes.Buffer
-	done    bool
-	counted *atomic.Int64
-	onDone  func([]byte)
+	rc          io.ReadCloser
+	buf         bytes.Buffer
+	done        bool
+	counted     *atomic.Int64
+	alsoCounted *atomic.Int64 // the resource's own bytes
+	onDone      func([]byte)
 }
 
 func (t *prefixTap) Read(b []byte) (int, error) {
 	n, err := t.rc.Read(b)
-	if t.counted != nil && n > 0 {
-		t.counted.Add(int64(n))
+	if n > 0 {
+		if t.counted != nil {
+			t.counted.Add(int64(n))
+		}
+		if t.alsoCounted != nil {
+			t.alsoCounted.Add(int64(n))
+		}
 	}
 	if t.onDone == nil {
 		return n, err
