@@ -6,22 +6,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added
+## [2.6.5] — 2026-11-18
 
-- **A cluster that is being prepared says how far it is, instead of a
-  spinner.** While KubeBolt loads a cluster's
-  cache — its first connect, after KubeBolt restarts, or after the connection
-  was lost — its pages show what is happening and why the wait is worth it,
-  the steps (agents, access, loading, first health check), a bar weighted by
-  the objects that have arrived (the API server's `remainingItemCount`),
-  the types loaded, the data received and its rate, the elapsed time, an
-  Activity log, and the cluster's CPU and memory, which the agents ship
-  before the cache has synced. Nothing about what the API serves changes:
-  the cluster's views still open together when it is ready. New read-only
-  `GET /clusters/progress`, which never starts or waits for a connect. A
-  switch to a cluster KubeBolt already holds stays instant, without the
-  card; the menu no longer shows the previous cluster's counts during a
-  switch, and the state pill says *Connecting* instead of *Disconnected*.
+A large cluster connects behind a slow agent tunnel, Helm's release history
+stays in the cluster until a view needs it, and the wait while a cluster
+loads says how far it is. A fix release: drop-in, no migration; the agent
+stays on 1.4.9. Full note: [docs/releases/v2.6.5.md](docs/releases/v2.6.5.md).
 
 ### Fixed
 
@@ -91,6 +81,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   stuck agent still fails at the same point. Every failed attempt to start a
   cluster's background runtime is logged (`cluster runtime failed to
   connect`, with the reason); that path used to drop the error.
+- **The wait while a cluster loads says how far it is, instead of a
+  spinner.** While KubeBolt loads a cluster's
+  cache — its first connect, after KubeBolt restarts, or after the connection
+  was lost — its pages show what is happening and why the wait is worth it,
+  the steps (agents, access, loading, first health check), a bar weighted by
+  the objects that have arrived (the API server's `remainingItemCount`),
+  the types loaded, the data received and its rate, the elapsed time, an
+  Activity log, and the cluster's CPU and memory, which the agents ship
+  before the cache has synced. Nothing about what the API serves changes:
+  the cluster's views still open together when it is ready. New read-only
+  `GET /clusters/progress`, which never starts or waits for a connect. A
+  switch to a cluster KubeBolt already holds stays instant, without the
+  card; the menu no longer shows the previous cluster's counts during a
+  switch, and the state pill says *Connecting* instead of *Disconnected*.
 - **A failed namespace LIST no longer scopes a cluster to guessed
   namespaces.** When a type was denied cluster-wide, the permission probe
   listed namespaces to look for namespace-level access, and on any error it
