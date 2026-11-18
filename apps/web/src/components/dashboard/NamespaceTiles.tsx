@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { NamespaceWorkload, WorkloadSummary } from '@/types/kubernetes'
 import { HoverTooltip, TooltipHeader, TooltipRow } from '@/components/shared/Tooltip'
@@ -30,14 +31,33 @@ interface Props {
 // Health rule (unchanged): pod readiness ratio across the namespace.
 // All ready → healthy, some ready → degraded, majority not ready →
 // critical. Empty namespaces (no workloads) render muted/idle.
+// TILE_LIMIT: how many tiles the Overview shows before "Show all". Two rows
+// at the widest grid (6 columns), three at 4. A cluster with 131 namespaces
+// drew all 131 at once and pushed the rest of the Overview off the page; the
+// ordering puts the ones that need someone first, so the cut hides healthy
+// namespaces before anything else.
+export const TILE_LIMIT = 12
+
 export function NamespaceTiles({ namespaceWorkloads }: Props) {
   // Quota lookup is fetched once at the section level so each tile
   // doesn't re-issue the same VM query. Result is keyed by namespace
   // — a missing entry means "no ResourceQuota configured", which is
   // the common case and renders the tile unchanged.
   const { quotas } = useNamespaceQuotas()
+  const [showAll, setShowAll] = useState(false)
 
   if (!namespaceWorkloads || namespaceWorkloads.length === 0) return null
+
+  const sorted = byHealth(namespaceWorkloads)
+  const shown = showAll ? sorted : sorted.slice(0, TILE_LIMIT)
+  const hidden = sorted.slice(shown.length)
+  // Past the cut there can still be degraded or critical namespaces (more
+  // than TILE_LIMIT of them): the button says so, so the cut never hides
+  // a problem silently.
+  const hiddenNeedingAttention = hidden.filter((nsw) => {
+    const h = tileStats(nsw).health
+    return h === 'critical' || h === 'degraded'
+  }).length
 
   return (
     <section className="space-y-3">
@@ -51,10 +71,24 @@ export function NamespaceTiles({ namespaceWorkloads }: Props) {
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
-        {byHealth(namespaceWorkloads).map((nsw) => (
+        {shown.map((nsw) => (
           <NamespaceTile key={nsw.namespace} nsw={nsw} quota={quotas[nsw.namespace]} />
         ))}
       </div>
+
+      {sorted.length > TILE_LIMIT && (
+        <div className="flex justify-center">
+          <button
+            type="button"
+            onClick={() => setShowAll((v) => !v)}
+            className="px-3 py-1.5 rounded-md border border-kb-border text-[11px] font-mono text-kb-text-secondary hover:text-kb-text-primary hover:border-kb-border-active transition-colors"
+          >
+            {showAll
+              ? 'Show fewer'
+              : `Show all ${sorted.length} namespaces${hiddenNeedingAttention > 0 ? ` · ${hiddenNeedingAttention} more need attention` : ''}`}
+          </button>
+        </div>
+      )}
     </section>
   )
 }
