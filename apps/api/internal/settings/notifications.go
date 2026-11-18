@@ -44,6 +44,18 @@ type StoredNotificationsGlobal struct {
 	CooldownSeconds *int    `json:"cooldownSeconds,omitempty"`
 	BaseURL         *string `json:"baseURL,omitempty"`
 	IncludeResolved *bool   `json:"includeResolved,omitempty"`
+	BurstFields
+}
+
+// BurstFields are the burst-summary knobs (see notifications/burst.go), stored
+// in seconds like CooldownSeconds. Summaries cannot be turned off: every value
+// has a floor, and the org's plan bounds what it may set (notifications_burst.go).
+type BurstFields struct {
+	BurstThreshold      *int `json:"burstThreshold,omitempty"`
+	BurstWindowSeconds  *int `json:"burstWindowSeconds,omitempty"`
+	BurstQuietSeconds   *int `json:"burstQuietSeconds,omitempty"`
+	BurstMaxWaitSeconds *int `json:"burstMaxWaitSeconds,omitempty"`
+	DigestListLimit     *int `json:"digestListLimit,omitempty"`
 }
 
 // StoredSlackSettings holds the encrypted Slack webhook URL and the
@@ -114,7 +126,8 @@ func (r *Runtime) InvalidateNotifications(ctx context.Context) {
 // the env baseline. Caller must hold r.mu (write or read). On any decode error,
 // returns the env baseline unchanged. Scoped to the org in ctx.
 func (r *Runtime) resolveNotificationsLocked(ctx context.Context) config.NotificationsConfig {
-	cfg := r.envNotifications
+	cfg := r.envNotifications.WithBurstDefaults()
+	GlobalBurstLimits().Clamp(&cfg)
 
 	raw, err := r.orgStore.GetOrgSetting(ctx, notificationsSettingsKey)
 	if err != nil {
@@ -125,6 +138,9 @@ func (r *Runtime) resolveNotificationsLocked(ctx context.Context) config.Notific
 		return cfg
 	}
 	applyStoredNotifications(&cfg, &stored, r.crypto)
+	// Burst summaries stay inside the install-wide ranges, whatever env or a
+	// stored record says.
+	GlobalBurstLimits().Clamp(&cfg)
 	return cfg
 }
 
@@ -148,6 +164,7 @@ func applyStoredNotifications(cfg *config.NotificationsConfig, stored *StoredNot
 		if g.IncludeResolved != nil {
 			cfg.IncludeResolved = *g.IncludeResolved
 		}
+		applyBurstFields(cfg, g.BurstFields)
 	}
 	if s := stored.Slack; s != nil {
 		if s.Enabled != nil {
@@ -341,6 +358,9 @@ type MaskedNotifications struct {
 	Effective       MaskedEffectiveNotifications `json:"effective"`
 	Stored          MaskedStoredNotifications    `json:"stored"`
 	SecretsReadable bool                         `json:"secretsReadable"`
+	// BurstLimits are the bounds the burst settings must stay within, for the
+	// form.
+	BurstLimits *BurstLimits `json:"burstLimits,omitempty"`
 }
 
 type MaskedEffectiveNotifications struct {
@@ -349,6 +369,12 @@ type MaskedEffectiveNotifications struct {
 	CooldownSeconds int    `json:"cooldownSeconds"`
 	BaseURL         string `json:"baseURL,omitempty"`
 	IncludeResolved bool   `json:"includeResolved"`
+
+	BurstThreshold      int `json:"burstThreshold"`
+	BurstWindowSeconds  int `json:"burstWindowSeconds"`
+	BurstQuietSeconds   int `json:"burstQuietSeconds"`
+	BurstMaxWaitSeconds int `json:"burstMaxWaitSeconds"`
+	DigestListLimit     int `json:"digestListLimit"`
 
 	// Three flags per channel so the UI can render the tri-state header chip:
 	//   - Configured: required fields are filled (webhook URL / SMTP fields)
@@ -401,6 +427,7 @@ type MaskedStoredGlobalNotifications struct {
 	CooldownSeconds *int    `json:"cooldownSeconds,omitempty"`
 	BaseURL         *string `json:"baseURL,omitempty"`
 	IncludeResolved *bool   `json:"includeResolved,omitempty"`
+	BurstFields
 }
 
 type MaskedStoredSlack struct {
@@ -450,6 +477,12 @@ func (r *Runtime) RenderMaskedNotifications(ctx context.Context) (MaskedNotifica
 			BaseURL:         effective.BaseURL,
 			IncludeResolved: effective.IncludeResolved,
 
+			BurstThreshold:      effective.BurstThreshold,
+			BurstWindowSeconds:  int(effective.BurstWindow / time.Second),
+			BurstQuietSeconds:   int(effective.BurstQuiet / time.Second),
+			BurstMaxWaitSeconds: int(effective.BurstMaxWait / time.Second),
+			DigestListLimit:     effective.DigestListLimit,
+
 			SlackConfigured:    slackConfigured,
 			SlackEnabled:       effective.SlackEnabled,
 			SlackActive:        slackConfigured && effective.SlackEnabled,
@@ -474,6 +507,8 @@ func (r *Runtime) RenderMaskedNotifications(ctx context.Context) (MaskedNotifica
 		Stored:          renderStoredNotificationsMask(stored),
 		SecretsReadable: secretsReadable,
 	}
+	limits := GlobalBurstLimits()
+	out.BurstLimits = &limits
 	return out, nil
 }
 
@@ -487,6 +522,7 @@ func renderStoredNotificationsMask(s StoredNotificationsSettings) MaskedStoredNo
 			CooldownSeconds: g.CooldownSeconds,
 			BaseURL:         g.BaseURL,
 			IncludeResolved: g.IncludeResolved,
+			BurstFields:     g.BurstFields,
 		}
 	}
 	if sl := s.Slack; sl != nil {
@@ -540,6 +576,9 @@ func validateNotificationsPatch(p *StoredNotificationsSettings) error {
 		}
 		if g.CooldownSeconds != nil && *g.CooldownSeconds < 0 {
 			return &ValidationError{Field: "global.cooldownSeconds", Message: "must be >= 0"}
+		}
+		if err := GlobalBurstLimits().Validate(g.BurstFields, "global."); err != nil {
+			return err
 		}
 	}
 	if p.Slack != nil && p.Slack.WebhookURLEncoded != nil && *p.Slack.WebhookURLEncoded != "" {
@@ -651,6 +690,25 @@ func mergeGlobal(out, patch *StoredNotificationsGlobal) {
 	}
 	if patch.IncludeResolved != nil {
 		out.IncludeResolved = patch.IncludeResolved
+	}
+	mergeBurstFields(&out.BurstFields, patch.BurstFields)
+}
+
+func mergeBurstFields(out *BurstFields, patch BurstFields) {
+	if patch.BurstThreshold != nil {
+		out.BurstThreshold = patch.BurstThreshold
+	}
+	if patch.BurstWindowSeconds != nil {
+		out.BurstWindowSeconds = patch.BurstWindowSeconds
+	}
+	if patch.BurstQuietSeconds != nil {
+		out.BurstQuietSeconds = patch.BurstQuietSeconds
+	}
+	if patch.BurstMaxWaitSeconds != nil {
+		out.BurstMaxWaitSeconds = patch.BurstMaxWaitSeconds
+	}
+	if patch.DigestListLimit != nil {
+		out.DigestListLimit = patch.DigestListLimit
 	}
 }
 

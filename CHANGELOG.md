@@ -8,6 +8,21 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A burst of insights is one notification, not hundreds.** When a cluster
+  opens 5 or more insights within 60 seconds (its first evaluation, a
+  reconnect after its episodes expired, a node failure), Slack, Discord and
+  instant email get one summary once the cluster has been quiet for 30
+  seconds (5 minutes at most, then a partial "still going" summary): the
+  count by severity, every critical named (up to 10), every rule with its
+  count and most affected namespaces. The first insights, sent before the
+  burst was clear, are counted and marked. Below the threshold every insight
+  is still sent at once. An hourly or daily digest with more than 20
+  insights is summarised the same way. Summaries cannot be turned off; the
+  thresholds come from `KUBEBOLT_NOTIFICATIONS_BURST_*` and
+  `KUBEBOLT_NOTIFICATIONS_DIGEST_LIST_LIMIT` and can be moved, within fixed
+  ranges, in Settings › Notifications › *Summaries*. The Notifications page
+  is laid out by what each setting does: what is sent on the left, where it
+  goes on the right.
 - **The initial informer LIST is paginated.** The same `resourceVersion=0` made
   a large cluster's first LIST arrive as one body, too big for the agent's
   memory and for the tunnel's per-request timeout. It now arrives 500 objects

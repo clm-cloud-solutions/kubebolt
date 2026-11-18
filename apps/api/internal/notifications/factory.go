@@ -27,13 +27,14 @@ func BuildNotifiers(cfg config.NotificationsConfig) []Notifier {
 	}
 	if cfg.Email.Enabled() && cfg.EmailEnabled {
 		notifiers = append(notifiers, NewEmailNotifier(EmailConfig{
-			Host:       cfg.Email.Host,
-			Port:       cfg.Email.Port,
-			Username:   cfg.Email.Username,
-			Password:   cfg.Email.Password,
-			From:       cfg.Email.From,
-			To:         cfg.Email.To,
-			DigestMode: DigestMode(cfg.Email.DigestMode),
+			Host:            cfg.Email.Host,
+			Port:            cfg.Email.Port,
+			Username:        cfg.Email.Username,
+			Password:        cfg.Email.Password,
+			From:            cfg.Email.From,
+			To:              cfg.Email.To,
+			DigestMode:      DigestMode(cfg.Email.DigestMode),
+			DigestListLimit: cfg.DigestListLimit,
 		}))
 	}
 	return notifiers
@@ -50,5 +51,17 @@ func ConfigFromNotifications(cfg config.NotificationsConfig) Config {
 		Cooldown:        cfg.Cooldown,
 		BaseURL:         cfg.BaseURL,
 		IncludeResolved: cfg.IncludeResolved,
+		Burst:           burstFromSettings(cfg),
+	}
+}
+
+// burstFromSettings maps the settings' burst knobs onto the Manager's.
+// Summaries are always on; burstFrom fills anything unset.
+func burstFromSettings(cfg config.NotificationsConfig) BurstConfig {
+	return BurstConfig{
+		Threshold: cfg.BurstThreshold,
+		Window:    cfg.BurstWindow,
+		Quiet:     cfg.BurstQuiet,
+		MaxWait:   cfg.BurstMaxWait,
 	}
 }
