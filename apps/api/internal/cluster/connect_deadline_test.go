@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// The agent-proxy connect deadline (25s by default) used to govern every
+// The agent-proxy connect deadline (25s by default back then) used to govern every
 // connect, so an in-cluster API on a cluster with a large Events collection
 // was cut off before its own 45s cache-sync budget and reported as "agent may
 // be stuck" — with no agent anywhere. Direct connections are bounded by the

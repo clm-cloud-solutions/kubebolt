@@ -29,8 +29,8 @@ type fileEntry struct {
 
 // accessClusterUID returns the UID of the cluster this request resolved to, so
 // an access-audit record is stamped with the cluster the access actually
-// reached rather than the install's default. "" when no connector is resolved —
-// the record then falls back to audit.ClusterID() as before.
+// reached rather than the install's default. "" when no connector is resolved,
+// and the record then carries no cluster.
 func (h *handlers) accessClusterUID(ctx context.Context) string {
 	if conn := h.manager.Connector(ctx); conn != nil {
 		return conn.ClusterUID()

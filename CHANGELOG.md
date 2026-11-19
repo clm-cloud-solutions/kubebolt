@@ -6,6 +6,41 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.6.7] — 2026-11-19
+
+A slow agent tunnel connects, and the terminal and the audit trail say what
+happened. A fix release: no migration; the agent stays on 1.4.9. Full note:
+[docs/releases/v2.6.7.md](docs/releases/v2.6.7.md).
+
+### Fixed
+
+- **The terminal says why a cluster refused it.** On a cluster whose agent
+  runs in reader mode (the default), opening a terminal printed "agent-proxy
+  SPDY: expected 101 Switching Protocols, got 403": the tunnel dropped the API
+  server's answer. It now carries the API server's Status, like client-go
+  does, and the terminal says that reader mode only reads and
+  `rbac.mode=operator` opens a terminal (on a kubeconfig cluster: that its
+  credentials may not exec).
+- **A terminal the cluster refuses is not audited as opened.** The session's
+  open record was written when the browser connected, before the exec stream
+  was negotiated, so a refused exec read as a successful session. The open is
+  now written when the stream runs; a refused stream leaves one open record
+  with `result: error` and the cluster's reason.
+- **The audit trail names the cluster a change was made on.** Cluster
+  mutations and the cluster-scoped administration routes stamped every record
+  with the cluster resolved from a background context, the install's default,
+  rather than the one the request acted on. The resolver now receives the
+  request's context; a mute records the cluster it silences, an unmute records
+  none, and an access record the handler could not tie to a cluster no longer
+  falls back to the default one.
+- **A connect through an agent is no longer cut while a page is on its way.**
+  The connect deadline counts from the last response, and one proxied request
+  may take the whole request timeout (30s), but the deadline defaulted to 25s:
+  a large cluster behind a slow tunnel failed its first connect. The default
+  is now 60s, and the connect deadline and the stuck-agent watchdog are never
+  applied below the request timeout + 5s, whatever is configured. The API
+  logs a raised value and Settings › Agents & Ingest says what runs.
+
 ## [2.6.6] — 2026-11-19
 
 Agent metrics survive a VictoriaMetrics restart, Kobi reads a connector's
