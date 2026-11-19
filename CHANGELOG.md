@@ -6,6 +6,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.6.7] — 2026-11-19
+
+A slow agent tunnel connects, and the terminal and the audit trail say what
+happened. A fix release: no migration; the agent stays on 1.4.9. Full note:
+[docs/releases/v2.6.7.md](docs/releases/v2.6.7.md).
+
 ### Fixed
 
 - **The terminal says why a cluster refused it.** On a cluster whose agent
