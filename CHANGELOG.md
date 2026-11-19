@@ -6,6 +6,42 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.6.6] — 2026-11-19
+
+Agent metrics survive a VictoriaMetrics restart, Kobi reads a connector's
+first call by its own answer, and the Azure MCP Server sidecar moves to 4.0.
+A fix release: no migration; the agent stays on 1.4.9. Full note:
+[docs/releases/v2.6.6.md](docs/releases/v2.6.6.md).
+
+### Fixed
+
+- **A VictoriaMetrics restart no longer leaves a gap in agent metrics.** A
+  batch the API fails to write for a passing reason (connection error,
+  timeout, 5xx, 429) is held encoded, up to 64 MiB, oldest dropped first,
+  and written again oldest first once VictoriaMetrics answers, with the
+  samples' own timestamps (`agent/ingest_spool.go`, `SpoolingWriter`).
+- **A connector's first call is read by its own answer.** The procedure
+  Kobi puts in front of a connector's first answer made a failed first AWS
+  call read as `not_found`, with the procedure's header as its reason
+  (`WithoutConnectorSkill`).
+- **A cluster whose events KubeBolt cannot list says so.** `GET /events`
+  answers 403, the Events page shows *Access Restricted*, and Kobi gets a
+  permission error. Before, the API returned a 500 and Kobi's tool hit a
+  recovered panic.
+
+### Changed
+
+- **Kobi's `lastWrites` note treats a field manager name as a claim.** Any
+  client can write with any manager name, so `kubebolt-autopilot` is no
+  longer presented as proof that Autopilot made the write.
+
+### Security
+
+- **Azure MCP Server sidecar 4.0.0-beta.6** (chart and compose, by digest).
+  The 3.0 line's Alpine image carried two HIGH CVEs (musl, zlib), and both
+  waivers are removed from `.trivyignore-thirdparty`. If you pinned the
+  sidecar image yourself, move it to 4.0.0-beta.6 with this release.
+
 ## [2.6.5] — 2026-11-18
 
 A large cluster connects behind a slow agent tunnel, Helm's release history
