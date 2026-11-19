@@ -138,7 +138,7 @@ func TestResolveActionActor(t *testing.T) {
 // neither.
 func TestWithActionActor_NamesTheWriteAndTheRecord(t *testing.T) {
 	sink := audit.NewMemoryStore()
-	audit.SetSink(sink, func() string { return "cluster-xyz" })
+	audit.SetSink(sink, func(context.Context) string { return "cluster-xyz" })
 	t.Cleanup(func() { audit.SetSink(nil, nil) })
 
 	convs := copilot.NewMemoryConversationStore()

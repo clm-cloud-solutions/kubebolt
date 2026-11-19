@@ -8,6 +8,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The audit trail names the cluster a change was made on.** Cluster
+  mutations and the cluster-scoped administration routes stamped every record
+  with the cluster resolved from a background context, the install's default,
+  rather than the one the request acted on. The resolver now receives the
+  request's context; a mute records the cluster it silences, an unmute records
+  none, and an access record the handler could not tie to a cluster no longer
+  falls back to the default one.
 - **A connect through an agent is no longer cut while a page is on its way.**
   The connect deadline counts from the last response, and one proxied request
   may take the whole request timeout (30s), but the deadline defaulted to 25s:

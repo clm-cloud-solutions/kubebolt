@@ -81,7 +81,7 @@ func (h *handlers) auditAdminRoutes(targetType string, clusterScoped bool) func(
 			}
 			clusterID := ""
 			if clusterScoped {
-				clusterID = audit.ClusterID()
+				clusterID = audit.ClusterIDFor(r.Context())
 			}
 
 			rec := &audit.Record{

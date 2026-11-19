@@ -55,7 +55,18 @@ var setImageableTypes = map[string]bool{
 // (operational log line) AND, when an audit store is wired (Sprint 1),
 // persists a durable record to the kobi_actions bucket for the admin
 // action-history view.
+//
+// The record is stamped with the cluster the request resolved, which is the
+// cluster a resource action ran on. A mutation whose subject is another
+// cluster, or none, says so with auditMutationOn.
 func auditMutation(r *http.Request, action, resourceType, namespace, name string, params map[string]any, err error) {
+	auditMutationOn(r, audit.ClusterIDFor(r.Context()), action, resourceType, namespace, name, params, err)
+}
+
+// auditMutationOn is auditMutation with the cluster named by the caller: the
+// cluster a mute silences, or "" for a change that belongs to no cluster. The
+// cluster the person had selected would be an association the record invents.
+func auditMutationOn(r *http.Request, clusterID, action, resourceType, namespace, name string, params map[string]any, err error) {
 	params = auditParams(params)
 	actor := actionActorOf(r)
 	source := actor.Source
@@ -101,7 +112,6 @@ func auditMutation(r *http.Request, action, resourceType, namespace, name string
 	// loop opened in Sprint 0 (frontend sends X-KubeBolt-Origin-Insight when
 	// the Kobi chat was seeded from an insight).
 	if audit.Enabled() {
-		clusterID := audit.ClusterID()
 		rec := &audit.Record{
 			ID:        uuid.New().String(),
 			Timestamp: time.Now().UTC(),

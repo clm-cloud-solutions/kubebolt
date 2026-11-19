@@ -152,8 +152,7 @@ func (h *handlers) handleExec(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cluster not connected", http.StatusServiceUnavailable)
 		return
 	}
-	// Stamp the cluster the session actually reached onto the audit actor (the
-	// package-level audit.ClusterID() names the install's default cluster).
+	// Stamp the cluster the session actually reached onto the audit actor.
 	actor = actor.withCluster(conn.ClusterUID())
 
 	clientset := conn.Clientset()

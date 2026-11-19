@@ -609,10 +609,11 @@ func main() {
 		// Durable mutation-audit store (Sprint 1). Persists every cluster
 		// mutation (UI + Kobi-proposed) to the kobi_actions bucket so the
 		// admin action-history view survives restarts. The cluster-id
-		// resolver stamps the active cluster onto each record.
+		// resolver stamps the cluster the REQUEST resolved onto each record,
+		// not whichever cluster a background context resolves to.
 		actionAuditStore = newAuditStore(boltHandle(store), auth.KobiActionsBucket())
-		api.SetAuditStore(actionAuditStore, func() string {
-			if c := manager.Connector(context.Background()); c != nil {
+		api.SetAuditStore(actionAuditStore, func(ctx context.Context) string {
+			if c := manager.Connector(ctx); c != nil {
 				return c.ClusterUID()
 			}
 			return ""
