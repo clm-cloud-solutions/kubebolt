@@ -155,6 +155,68 @@ func auditAccessSession(actor accessActor, action, targetType, namespace, name s
 	}
 }
 
+// auditAccessSessionPending is auditAccessSession for a session that can fail
+// before it starts. The terminal's WebSocket is up before its exec stream is
+// negotiated with the cluster, and recording the open at that point wrote a
+// successful session for every exec the cluster then refused (a "pod not
+// found" in under 60 ms read as `success`).
+//
+// start records the open; the caller fires it the moment the stream is
+// running. end records the close of a started session, or — when start never
+// fired — a single open record carrying the error, so a refused session reads
+// as refused and not as an open with no close.
+//
+// Both are idempotent and safe from any goroutine: the stream fires start from
+// its own copy loops while the handler may already be ending the session.
+func auditAccessSessionPending(actor accessActor, action, targetType, namespace, name string, params map[string]any) (start func(), end func(reason string, extra map[string]any)) {
+	if !audit.Enabled() {
+		return func() {}, func(string, map[string]any) {}
+	}
+	sessionID := uuid.New().String()
+	openParams := map[string]any{"sessionId": sessionID}
+	for k, v := range params {
+		openParams[k] = v
+	}
+
+	var mu sync.Mutex
+	var started, ended bool
+	var openedAt time.Time
+	start = func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if started || ended {
+			return
+		}
+		started = true
+		openedAt = time.Now()
+		audit.Emit(actor.record(action+"_open", targetType, namespace, name, openParams))
+	}
+	end = func(reason string, extra map[string]any) {
+		mu.Lock()
+		defer mu.Unlock()
+		if ended {
+			return
+		}
+		ended = true
+		if started {
+			emitClose(actor, action, targetType, namespace, name, params, extra, sessionID, openedAt, reason)
+			return
+		}
+		failParams := map[string]any{"reason": reason}
+		for k, v := range openParams {
+			failParams[k] = v
+		}
+		rec := actor.record(action+"_open", targetType, namespace, name, failParams)
+		rec.Result = "error"
+		rec.Error = reason
+		if e, ok := extra["error"].(string); ok && e != "" {
+			rec.Error = e
+		}
+		audit.Emit(rec)
+	}
+	return start, end
+}
+
 func emitClose(actor accessActor, action, targetType, namespace, name string,
 	params, extra map[string]any, sessionID string, openedAt time.Time, reason string) {
 	closeParams := map[string]any{
