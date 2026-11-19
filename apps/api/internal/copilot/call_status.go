@@ -28,6 +28,7 @@ const reasonMax = 140
 // not connected, a kind the tool does not cover. The reason is the error's
 // first sentence, never what the result tells the model to do.
 func CallStatus(r ToolResult, class string, budgetRefused bool) (status, reason string) {
+	r.Content = WithoutConnectorSkill(r.Content)
 	switch {
 	case budgetRefused:
 		return ToolResultNotSent, fmt.Sprintf("this question already used its %d cloud calls", MaxMCPCallsPerTurn)

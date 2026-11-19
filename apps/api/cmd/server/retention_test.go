@@ -149,11 +149,13 @@ func TestStartRetention_RunsAFirstPassBeforeTheInterval(t *testing.T) {
 
 	pruner := &signalPruner{fired: make(chan struct{}, 1)}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	startRetention(ctx, retentionDeps{
+	done := startRetention(ctx, retentionDeps{
 		tenants:  &fakeOrgs{orgs: []auth.Tenant{{ID: "org"}}},
 		insights: pruner,
 	})
+	// The pass signals at its first prune and keeps going; a loop still running
+	// after the test reads package state the next tests write (-race).
+	defer func() { cancel(); <-done }()
 
 	select {
 	case <-pruner.fired:
