@@ -41,16 +41,15 @@ type accessActor struct {
 	Username string
 	Role     string
 	TenantID string
-	// ClusterID is the cluster the access actually reached. The package-level
-	// audit.ClusterID() reads a background context, so it names the install's
-	// default cluster rather than the one the access touched — the forensic field
-	// a review needs most. Handlers that resolved a connector set it from that
-	// connector's UID; record() falls back to audit.ClusterID() when it is empty.
+	// ClusterID is the cluster the access actually reached, set by the handler
+	// from the connector it resolved — the forensic field a review needs most.
+	// Empty means none was resolved, and the record says so rather than naming
+	// a cluster resolved from a background context.
 	ClusterID string
 }
 
 // withCluster returns a copy of the actor stamped with the cluster its access
-// actually reached. Empty id leaves the fallback in place.
+// actually reached. An empty id leaves the record without a cluster.
 func (a accessActor) withCluster(clusterID string) accessActor {
 	if clusterID != "" {
 		a.ClusterID = clusterID
@@ -84,10 +83,6 @@ func actorFromClaims(c *auth.Claims, fallbackTenant string) accessActor {
 }
 
 func (a accessActor) record(action, targetType, namespace, name string, params map[string]any) *audit.Record {
-	clusterID := a.ClusterID
-	if clusterID == "" {
-		clusterID = audit.ClusterID()
-	}
 	return &audit.Record{
 		ID:              uuid.New().String(),
 		Timestamp:       time.Now().UTC(),
@@ -97,7 +92,7 @@ func (a accessActor) record(action, targetType, namespace, name string, params m
 		UserID:          a.UserID,
 		Username:        a.Username,
 		Role:            a.Role,
-		ClusterID:       clusterID,
+		ClusterID:       a.ClusterID,
 		Action:          action,
 		TargetType:      targetType,
 		TargetNamespace: namespace,

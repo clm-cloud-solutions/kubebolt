@@ -1,6 +1,9 @@
 package audit
 
-import "log/slog"
+import (
+	"context"
+	"log/slog"
+)
 
 // The process-wide audit sink.
 //
@@ -16,13 +19,17 @@ import "log/slog"
 // auth's context helpers, and doing it here would close the cycle.
 var (
 	sink        Store
-	clusterIDFn func() string
+	clusterIDFn func(ctx context.Context) string
 )
 
-// SetSink wires the durable store + a resolver for the active cluster id.
-// Called once at boot, after the router is built. A nil store leaves the trail
-// slog-only, which is the OSS/auth-disabled posture.
-func SetSink(s Store, clusterID func() string) {
+// SetSink wires the durable store + a resolver for the cluster a request acts
+// on. Called once at boot, after the router is built. A nil store leaves the
+// trail slog-only, which is the OSS/auth-disabled posture.
+//
+// The resolver takes the REQUEST's context. It used to take none and resolve
+// with context.Background(), which names the install's default cluster rather
+// than the one the request acted on.
+func SetSink(s Store, clusterID func(ctx context.Context) string) {
 	sink = s
 	clusterIDFn = clusterID
 }
@@ -31,14 +38,16 @@ func SetSink(s Store, clusterID func() string) {
 // building a Record they would only throw away.
 func Enabled() bool { return sink != nil }
 
-// ClusterID resolves the active cluster for stamping. Empty when no resolver is
-// wired or no cluster is connected — an administrative action (creating a user,
-// rotating a token) legitimately has no cluster, and that is not an error.
-func ClusterID() string {
-	if clusterIDFn == nil {
+// ClusterIDFor resolves the cluster the request behind ctx acts on, for
+// stamping. Empty when no resolver is wired or the request resolved no cluster —
+// an administrative action (creating a user, rotating a token) legitimately has
+// no cluster, and that is not an error. There is deliberately no context-free
+// variant: a cluster resolved without the request is somebody else's.
+func ClusterIDFor(ctx context.Context) string {
+	if clusterIDFn == nil || ctx == nil {
 		return ""
 	}
-	return clusterIDFn()
+	return clusterIDFn(ctx)
 }
 
 // Emit persists one record. Failures are logged, never propagated: a mutation
