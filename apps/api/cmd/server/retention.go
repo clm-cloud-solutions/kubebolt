@@ -161,12 +161,19 @@ func conversationsRetentionHorizon() time.Duration {
 // startRetention launches the hourly pass. Returns immediately; the goroutine
 // stops when ctx is cancelled. A nil tenant store (auth disabled) means there is
 // no org list to iterate and nothing runs.
-func startRetention(ctx context.Context, d retentionDeps) {
+//
+// The returned channel closes when the loop has exited: cancelling ctx stops
+// new passes but does not wait for one in flight, so a caller that must not
+// overlap with a pass (a test that changes package state next) waits on it.
+func startRetention(ctx context.Context, d retentionDeps) <-chan struct{} {
+	done := make(chan struct{})
 	if d.tenants == nil {
-		return
+		close(done)
+		return done
 	}
 	retentionJob = opsmetrics.NewJob("retention", retentionInterval)
 	go func() {
+		defer close(done)
 		first := time.NewTimer(retentionStartDelay)
 		defer first.Stop()
 		select {
@@ -186,6 +193,7 @@ func startRetention(ctx context.Context, d retentionDeps) {
 			}
 		}
 	}()
+	return done
 }
 
 // runRetentionPass is the body of one tick, split out so a test can call it
