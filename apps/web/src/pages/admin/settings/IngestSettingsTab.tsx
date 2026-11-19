@@ -27,6 +27,7 @@ import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { Modal } from '@/components/shared/Modal'
 import { ConfirmDialog } from './ConfirmDialog'
 import { Field } from './SettingsField'
+import { idleBudgetsRaised } from './idleBudgets'
 import { PerTenantLimitsSection, type PerTenantLimitsHandle } from './PerTenantLimitsSection'
 
 // IngestSettingsTab (Settings → Agents & Ingest) is the spec #09 V2
@@ -407,6 +408,11 @@ function IngestChannelForm({
   const remoteWriteUnauth =
     form.remoteWriteEnabled && form.remoteWriteAuthMode === 'disabled'
 
+  // The connect deadline and the stuck watchdog are idle budgets: the API never
+  // applies one below the request timeout plus 5 s (one proxied page may take
+  // the whole request timeout). Say what runs when the form asks for less.
+  const raisedBudgets = idleBudgetsRaised(form)
+
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
       <div className="flex items-start gap-2 rounded-xl border border-status-info-dim bg-status-info-dim/30 p-4 text-xs text-status-info">
@@ -786,7 +792,7 @@ function IngestChannelForm({
             stacked
             label="Connect deadline (seconds)"
             dirty={dirtyMap.connectTimeoutSeconds}
-            helper="How long a connect through an agent may wait without receiving anything before it gives up. A stuck agent still fails fast ('cluster unreachable'); a large cluster behind a slow tunnel carries on while data arrives, up to 10 minutes. Clusters reached directly (kubeconfig, in-cluster) are bounded by the Cluster connect timeout instead. Range 5–600s."
+            helper="How long a connect through an agent may wait without receiving anything before it gives up. A stuck agent still fails fast ('cluster unreachable'); a large cluster behind a slow tunnel carries on while data arrives, up to 10 minutes. Clusters reached directly (kubeconfig, in-cluster) are bounded by the Cluster connect timeout instead. Never applied below the request timeout + 5s. Range 5–600s."
           >
             <input
               type="number"
@@ -801,7 +807,7 @@ function IngestChannelForm({
             stacked
             label="Stuck-agent watchdog (seconds)"
             dirty={dirtyMap.stuckTimeoutSeconds}
-            helper="If an agent has in-flight proxied requests but delivers no response for this long, its channel is force-closed so it reconnects. 0 disables. Enabling >0 fleet-wide needs keepalive-capable agents (else a force-closed agent won't reconnect). 0, or 5–600s."
+            helper="If an agent has in-flight proxied requests but delivers no response for this long, its channel is force-closed so it reconnects. 0 disables. Enabling >0 fleet-wide needs keepalive-capable agents (else a force-closed agent won't reconnect). Never applied below the request timeout + 5s. 0, or 5–600s."
           >
             <input
               type="number"
@@ -827,6 +833,21 @@ function IngestChannelForm({
               className="w-40 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
             />
           </Field>
+
+          {raisedBudgets.length > 0 && (
+            <div className="md:col-span-2 flex items-start gap-2 rounded-md bg-status-warn-dim/40 border border-status-warn-dim p-2 text-[11px] text-status-warn leading-relaxed">
+              <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+              <div>
+                {raisedBudgets.map((b) => (
+                  <div key={b.name}>
+                    {b.name} runs at {b.effective}s, not {b.configured}s: one proxied request may
+                    take the whole request timeout, so a shorter wait would end a connect that is
+                    still receiving.
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </SectionCard>
 

@@ -6,6 +6,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A connect through an agent is no longer cut while a page is on its way.**
+  The connect deadline counts from the last response, and one proxied request
+  may take the whole request timeout (30s), but the deadline defaulted to 25s:
+  a large cluster behind a slow tunnel failed its first connect. The default
+  is now 60s, and the connect deadline and the stuck-agent watchdog are never
+  applied below the request timeout + 5s, whatever is configured. The API
+  logs a raised value and Settings › Agents & Ingest says what runs.
+
 ## [2.6.6] — 2026-11-19
 
 Agent metrics survive a VictoriaMetrics restart, Kobi reads a connector's

@@ -519,9 +519,10 @@ mcpConnectors:
 #     # Agent-proxy resilience timeouts (widen under heavy agent concurrency, tighten to
 #     # fail faster). Connect (how long a connect may receive nothing; one that keeps
 #     # receiving pages carries on, up to 10 min) / stuck-watchdog (0 disables) /
-#     # request fallback.
+#     # request fallback. Connect and stuck are never applied below the request
+#     # timeout + 5s.
 #     - name: KUBEBOLT_AGENT_PROXY_CONNECT_TIMEOUT
-#       value: "25s"
+#       value: "60s"
 #     - name: KUBEBOLT_AGENT_PROXY_STUCK_TIMEOUT
 #       value: "45s"
 #     - name: KUBEBOLT_AGENT_PROXY_REQUEST_TIMEOUT
