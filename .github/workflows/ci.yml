@@ -7,7 +7,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26.10'  # Explicit patch — see release.yml setup-go comment for the CVE rationale
+          go-version: '1.26.11'  # Explicit patch — see release.yml setup-go comment for the CVE rationale
           # setup-go looks for a go.sum at the repo root by default; ours live in
           # apps/api and packages/*, so the cache was never restored and every run
           # downloaded every module and compiled from scratch.
