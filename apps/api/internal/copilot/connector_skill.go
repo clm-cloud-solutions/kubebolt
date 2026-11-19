@@ -64,7 +64,9 @@ func WithoutConnectorSkill(content string) string {
 	if !ok {
 		return content
 	}
-	prefix := fmt.Sprintf(connectorSkillHeader, name, name) + "\n\n" + skill.Body + "\n\n"
+	// The catalogue's own name, not the one read from the content: what goes
+	// back into a string is never text the tool's answer supplied.
+	prefix := fmt.Sprintf(connectorSkillHeader, skill.Name, skill.Name) + "\n\n" + skill.Body + "\n\n"
 	if answer, ok := strings.CutPrefix(content, prefix); ok {
 		return answer
 	}
