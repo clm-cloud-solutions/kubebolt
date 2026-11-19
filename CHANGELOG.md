@@ -41,6 +41,12 @@ A fix release: no migration; the agent stays on 1.4.9. Full note:
   The 3.0 line's Alpine image carried two HIGH CVEs (musl, zlib), and both
   waivers are removed from `.trivyignore-thirdparty`. If you pinned the
   sidecar image yourself, move it to 4.0.0-beta.6 with this release.
+- **Go 1.26.11** for CVE-2026-97054 (net/http, an HTTP/1 server could read
+  past `MaxBytesReader`'s limit; HIGH): the API, the single image and the
+  krew/Homebrew binaries. VictoriaMetrics v1.156.0 carries it too, and no
+  VictoriaMetrics release is built on a fixed Go yet: it is waived in
+  `.trivyignore-thirdparty` until 2026-12-03. The bundled VictoriaMetrics
+  runs as a ClusterIP Service that only the API calls.
 
 ## [2.6.5] — 2026-11-18
 
