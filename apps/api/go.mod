@@ -12,7 +12,8 @@ go 1.26.0
 // cross-compiled krew/Homebrew binaries onto the same line. 1.26.9 adds the
 // fixes for CVE-2026-78667 (net/http) and CVE-2026-97031 (crypto/tls), both HIGH;
 // 1.26.10 adds CVE-2026-111943 (crypto/x509, HIGH).
-toolchain go1.26.10
+// 1.26.11 (2.6.6) adds CVE-2026-97054 (net/http MaxBytesReader, HIGH).
+toolchain go1.26.11
 
 replace github.com/kubebolt/kubebolt/packages/proto => ../../packages/proto
 

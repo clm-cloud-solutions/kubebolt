@@ -8,7 +8,8 @@ go 1.26.0
 // apps/api/go.mod and packages/agent/go.mod.
 // 1.26.9 adds CVE-2026-78667 (net/http) and CVE-2026-97031 (crypto/tls);
 // 1.26.10 adds CVE-2026-111943 (crypto/x509).
-toolchain go1.26.10
+// 1.26.11 (2.6.6) adds CVE-2026-97054 (net/http MaxBytesReader, HIGH).
+toolchain go1.26.11
 
 require (
 	google.golang.org/grpc v1.83.2
