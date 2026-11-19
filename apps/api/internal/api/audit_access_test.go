@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"io"
+	"strings"
 	"sync"
 	"testing"
 
@@ -149,4 +151,78 @@ func actions(recs []audit.Record) []string {
 		out[i] = r.Action
 	}
 	return out
+}
+
+// A terminal the cluster refuses before its stream runs leaves ONE open record
+// carrying the error — never an open that reads as success.
+func TestAuditAccessSessionPending_RefusedBeforeStartIsOneFailedOpen(t *testing.T) {
+	sink := newAccessSink(t)
+	_, end := auditAccessSessionPending(testActor, "pod_exec_session", "pods", "prod", "api-0", map[string]any{"container": "api"})
+
+	end("stream error", map[string]any{"error": `pods "api-0" not found`, "exitCode": 0})
+	end("handler returned", nil) // the handler's backstop must not add a record
+
+	recs, _ := sink.ListOrg("org-a", 0)
+	if len(recs) != 1 {
+		t.Fatalf("%d records, want 1: %v", len(recs), actions(recs))
+	}
+	r := recs[0]
+	if r.Action != "pod_exec_session_open" || r.Result != "error" || r.Error != `pods "api-0" not found` {
+		t.Errorf("got action=%q result=%q error=%q", r.Action, r.Result, r.Error)
+	}
+	if r.Params["sessionId"] == nil || r.Params["container"] != "api" {
+		t.Errorf("params lost the session's description: %v", r.Params)
+	}
+}
+
+func TestAuditAccessSessionPending_StartedSessionOpensAndCloses(t *testing.T) {
+	sink := newAccessSink(t)
+	start, end := auditAccessSessionPending(testActor, "pod_exec_session", "pods", "prod", "api-0", nil)
+
+	start()
+	start() // every read and write of the stream fires it
+	if recs, _ := sink.ListOrg("org-a", 0); len(recs) != 1 || recs[0].Result != "success" {
+		t.Fatalf("after start: %v", actions(recs))
+	}
+	end("shell exited", map[string]any{"exitCode": 0})
+	start() // a late copy loop after the end records nothing
+
+	recs, _ := sink.ListOrg("org-a", 0)
+	if len(recs) != 2 {
+		t.Fatalf("%d records, want open + close: %v", len(recs), actions(recs))
+	}
+}
+
+// The stream fires start from its own goroutines while the handler may be
+// ending the session: one open and at most one close, whatever the order.
+func TestAuditAccessSessionPending_ConcurrentStartAndEnd(t *testing.T) {
+	sink := newAccessSink(t)
+	start, end := auditAccessSessionPending(testActor, "pod_exec_session", "pods", "prod", "api-0", nil)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func() { defer wg.Done(); start() }()
+		go func() { defer wg.Done(); end("stream ended", nil) }()
+	}
+	wg.Wait()
+	recs, _ := sink.ListOrg("org-a", 0)
+	opens := 0
+	for _, r := range recs {
+		if r.Action == "pod_exec_session_open" {
+			opens++
+		}
+	}
+	if opens != 1 || len(recs) > 2 {
+		t.Errorf("records %v: want exactly one open and at most one close", actions(recs))
+	}
+}
+
+func TestStreamStartWrappers_FireOnFirstTouch(t *testing.T) {
+	n := 0
+	fire := func() { n++ }
+	_, _ = streamStartReader{r: strings.NewReader("x"), start: fire}.Read(make([]byte, 1))
+	_, _ = streamStartWriter{w: io.Discard, start: fire}.Write([]byte("x"))
+	if n != 2 {
+		t.Errorf("start fired %d times, want 2", n)
+	}
 }

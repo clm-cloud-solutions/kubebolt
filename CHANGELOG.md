@@ -8,6 +8,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The terminal says why a cluster refused it.** On a cluster whose agent
+  runs in reader mode (the default), opening a terminal printed "agent-proxy
+  SPDY: expected 101 Switching Protocols, got 403": the tunnel dropped the API
+  server's answer. It now carries the API server's Status, like client-go
+  does, and the terminal says that reader mode only reads and
+  `rbac.mode=operator` opens a terminal (on a kubeconfig cluster: that its
+  credentials may not exec).
+- **A terminal the cluster refuses is not audited as opened.** The session's
+  open record was written when the browser connected, before the exec stream
+  was negotiated, so a refused exec read as a successful session. The open is
+  now written when the stream runs; a refused stream leaves one open record
+  with `result: error` and the cluster's reason.
 - **The audit trail names the cluster a change was made on.** Cluster
   mutations and the cluster-scoped administration routes stamped every record
   with the cluster resolved from a background context, the install's default,
