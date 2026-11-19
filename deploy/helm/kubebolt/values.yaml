@@ -484,8 +484,8 @@ mcpConnectors:
         # The release Kobi's Azure allowlist was reviewed against. Bump it
         # only with the API: the betas rename commands, and a test fails when
         # this tag differs from the version the API expects.
-        tag: 3.0.0-beta.46
-        digest: sha256:eaf976c3b537de579d043822e45f47958b8b1647aaf11b6c4e8e9d18ea05c810
+        tag: 4.0.0-beta.6
+        digest: sha256:3167085535a9c5054d22dd6af3560f20ef553f11850d934fc0d68e733873f90b
         pullPolicy: IfNotPresent
       resources:
         requests:

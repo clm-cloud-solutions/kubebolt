@@ -489,6 +489,21 @@ func (b *azureBinding) prepare(cmd string, spec *azureCommand, sch azureSchema, 
 				return nil, nil, "This connector reads only subscription " + b.subscription + ". Leave \"subscription\" out: KubeBolt sets it."
 			}
 			continue
+		case k == "subscriptions":
+			// Azure MCP Server 4.0's Advisor reads a LIST of subscriptions:
+			// only the pinned one ever goes out, whatever the model wrote.
+			for _, s := range azureStringList(v) {
+				if s = strings.TrimSpace(s); s != "" && !strings.EqualFold(s, b.subscription) {
+					return nil, nil, "This connector reads only subscription " + b.subscription + ". Leave \"subscriptions\" out: KubeBolt sets it."
+				}
+			}
+			continue
+		case k == "service-group":
+			// A service group spans subscriptions: nothing this connector may read.
+			if s, isString := azureString(v); strings.TrimSpace(string(v)) == "null" || (isString && strings.TrimSpace(s) == "") {
+				continue // left unset
+			}
+			return nil, nil, "This connector reads only subscription " + b.subscription + ": \"service-group\" reads beyond it. Leave it out."
 		case k == "tenant":
 			s, _ := azureString(v)
 			s = strings.TrimSpace(s)
@@ -535,6 +550,10 @@ func (b *azureBinding) prepare(cmd string, spec *azureCommand, sch azureSchema, 
 	}
 	if _, ok := sch.props["subscription"]; ok {
 		out["subscription"] = azureJSONString(b.subscription)
+	}
+	if _, ok := sch.props["subscriptions"]; ok {
+		raw, _ := json.Marshal([]string{b.subscription})
+		out["subscriptions"] = raw
 	}
 	if _, ok := sch.props["tenant"]; ok && b.tenant != "" {
 		out["tenant"] = azureJSONString(b.tenant)
@@ -1364,7 +1383,10 @@ func azureJSONType(raw json.RawMessage) string {
 }
 
 // azurePinned are set by KubeBolt, so the model never sees them as options.
-var azurePinned = []string{"subscription", "tenant"}
+// "subscriptions" is Azure MCP Server 4.0's list form (Advisor): pinned to
+// the one subscription like "subscription". "service-group" scopes a read to
+// an Azure service group, which spans subscriptions: refused, never shown.
+var azurePinned = []string{"subscription", "subscriptions", "tenant", "service-group"}
 
 // visible splits a command's parameters into the required and optional ones
 // the model may pass, sorted.
@@ -1609,4 +1631,26 @@ func azureCloneValue(v any) any {
 		return out
 	}
 	return v
+}
+
+// azureStringList reads a value as a list of strings: a JSON list (its
+// string items; anything else reads as an empty string, which callers treat
+// as unset) or one string. Anything else is a list of one empty string.
+func azureStringList(v json.RawMessage) []string {
+	var list []any
+	if json.Unmarshal(v, &list) == nil {
+		out := make([]string, 0, len(list))
+		for _, e := range list {
+			s, _ := e.(string)
+			if _, isStr := e.(string); !isStr {
+				s = "\x00"
+			}
+			out = append(out, s)
+		}
+		return out
+	}
+	if s, ok := azureString(v); ok {
+		return []string{s}
+	}
+	return []string{"\x00"}
 }
