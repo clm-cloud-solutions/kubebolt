@@ -15,6 +15,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   request's context; a mute records the cluster it silences, an unmute records
   none, and an access record the handler could not tie to a cluster no longer
   falls back to the default one.
+- **A connect through an agent is no longer cut while a page is on its way.**
+  The connect deadline counts from the last response, and one proxied request
+  may take the whole request timeout (30s), but the deadline defaulted to 25s:
+  a large cluster behind a slow tunnel failed its first connect. The default
+  is now 60s, and the connect deadline and the stuck-agent watchdog are never
+  applied below the request timeout + 5s, whatever is configured. The API
+  logs a raised value and Settings › Agents & Ingest says what runs.
 
 ## [2.6.6] — 2026-11-19
 

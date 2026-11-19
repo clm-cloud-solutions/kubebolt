@@ -2191,8 +2191,9 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 // where no inner deadline applies — that was the ~8-minute spin in the goroutine dump.
 // Bounding the WHOLE connect lets a stuck agent fail fast (cluster shown unreachable)
 // instead of stranding the pool placeholder + starving m.mu readers via writer priority.
-// Set from KUBEBOLT_AGENT_PROXY_CONNECT_TIMEOUT in main.go; 0 = unbounded (not advised).
-var DefaultConnectTimeout = 25 * time.Second
+// Set from KUBEBOLT_AGENT_PROXY_CONNECT_TIMEOUT in main.go, never below the request
+// timeout (config.EffectiveIdleBudgetSeconds); 0 = unbounded (not advised).
+var DefaultConnectTimeout = 60 * time.Second
 
 // connectDeadline is the outer deadline startRuntime races Start() against.
 // It belongs to agent-proxy contexts only. A direct connection (kubeconfig,
