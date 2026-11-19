@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"sync"
 	"testing"
 
@@ -10,7 +11,7 @@ import (
 func newAccessSink(t *testing.T) *audit.MemoryStore {
 	t.Helper()
 	sink := audit.NewMemoryStore()
-	audit.SetSink(sink, func() string { return "cluster-xyz" })
+	audit.SetSink(sink, func(context.Context) string { return "cluster-xyz" })
 	t.Cleanup(func() { audit.SetSink(nil, nil) })
 	return sink
 }

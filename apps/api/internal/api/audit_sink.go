@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 
@@ -14,10 +15,11 @@ import (
 // import this package — see audit/sink.go.
 var auditStore audit.Store
 
-// SetAuditStore wires the durable audit store + a resolver for the active
-// cluster id (stamped onto each record). Call once at boot, after the
-// router is built. Safe to call with a nil store (audit stays slog-only).
-func SetAuditStore(s audit.Store, clusterIDFn func() string) {
+// SetAuditStore wires the durable audit store + a resolver for the cluster a
+// request acts on (stamped onto each record; it receives the request's
+// context). Call once at boot, after the router is built. Safe to call with a
+// nil store (audit stays slog-only).
+func SetAuditStore(s audit.Store, clusterIDFn func(ctx context.Context) string) {
 	auditStore = s
 	audit.SetSink(s, clusterIDFn)
 }
