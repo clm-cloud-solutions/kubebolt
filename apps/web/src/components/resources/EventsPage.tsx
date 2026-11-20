@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { useEvents } from '@/hooks/useEvents'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
+import { PermissionDenied } from '@/components/shared/PermissionDenied'
+import { ApiError } from '@/services/api'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { ResourceTypeIcon, resourceTypeDescription } from '@/utils/resourceIcons'
 import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
@@ -19,7 +21,11 @@ export function EventsPage() {
   const { data, isLoading, error, refetch, dataUpdatedAt, isFetching } = useEvents(params)
 
   if (isLoading) return <LoadingSpinner />
-  if (error) return <ErrorState message={error.message} onRetry={() => refetch()} />
+  if (error) {
+    // KubeBolt's account cannot list events in this cluster: say so, not "failed".
+    if (error instanceof ApiError && error.status === 403) return <PermissionDenied resourceType="events" />
+    return <ErrorState message={error.message} onRetry={() => refetch()} />
+  }
 
   const items = data?.items || []
 

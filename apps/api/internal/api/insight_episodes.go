@@ -106,6 +106,7 @@ func (h *handlers) handleListEpisodes(w http.ResponseWriter, r *http.Request) {
 	}
 	eps = filterEpisodes(eps, may)
 	h.enrichEpisodeClusterNames(r, eps)
+	h.markSilencedEpisodes(r, eps)
 	respondJSON(w, http.StatusOK, map[string]any{
 		"episodes": eps,
 		"window":   map[string]string{"since": q.Since.Format(time.RFC3339), "until": q.Until.Format(time.RFC3339)},

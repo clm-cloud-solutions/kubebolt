@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -21,7 +22,7 @@ import (
 func mountAuditedAdmin(t *testing.T, status int) (*chi.Mux, *audit.MemoryStore) {
 	t.Helper()
 	sink := audit.NewMemoryStore()
-	audit.SetSink(sink, func() string { return "cluster-xyz" })
+	audit.SetSink(sink, func(context.Context) string { return "cluster-xyz" })
 	t.Cleanup(func() { audit.SetSink(nil, nil) })
 
 	h := &handlers{}

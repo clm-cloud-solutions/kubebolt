@@ -659,13 +659,22 @@ priorityClassName: ""
 # working set lands at 50-70 MiB depending on flow rate + pod count.
 # The 30Mi/80Mi defaults were sized when the agent was kubelet-only;
 # adding Hubble + proxy + scrape pushed the realistic floor up.
+#
+# The limits leave room for the API-server responses the agent relays
+# for an agent-proxy cluster: one body is held whole while it is framed
+# and sent, and the agent caps it at a quarter of this memory limit
+# (KUBEBOLT_AGENT_MEMORY_LIMIT_BYTES, set from the limit below). 128Mi
+# was OOMKilled on a cluster with thousands of ReplicaSets; at 256Mi the
+# cap is the channel's own (63 MiB). CPU 500m: the connect of a large
+# cluster pages its LISTs through the agent and was throttled at 100m.
+# Requests stay small, so scheduling does not change.
 resources:
   requests:
     cpu: 10m
     memory: 64Mi
   limits:
-    cpu: 100m
-    memory: 128Mi
+    cpu: 500m
+    memory: 256Mi
 
 # ─── Pod tuning ────────────────────────────────────────────
 podAnnotations: {}

@@ -322,6 +322,13 @@ func (h *handlers) switchCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The current selection BEFORE the switch. A switch to the cluster that is
+	// already selected changes nothing and must not tear down transient state:
+	// returning to a cluster view re-issues the switch (Fleet, the switcher), and
+	// without this guard a no-op switch stopped the caller's own port-forwards
+	// and cancelled its in-flight drains.
+	prevContext := h.manager.ActiveContextFor(r.Context())
+
 	if err := h.manager.SwitchCluster(body.Context); err != nil {
 		// "not found in kubeconfig" is a bad-request; anything else is a connection failure
 		status := http.StatusServiceUnavailable
@@ -332,15 +339,28 @@ func (h *handlers) switchCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Stop any active port-forwards from previous cluster
-	h.pfManager.StopAll()
-	// Cancel any in-flight drains too — the previous cluster's
-	// restConfig won't apply to the new cluster, and continuing to
-	// evict pods on the old cluster is never the right answer.
-	h.drainManager.CancelAll()
+	// Tear down the switching caller's own state, scoped by org, and only when
+	// the cluster actually changed. In a multi-organization install each of these
+	// is per-org: one org switching clusters must not stop another org's
+	// port-forwards, cancel another org's in-flight drains, or notify another
+	// org's sockets. In single-tenant every record carries the one org. A switch
+	// to the already-selected cluster (returning to a cluster view re-issues it)
+	// changes nothing, so it must not stop the caller's own port-forwards or
+	// drains.
+	if prevContext != body.Context {
+		org := auth.ContextTenantID(r)
+		// Stop this org's active port-forwards from the previous cluster.
+		h.pfManager.StopAllForOrg(org)
+		// Cancel this org's in-flight drains too — the previous cluster's
+		// restConfig won't apply to the new cluster, and continuing to evict pods
+		// on the old cluster is never the right answer.
+		h.drainManager.CancelAllForOrg(org)
 
-	// Broadcast cluster switch event
-	h.wsHub.Broadcast("cluster.switched", map[string]string{"context": body.Context})
+		// Broadcast cluster switch to this org's sockets only (tenant-wide, no
+		// cluster pin — the switching user's socket may still be scoped to the
+		// old cluster).
+		h.wsHub.BroadcastScoped(org, "", "cluster.switched", map[string]string{"context": body.Context})
+	}
 
 	respondJSON(w, http.StatusOK, map[string]string{
 		"status":  "ok",
@@ -607,7 +627,12 @@ func (h *handlers) getEvents(w http.ResponseWriter, r *http.Request) {
 	if limit < 1 {
 		limit = 100
 	}
-	respondJSON(w, http.StatusOK, conn.GetEvents(eventType, namespace, involvedKind, involvedName, limit))
+	events := conn.GetEvents(eventType, namespace, involvedKind, involvedName, limit)
+	if events.Forbidden {
+		respondError(w, http.StatusForbidden, "insufficient permissions to access events")
+		return
+	}
+	respondJSON(w, http.StatusOK, events)
 }
 
 func (h *handlers) getPodLogs(w http.ResponseWriter, r *http.Request) {

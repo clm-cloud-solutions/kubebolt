@@ -28,8 +28,13 @@ func TestAWSKeysFunctionsAndBucketConfigAreReadable(t *testing.T) {
 	if _, err := awsCheck(ConsumerKobi, "secretsmanager", "ListSecretVersionIds"); err != nil {
 		t.Errorf("kobi ListSecretVersionIds: %v", err)
 	}
-	if _, err := awsCheck(ConsumerAutopilot, "secretsmanager", "ListSecretVersionIds"); err == nil {
-		t.Error("autopilot may list secret versions, a Kobi-only family")
+	// Finding #86: Autopilot reads one secret's versions (when it rotated), but
+	// never lists the account's secrets.
+	if _, err := awsCheck(ConsumerAutopilot, "secretsmanager", "ListSecretVersionIds"); err != nil {
+		t.Errorf("autopilot ListSecretVersionIds: %v", err)
+	}
+	if _, err := awsCheck(ConsumerAutopilot, "secretsmanager", "ListSecrets"); err == nil {
+		t.Error("autopilot may list the account's secrets, a Kobi-only grant")
 	}
 }
 

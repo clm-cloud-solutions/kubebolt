@@ -17,6 +17,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -78,6 +79,52 @@ var execUpgrader = gorilla.Upgrader{
 	CheckOrigin:     func(r *http.Request) bool { return true },
 	ReadBufferSize:  4096,
 	WriteBufferSize: 4096,
+}
+
+// The exec stream only touches its stdin, stdout, stderr and size queue once
+// the cluster accepted the upgrade and the streams exist. These wrappers turn
+// the first touch into "the session started" for the audit trail.
+
+type streamStartReader struct {
+	r     io.Reader
+	start func()
+}
+
+func (s streamStartReader) Read(p []byte) (int, error) {
+	s.start()
+	return s.r.Read(p)
+}
+
+type streamStartWriter struct {
+	w     io.Writer
+	start func()
+}
+
+func (s streamStartWriter) Write(p []byte) (int, error) {
+	s.start()
+	return s.w.Write(p)
+}
+
+type streamStartSizeQueue struct {
+	q     remotecommand.TerminalSizeQueue
+	start func()
+}
+
+func (s streamStartSizeQueue) Next() *remotecommand.TerminalSize {
+	s.start()
+	return s.q.Next()
+}
+
+// execForbiddenMessage is what the terminal says when the cluster refuses
+// pods/exec. Through the agent, the agent's role is what refused: its default
+// reader mode reads and never execs, and operator mode is the one that opens a
+// terminal. Through a kubeconfig, it is the credentials that context uses.
+func execForbiddenMessage(throughAgent bool) string {
+	if throughAgent {
+		return "This cluster's KubeBolt agent is not allowed to open a terminal (pods/exec). " +
+			"Its default reader mode only reads; install the agent with rbac.mode=operator to use the terminal."
+	}
+	return "The credentials this cluster connects with are not allowed to open a terminal (pods/exec)."
 }
 
 // detectShell probes the container to find a working shell.
@@ -152,6 +199,8 @@ func (h *handlers) handleExec(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cluster not connected", http.StatusServiceUnavailable)
 		return
 	}
+	// Stamp the cluster the session actually reached onto the audit actor.
+	actor = actor.withCluster(conn.ClusterUID())
 
 	clientset := conn.Clientset()
 
@@ -221,7 +270,10 @@ func (h *handlers) handleExec(w http.ResponseWriter, r *http.Request) {
 	// Recorded from here, AFTER detectShell — that probe opens an exec of its
 	// own, and auditing it would make every terminal look like two sessions.
 	// The stream itself is never recorded: this is where passwords get typed.
-	endSession := auditAccessSession(actor, "pod_exec_session", "pods", namespace, name, map[string]any{
+	// The open is written when the exec stream is actually running (its first
+	// read, write or resize); a stream the cluster refuses leaves one open
+	// record carrying the error instead of a success.
+	startSession, endSession := auditAccessSessionPending(actor, "pod_exec_session", "pods", namespace, name, map[string]any{
 		"container": container,
 		"shell":     shell,
 	})
@@ -271,11 +323,11 @@ func (h *handlers) handleExec(w http.ResponseWriter, r *http.Request) {
 
 	// Execute — blocks until shell exits
 	err = executor.StreamWithContext(r.Context(), remotecommand.StreamOptions{
-		Stdin:             stdinReader,
-		Stdout:            &stdoutWriter{ws: ws},
-		Stderr:            &stderrWriter{ws: ws},
+		Stdin:             streamStartReader{r: stdinReader, start: startSession},
+		Stdout:            streamStartWriter{w: &stdoutWriter{ws: ws}, start: startSession},
+		Stderr:            streamStartWriter{w: &stderrWriter{ws: ws}, start: startSession},
 		Tty:               true,
-		TerminalSizeQueue: sizeQueue,
+		TerminalSizeQueue: streamStartSizeQueue{q: sizeQueue, start: startSession},
 	})
 
 	exitCode := 0
@@ -285,8 +337,8 @@ func (h *handlers) handleExec(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Exec stream ended: %v", err)
 
 		// Detect permission errors and send a clear message
-		if strings.Contains(errMsg, "forbidden") || strings.Contains(errMsg, "Forbidden") {
-			ws.writeJSON(execMessage{Type: "error", Message: "Insufficient permissions — the connected kubeconfig does not have pods/exec access"})
+		if apierrors.IsForbidden(err) || strings.Contains(errMsg, "forbidden") || strings.Contains(errMsg, "Forbidden") {
+			ws.writeJSON(execMessage{Type: "error", Message: execForbiddenMessage(cluster.IsAgentProxyConfig(baseConfig))})
 		} else if exitErr, ok := err.(interface{ ExitStatus() int }); ok {
 			exitCode = exitErr.ExitStatus()
 			ws.writeJSON(execMessage{Type: "exit", Code: exitCode})

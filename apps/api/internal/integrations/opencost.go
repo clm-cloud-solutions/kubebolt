@@ -96,7 +96,7 @@ func (p *openCostProvider) Meta() Integration {
 		ID:          OpenCostID,
 		Name:        OpenCostName,
 		Description: "Cost allocation oracle. OpenCost's exporter provides the per-node and per-container cost metrics behind KubeBolt's Cost dashboard and Lifecycle Management savings accounting.",
-		DocsURL:     "https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/integrations/opencost.md",
+		DocsURL:     siteDoc("cost", "three-ways-to-connect-opencost"),
 		Capabilities: []string{
 			"cost.allocation",
 			"cost.pricing-oracle",

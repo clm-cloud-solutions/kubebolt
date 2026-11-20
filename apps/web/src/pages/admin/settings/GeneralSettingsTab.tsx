@@ -9,6 +9,7 @@ import {
   Moon,
   RotateCcw,
   Save,
+  Scale,
   Settings,
   SlidersHorizontal,
   Sparkles,
@@ -53,6 +54,7 @@ interface FormState {
   prodNamespacePattern: string
   updateCheckEnabled: boolean
   cacheSyncTimeoutSeconds: string
+  rightSizingMinHistoryHours: string
 }
 
 function stateFromResponse(data: GeneralSettingsResponse): FormState {
@@ -62,6 +64,7 @@ function stateFromResponse(data: GeneralSettingsResponse): FormState {
     prodNamespacePattern: data.effective.prodNamespacePattern,
     updateCheckEnabled: data.effective.updateCheckEnabled,
     cacheSyncTimeoutSeconds: String(data.effective.cacheSyncTimeoutSeconds),
+    rightSizingMinHistoryHours: String(data.effective.rightSizingMinHistoryHours ?? 48),
   }
 }
 
@@ -83,6 +86,10 @@ function buildPatch(initial: FormState, current: FormState): GeneralSettingsPutR
   const cst = parseInt(current.cacheSyncTimeoutSeconds, 10)
   if (!isNaN(cst) && cst !== parseInt(initial.cacheSyncTimeoutSeconds, 10)) {
     patch.cacheSyncTimeoutSeconds = cst
+  }
+  const rsh = parseInt(current.rightSizingMinHistoryHours, 10)
+  if (!isNaN(rsh) && rsh !== parseInt(initial.rightSizingMinHistoryHours, 10)) {
+    patch.rightSizingMinHistoryHours = rsh
   }
   return Object.keys(patch).length > 0 ? { patch } : {}
 }
@@ -172,6 +179,8 @@ export function GeneralSettingsTab() {
         // Also bust the public UI config cache so the sidebar logo
         // label re-renders without a page reload.
         queryClient.invalidateQueries({ queryKey: ['ui-config'] })
+        // Right-sizing answers change with the minimum history: refetch them.
+        queryClient.invalidateQueries({ queryKey: ['rightsizing'] })
       }}
     />
   )
@@ -201,6 +210,8 @@ function GeneralSettingsForm({
     updateCheckEnabled: form.updateCheckEnabled !== initial.updateCheckEnabled,
     cacheSyncTimeoutSeconds:
       form.cacheSyncTimeoutSeconds !== initial.cacheSyncTimeoutSeconds,
+    rightSizingMinHistoryHours:
+      form.rightSizingMinHistoryHours !== initial.rightSizingMinHistoryHours,
   }
   const isDirty = Object.values(dirtyMap).some(Boolean)
   const prodPreview = buildRegexPreview(form.prodNamespacePattern)
@@ -353,7 +364,7 @@ function GeneralSettingsForm({
         <Field
           label="Cluster connect timeout"
           dirty={dirtyMap.cacheSyncTimeoutSeconds}
-          helper="How long a cold connect waits for a cluster's resources to sync before giving up. Raise it (e.g. 60–90s) for large clusters that flake with 'cluster may be unreachable' on the first switch. Applies on the next connect — no restart. Range 5–600s. Boot override via KUBEBOLT_CACHE_SYNC_TIMEOUT_SECONDS."
+          helper="How long a cold connect may wait without receiving anything from the cluster before giving up. A connect that keeps receiving data carries on, up to 10 minutes, so a large cluster behind a slow link still connects. Applies on the next connect — no restart. Range 5–600s. Boot override via KUBEBOLT_CACHE_SYNC_TIMEOUT_SECONDS."
         >
           <div className="flex items-center gap-2">
             <input
@@ -396,6 +407,30 @@ function GeneralSettingsForm({
               {form.updateCheckEnabled ? 'Enabled' : 'Disabled'}
             </span>
           </label>
+        </Field>
+      </SectionCard>
+
+      <SectionCard
+        icon={<Scale className="w-4 h-4 text-kb-accent" />}
+        title="Right-sizing"
+        subtitle="How much usage history a cluster needs before right-sizing recommends anything."
+      >
+        <Field
+          label="Minimum usage history"
+          dirty={dirtyMap.rightSizingMinHistoryHours}
+          helper="48h (two daily peaks) by default. Lower it for trials and proofs of concept so a new cluster shows recommendations on its first day — below 48h they are marked as an early estimate. Applies to every cluster and to Kobi, with no restart. Range 12–168h."
+        >
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={12}
+              max={168}
+              className="w-24 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
+              value={form.rightSizingMinHistoryHours}
+              onChange={(e) => setForm({ ...form, rightSizingMinHistoryHours: e.target.value })}
+            />
+            <span className="text-xs text-kb-text-tertiary">hours</span>
+          </div>
         </Field>
       </SectionCard>
 

@@ -97,11 +97,18 @@ const (
 
 	// Agent-proxy resilience baselines + floors. Stuck accepts 0 (disabled);
 	// connect/request are floored so a fat-fingered tiny value can't wedge the proxy.
-	DefaultConnectTimeoutSeconds = 25
+	// The connect default is the value production runs on since 2026-11-18: 25s
+	// was below the request timeout (see EffectiveIdleBudgetSeconds).
+	DefaultConnectTimeoutSeconds = 60
 	DefaultStuckTimeoutSeconds   = 45
 	DefaultRequestTimeoutSeconds = 30
 	MinAgentProxyTimeoutSeconds  = 5
 	MaxAgentProxyTimeoutSeconds  = 600
+
+	// IdleBudgetHeadroomSeconds is how far above the request timeout an idle
+	// budget is held, so a response that arrives at the request timeout is
+	// read and counted before the budget runs out.
+	IdleBudgetHeadroomSeconds = 5
 )
 
 // LoadIngestChannelConfig reads the ingest-channel env vars and returns
@@ -210,7 +217,7 @@ func LoadIngestChannelConfig() IngestChannelConfig {
 		}
 	}
 
-	// Agent-proxy resilience timeouts: env vars are Go durations ("25s") for
+	// Agent-proxy resilience timeouts: env vars are Go durations ("60s") for
 	// backward-compat with how they first shipped; stored as whole seconds.
 	// Connect/request are floored; stuck accepts 0 (disabled) or a floored value.
 	cfg.ConnectTimeoutSeconds = agentProxyEnvSeconds("KUBEBOLT_AGENT_PROXY_CONNECT_TIMEOUT", cfg.ConnectTimeoutSeconds, false)
@@ -246,6 +253,24 @@ func agentProxyEnvSeconds(key string, fallback int, allowZero bool) int {
 		return fallback
 	}
 	return n
+}
+
+// EffectiveIdleBudgetSeconds is the idle budget actually applied for a
+// configured value: never below the request timeout plus
+// IdleBudgetHeadroomSeconds. The connect deadline and the stuck-agent watchdog
+// both fail when nothing arrives for their budget, and one proxied request may
+// legitimately take up to the request timeout. A budget below it ended a
+// connect that was still receiving: on 2026-11-18 a large cluster's tunnel
+// pages took 10–30s against the 25s connect default. 0 (the watchdog
+// disabled) stays 0; a non-positive request timeout leaves the value as is.
+func EffectiveIdleBudgetSeconds(configured, requestTimeout int) int {
+	if configured <= 0 || requestTimeout <= 0 {
+		return configured
+	}
+	if floor := requestTimeout + IdleBudgetHeadroomSeconds; configured < floor {
+		return floor
+	}
+	return configured
 }
 
 // isValidAuthMode returns true for one of the three three-tier values

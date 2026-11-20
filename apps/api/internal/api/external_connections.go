@@ -110,6 +110,7 @@ func (h *handlers) externalConnections(ctx context.Context, sc flowScope, q copi
 		Destinations:    []copilot.ExternalDestination{},
 	}
 	v := h.externalViewFor(ctx, sc)
+	out.ClusterProvider = extclassify.NormalizeProvider(v.provider)
 	var notes []string
 
 	// The workload's kind decides the pod-name filter; its configuration is
@@ -544,6 +545,10 @@ type externalView struct {
 	toolsOf func(id string) map[string]bool
 	// dnsHistory maps an address to a hostname seen for it recently.
 	dnsHistory map[dnsHistKey]string
+	// externalName follows a Service name through ExternalName Services to
+	// the host outside the cluster it ends at (Connector.ExternalNameTarget);
+	// nil when there is no connector to read Services from.
+	externalName func(host string) (target, via string, ok bool)
 }
 
 type dnsHistKey struct{ namespace, ip string }
@@ -556,6 +561,9 @@ func (h *handlers) externalViewFor(ctx context.Context, sc flowScope) *externalV
 	v := &externalView{enabled: map[string]bool{}}
 	v.provider, v.region = h.cloudProfileOf(sc)
 	v.owner = podOwnerResolver(sc.conn)
+	if sc.conn != nil {
+		v.externalName = sc.conn.ExternalNameTarget
+	}
 	v.toolsOf = func(string) map[string]bool { return nil }
 	if gw := h.mcpGateway; gw != nil {
 		v.gateway = true
@@ -925,6 +933,15 @@ func classifyExternal(fqdn, ip string, v *externalView) copilot.ExternalClassifi
 			Infrastructure: true,
 			Confidence:     confidenceClusterState,
 			Note:           "This cluster's Kubernetes API server: cluster plumbing, not a dependency.",
+		}
+	}
+	// A Service name the flows dialed is not in-cluster when it is an
+	// ExternalName: classify where the chain ends (finding #88).
+	if v.externalName != nil && fqdn != "" {
+		if target, via, ok := v.externalName(fqdn); ok {
+			out := classifyExternal(target, ip, v)
+			out.Note = strings.TrimSpace(fmt.Sprintf("%s is an ExternalName Service (%s) for %s, outside the cluster. %s", fqdn, via, target, out.Note))
+			return out
 		}
 	}
 	c := extclassify.Classify(fqdn, ip, v.provider, v.region)

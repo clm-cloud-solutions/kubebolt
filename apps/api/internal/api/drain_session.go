@@ -34,6 +34,7 @@ type drainEvent struct {
 // drainSession is the in-memory record of one drain operation.
 type drainSession struct {
 	Node      string
+	OrgID     string // tenant that started the drain; used to scope CancelAllForOrg
 	StartedAt time.Time
 	Params    map[string]any
 
@@ -43,7 +44,7 @@ type drainSession struct {
 	cancel context.CancelFunc
 
 	mu          sync.Mutex
-	events      []drainEvent  // full replay buffer for reconnects
+	events      []drainEvent // full replay buffer for reconnects
 	subscribers []chan drainEvent
 	finished    bool
 }
@@ -132,7 +133,7 @@ func newDrainSessionManager() *drainSessionManager {
 // false) if a session is already active for that node. The drain
 // context is created here; the goroutine that actually runs drain
 // is the caller's responsibility.
-func (m *drainSessionManager) Start(node string, params map[string]any) (*drainSession, context.Context, bool) {
+func (m *drainSessionManager) Start(org, node string, params map[string]any) (*drainSession, context.Context, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if existing, ok := m.sessions[node]; ok && !existing.isFinished() {
@@ -141,6 +142,7 @@ func (m *drainSessionManager) Start(node string, params map[string]any) (*drainS
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &drainSession{
 		Node:      node,
+		OrgID:     org,
 		StartedAt: time.Now(),
 		Params:    params,
 		cancel:    cancel,
@@ -185,6 +187,25 @@ func (m *drainSessionManager) CancelAll() {
 		}
 	}
 	m.sessions = make(map[string]*drainSession)
+}
+
+// CancelAllForOrg aborts only the in-flight drains started by org (called on
+// cluster switch): a switch cancels the switching org's drains and leaves every
+// other org's running, so one org switching clusters can't leave another org's
+// nodes cordoned mid-drain. In single-tenant every drain carries the same org,
+// so this cancels them all, as CancelAll did.
+func (m *drainSessionManager) CancelAllForOrg(org string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for node, s := range m.sessions {
+		if s.OrgID != org {
+			continue
+		}
+		if !s.isFinished() {
+			s.cancel()
+		}
+		delete(m.sessions, node)
+	}
 }
 
 // Cleanup removes finished sessions older than `keepFor`. Kept

@@ -10,6 +10,8 @@ import {
   ShieldAlert,
   ShieldCheck,
   Sparkles,
+  Unplug,
+  type LucideIcon,
 } from 'lucide-react'
 import { KobiIcon } from '@/components/kobi'
 import { ShiftReportChip, ShiftReportSection, useShiftReport } from '@/components/home/ShiftReportCard'
@@ -22,6 +24,8 @@ import { FleetBreakdown } from '@/components/home/FleetBreakdown'
 import { FirstClusterPanel } from '@/components/onboarding/FirstClusterPanel'
 import { FirstClusterWizard } from '@/components/onboarding/FirstClusterWizard'
 import { useCopilot } from '@/contexts/CopilotContext'
+import { useClusterLabel } from '@/hooks/useClusterLabel'
+import { useOpenInCluster } from '@/hooks/useOpenInCluster'
 import type { ConversationSummary } from '@/services/copilot/types'
 
 // HomePage — the plan-aware landing (design/kubebolt-home-{free,team,…}.html).
@@ -67,8 +71,27 @@ function money(v: number | null): string {
 // lucide Sparkles/Bot pair said "generic AI feature" about the two things that
 // are the product's whole argument.
 function KobiPanel({ conversations }: { conversations: ConversationSummary[] }) {
-  const { openPanel, sendMessage, resumeConversation } = useCopilot()
+  const { openPanel, sendMessage, resumeConversation, resumeInCluster, activeClusterContext } = useCopilot()
+  const clusterLabel = useClusterLabel()
+  const { targetFor, switchTo } = useOpenInCluster()
   const [draft, setDraft] = useState('')
+  // The box asks about the selected cluster; it says which one, so nobody has
+  // to look at the switcher to know (finding #81).
+  const activeName = activeClusterContext ? clusterLabel(activeClusterContext) : ''
+
+  // The list is the person's latest conversations from ANY cluster. One from
+  // another cluster opens there: switch first, then resume — resuming in place
+  // would run the next question against the selected cluster inside a
+  // conversation about another one (finding #81). A cluster no longer
+  // registered cannot be switched to; its transcript opens as it is.
+  const openConversation = async (c: ConversationSummary) => {
+    const target = targetFor(c.clusterId)
+    if (!target) {
+      void resumeConversation(c.id)
+      return
+    }
+    if (await switchTo(target.context)) resumeInCluster(target.context, c.id)
+  }
 
   const submit = () => {
     const q = draft.trim()
@@ -108,14 +131,24 @@ function KobiPanel({ conversations }: { conversations: ConversationSummary[] }) 
               // so opening the panel on whatever session happened to be current
               // is a link that lies. The context already loads a past
               // conversation by id and opens the panel as one action.
-              onClick={() => void resumeConversation(c.id)}
-              title={c.preview || c.title || 'Open this conversation'}
+              onClick={() => void openConversation(c)}
+              title={
+                targetFor(c.clusterId)
+                  ? `Switches to ${clusterLabel(c.clusterId ?? '') || 'its cluster'} and opens it`
+                  : c.preview || c.title || 'Open this conversation'
+              }
               className="w-full text-left flex items-center gap-2.5 py-1.5 hover:bg-kb-card-hover rounded-md px-1 -mx-1 transition-colors group"
             >
               <span className="w-1.5 h-1.5 rounded-full bg-kb-accent opacity-50 shrink-0" />
               <span className="min-w-0 flex-1 text-[12px] text-kb-text-secondary truncate group-hover:text-kb-text-primary transition-colors">
                 {c.title || c.preview || 'Untitled'}
               </span>
+              {/* Which cluster it is about: the list spans all of them. */}
+              {c.clusterId && clusterLabel(c.clusterId) && (
+                <span className="shrink-0 max-w-[110px] truncate text-[10px] font-mono text-kb-text-tertiary">
+                  {clusterLabel(c.clusterId)}
+                </span>
+              )}
               <span className="shrink-0 text-[10px] font-mono text-kb-text-tertiary">
                 {ago(c.updatedAt)}
               </span>
@@ -131,7 +164,7 @@ function KobiPanel({ conversations }: { conversations: ConversationSummary[] }) 
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && submit()}
-          placeholder="Ask Kobi about this cluster…"
+          placeholder={activeName ? `Ask Kobi about ${activeName}…` : 'Ask Kobi…'}
           className="flex-1 bg-transparent border-none outline-none text-xs text-kb-text-primary placeholder:text-kb-text-tertiary"
         />
         <button
@@ -164,12 +197,34 @@ function ago(iso?: string): string {
   return `${Math.floor(secs / 86400)}d`
 }
 
+// Where a row comes from. Shown as a labelled icon at the start of every row,
+// so a mixed list (a cluster down, open findings) reads by kind at a glance.
+type AttentionSource = 'cluster' | 'security'
+
 type AttentionItem = {
   sev: 'crit' | 'warn'
+  source: AttentionSource
   text: string
   hint: string
   where: string
   to: string
+}
+
+// Where each attention row comes from, as a labelled icon in a fixed-width
+// column: the eye sorts the rows by kind before reading any of them.
+const ATTENTION_SOURCE: Record<AttentionSource, { label: string; Icon: LucideIcon }> = {
+  cluster: { label: 'Cluster', Icon: Unplug },
+  security: { label: 'Security', Icon: ShieldAlert },
+}
+
+function SourceLabel({ source }: { source: AttentionSource }) {
+  const { label, Icon } = ATTENTION_SOURCE[source]
+  return (
+    <span className="shrink-0 w-[92px] inline-flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wider text-kb-text-tertiary">
+      <Icon className="w-3.5 h-3.5" aria-hidden />
+      {label}
+    </span>
+  )
 }
 
 // AttentionPanel — the answer to "what needs me?", which is the whole reason
@@ -238,6 +293,7 @@ function AttentionPanel({ items, tone }: { items: AttentionItem[]; tone: HomeTon
                   it.sev === 'crit' ? 'bg-status-error' : 'bg-status-warn'
                 }`}
               />
+              <SourceLabel source={it.source} />
               <span className="min-w-0 flex-1 text-xs text-kb-text-primary truncate">
                 {it.text}{' '}
                 <span className="text-[11px] font-mono text-kb-text-tertiary">— {it.hint}</span>
@@ -573,6 +629,7 @@ export function HomePage() {
     if (c.status === 'error') {
       attention_items.push({
         sev: 'crit',
+        source: 'cluster',
         text: `${name} is unreachable`,
         hint: 'no metrics or findings are arriving from it',
         where: name,
@@ -588,6 +645,7 @@ export function HomePage() {
       // entre «se cayó» e «inventario».
       attention_items.push({
         sev: 'warn',
+        source: 'cluster',
         text: `${name} has no agent connected`,
         hint: 'connect one to get metrics and security findings',
         where: name,
@@ -599,6 +657,7 @@ export function HomePage() {
     } else if (c.clusterId && rollup.byCluster[c.clusterId]?.pods == null) {
       attention_items.push({
         sev: 'warn',
+        source: 'cluster',
         text: `${name} is not reporting metrics`,
         hint: 'the agent is up but no samples are arriving',
         where: name,
@@ -609,6 +668,7 @@ export function HomePage() {
   if (critical > 0) {
     attention_items.push({
       sev: 'crit',
+      source: 'security',
       text: `${critical} critical ${critical === 1 ? 'finding' : 'findings'}`,
       hint: high > 0 ? `and ${high} high` : 'across the fleet',
       where: 'Security',

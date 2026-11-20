@@ -16,6 +16,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/kubectl/pkg/drain"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 )
 
 // Drain — `kubectl drain <node>` made ergonomic and observable.
@@ -123,7 +125,7 @@ func (h *handlers) handleDrain(w http.ResponseWriter, r *http.Request) {
 	// Acquire a fresh session. If one is already in-flight for this
 	// node, we don't want a second drain firing on the same target —
 	// kick the operator to GET to re-attach to the running one.
-	session, drainCtx, fresh := h.drainManager.Start(name, params)
+	session, drainCtx, fresh := h.drainManager.Start(auth.ContextTenantID(r), name, params)
 	if !fresh {
 		respondError(w, http.StatusConflict, fmt.Sprintf("a drain is already in progress on node %q; GET this URL to attach", name))
 		return

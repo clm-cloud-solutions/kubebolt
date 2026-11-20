@@ -18,6 +18,11 @@ func TestClient_MatchesScope(t *testing.T) {
 		{"scoped mismatch cluster", "default", "a", "default", "b", false},
 		{"scoped mismatch tenant", "t1", "a", "t2", "a", false},
 		{"both unscoped", "", "", "", "", true},
+		// Tenant-wide message (tenant set, no cluster): reaches every client of
+		// that tenant whatever cluster they view, but never another tenant's
+		// (cluster.switched).
+		{"tenant-wide → same tenant, any cluster", "default", "a", "default", "", true},
+		{"tenant-wide → other tenant", "t2", "a", "t1", "", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

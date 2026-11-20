@@ -54,7 +54,9 @@ func TestUnlistedSkillsStayOutOfTheIndex(t *testing.T) {
 func TestSkillsStayShort(t *testing.T) {
 	for _, s := range All() {
 		limit := 2000
-		if s.Audience == AudienceKobi {
+		// A connector's procedure travels with the first call to that
+		// connector, in both modes, and is never preloaded either.
+		if s.Audience == AudienceKobi || IsConnectorProcedure(s.Name) {
 			limit = 10000
 		}
 		if len(s.Body) > limit {

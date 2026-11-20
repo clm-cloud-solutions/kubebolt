@@ -144,6 +144,27 @@ func Names() []string {
 	return names
 }
 
+// connectorProcedures maps a cloud connector to its procedure: the skill Kobi
+// receives with its first call to that connector (copilot.WithConnectorSkill).
+// It travels with the call that needs it and is never preloaded.
+var connectorProcedures = map[string]string{"aws": "aws-investigation"}
+
+// ForConnector is the procedure for a connector's tools, by connector id.
+func ForConnector(connectorID string) (string, bool) {
+	name, ok := connectorProcedures[connectorID]
+	return name, ok
+}
+
+// IsConnectorProcedure reports whether a skill is some connector's procedure.
+func IsConnectorProcedure(name string) bool {
+	for _, n := range connectorProcedures {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
 // AudienceKobi is the chat's own skills (frontmatter "audience: kobi").
 const AudienceKobi = "kobi"
 

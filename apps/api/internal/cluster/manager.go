@@ -15,7 +15,6 @@ import (
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
-	"github.com/kubebolt/kubebolt/apps/api/internal/helm"
 	"github.com/kubebolt/kubebolt/apps/api/internal/insights"
 	"github.com/kubebolt/kubebolt/apps/api/internal/metrics"
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
@@ -92,6 +91,10 @@ type Manager struct {
 	// (m.connector/collector/engine/cancelFn); lazy spin-up into this pool
 	// lands in A.3b. nil until first use — reads of a nil map are safe.
 	runtimes map[poolKey]*clusterRuntime
+	// spinFailures remembers each pooled runtime's last failed connect, so the
+	// requests that keep arriving for it do not each start another one
+	// (spin_backoff.go).
+	spinFailures map[poolKey]*spinFailure
 
 	// poolIdleTimeout / poolMaxRuntimes bound the parked-runtime pool (A.3d).
 	// Each pooled runtime keeps live informers (memory + apiserver watches),
@@ -153,6 +156,12 @@ type clusterRuntime struct {
 	// of each launching a connector. nil for the active runtime (built
 	// synchronously under the lock).
 	ready chan struct{}
+	// startedAt is when a pooled runtime's build began, and building the
+	// connector it is building, published once the permission probe is done:
+	// the connect progress reads them without waiting on ready
+	// (prepare_progress.go).
+	startedAt time.Time
+	building  atomic.Pointer[Connector]
 }
 
 // SetInsightStore wires the persistent insights store + tenant scope. The
@@ -425,6 +434,10 @@ func (m *Manager) AddAgentProxyCluster(clusterID, displayName string) (string, e
 	// is already healthy. The retry runs in a goroutine so we don't
 	// hold mu across ~5-20s of cache-sync I/O while every other agent
 	// register and ListClusters call piles up behind it.
+	// The Hello is the signal that the channel is up again: it may retry a
+	// connect the backoff is holding back (spin_backoff.go), on the active
+	// context's retry below as on the always-on spin further down.
+	delete(m.spinFailures, poolKey{tenant: m.tenantID, cluster: contextName})
 	if contextName == m.activeContext && m.connector == nil {
 		go m.retryAgentProxyConnect(contextName, clusterID)
 	}
@@ -1340,6 +1353,9 @@ func (m *Manager) switchCluster(contextName string, onlyIfUnselected bool) error
 	// connect froze every OTHER cluster during a switch. The defer'd Unlock balances the
 	// Lock re-acquired below.
 	m.activeContext = contextName
+	// An explicit switch is a person asking for this cluster now: it is not
+	// held back by the backoff of an earlier failed connect.
+	delete(m.spinFailures, poolKey{tenant: m.tenantID, cluster: contextName})
 	m.mu.Unlock()
 
 	rt := m.getOrSpinPooled(m.tenantID, contextName)
@@ -1717,10 +1733,11 @@ func (m *Manager) ConnErrorFor(ctx context.Context) error {
 	if contextName == m.activeContext {
 		return m.connErr
 	}
-	if rt, ok := m.runtimes[poolKey{tenant: key.Tenant, cluster: contextName}]; ok && rt != nil {
+	pk := poolKey{tenant: key.Tenant, cluster: contextName}
+	if rt, ok := m.runtimes[pk]; ok && rt != nil {
 		return rt.connErr
 	}
-	return nil
+	return m.spinFailureErrLocked(pk, time.Now())
 }
 
 // ActiveAgentProxyClusterIDFor is the per-request replacement for
@@ -1827,21 +1844,39 @@ func (m *Manager) getOrSpinPooled(tenant, contextName string) *clusterRuntime {
 		m.mu.Unlock()
 		return nil
 	}
+	// A connect that just failed is not restarted by every request that
+	// arrives for the cluster: the UI polls every few seconds, and each new
+	// attempt restarts the whole initial LIST through the agent. An agent's
+	// Hello and an explicit switch clear the backoff.
+	if m.spinBackingOffLocked(pk, time.Now()) {
+		m.mu.Unlock()
+		return nil
+	}
 	// Snapshot the mutable bits startRuntime needs, reserve the placeholder.
 	agentProxyCID := m.agentProxyContexts[contextName]
 	insightStore := m.insightStore
 	tenantID := m.tenantID
 	cacheSyncTimeout := m.resolveCacheSyncTimeoutLocked()
 	connectTimeout := m.resolveConnectTimeoutLocked()
-	placeholder := &clusterRuntime{ready: make(chan struct{})}
+	started := time.Now()
+	placeholder := &clusterRuntime{ready: make(chan struct{}), startedAt: started}
 	m.runtimes[pk] = placeholder
 	m.mu.Unlock()
 
 	// Build outside the lock (connector.Start ~20s).
-	built, err := m.startRuntime(access, contextName, agentProxyCID, insightStore, tenantID, cacheSyncTimeout, connectTimeout)
+	built, err := m.startRuntime(access, contextName, agentProxyCID, insightStore, tenantID, cacheSyncTimeout, connectTimeout, placeholder.building.Store)
 	if err != nil {
+		// Every failed attempt is logged: this path used to drop the error, so a
+		// cluster whose always-on runtime never came up left no trace at all.
+		slog.Warn("cluster runtime failed to connect",
+			slog.String("org", tenant),
+			slog.String("context", contextName),
+			slog.Duration("after", time.Since(started).Round(time.Millisecond)),
+			slog.String("error", err.Error()),
+		)
 		m.mu.Lock()
 		delete(m.runtimes, pk) // drop the failed placeholder so a retry rebuilds
+		m.recordSpinFailureLocked(pk, err, time.Now())
 		m.mu.Unlock()
 		placeholder.connErr = err
 		close(placeholder.ready)
@@ -1862,6 +1897,7 @@ func (m *Manager) getOrSpinPooled(tenant, contextName string) *clusterRuntime {
 	// runtime's engine so an insight on this cluster notifies even though it's not
 	// the active one. Re-read the manager hooks under the lock.
 	m.mu.Lock()
+	delete(m.spinFailures, pk)
 	placeholder.connector = built.connector
 	placeholder.collector = built.collector
 	placeholder.engine = built.engine
@@ -2120,7 +2156,7 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 	// prior behavior (the ~20s connector.Start runs under the lock for a
 	// switch). Pooled spins (getOrSpinPooled) call startRuntime OUTSIDE the
 	// lock instead.
-	rt, err := m.startRuntime(access, contextName, m.agentProxyContexts[contextName], m.insightStore, m.tenantID, m.resolveCacheSyncTimeoutLocked(), m.resolveConnectTimeoutLocked())
+	rt, err := m.startRuntime(access, contextName, m.agentProxyContexts[contextName], m.insightStore, m.tenantID, m.resolveCacheSyncTimeoutLocked(), m.resolveConnectTimeoutLocked(), nil)
 	if err != nil {
 		return err
 	}
@@ -2155,8 +2191,9 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 // where no inner deadline applies — that was the ~8-minute spin in the goroutine dump.
 // Bounding the WHOLE connect lets a stuck agent fail fast (cluster shown unreachable)
 // instead of stranding the pool placeholder + starving m.mu readers via writer priority.
-// Set from KUBEBOLT_AGENT_PROXY_CONNECT_TIMEOUT in main.go; 0 = unbounded (not advised).
-var DefaultConnectTimeout = 25 * time.Second
+// Set from KUBEBOLT_AGENT_PROXY_CONNECT_TIMEOUT in main.go, never below the request
+// timeout (config.EffectiveIdleBudgetSeconds); 0 = unbounded (not advised).
+var DefaultConnectTimeout = 60 * time.Second
 
 // connectDeadline is the outer deadline startRuntime races Start() against.
 // It belongs to agent-proxy contexts only. A direct connection (kubeconfig,
@@ -2172,10 +2209,16 @@ func connectDeadline(agentProxyCID string, connectTimeout time.Duration) time.Du
 	return connectTimeout
 }
 
-func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID string, insightStore insights.InsightStore, tenantID string, cacheSyncTimeout, connectTimeout time.Duration) (*clusterRuntime, error) {
+// publish, when not nil, receives the connector as soon as it exists (the
+// permission probe done, the informers not yet started), so the connect's
+// progress can be read while Start runs.
+func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID string, insightStore insights.InsightStore, tenantID string, cacheSyncTimeout, connectTimeout time.Duration, publish func(*Connector)) (*clusterRuntime, error) {
 	connector, err := NewConnectorFromAccess(access, m.wsHub)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to context %s: %w", contextName, err)
+	}
+	if publish != nil {
+		publish(connector)
 	}
 	// Apply the live cache-sync deadline before Start() (default when 0).
 	connector.SetCacheSyncTimeout(cacheSyncTimeout)
@@ -2188,17 +2231,22 @@ func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID
 	// fast so getOrSpinPooled's error path closes the placeholder ready (cluster shown
 	// unreachable) instead of hanging. The buffered chan keeps the Start goroutine from
 	// leaking when we time out — it sends and exits once Start unwinds.
+	//
+	// The deadline is an idle budget: the connect
+	// fails when the cluster sends nothing for `to`, and keeps going while pages
+	// arrive, up to maxConnectDuration. A fixed deadline cut a large cluster
+	// behind a slow tunnel at the same point on every attempt.
 	connectDone := make(chan error, 1)
 	go func() { connectDone <- connector.Start() }()
 	var connectErr error
 	if to := connectDeadline(agentProxyCID, connectTimeout); to > 0 {
-		timer := time.NewTimer(to)
+		budget, stopBudget := progressContext(context.Background(), connector.progress, to, maxConnectDuration)
 		select {
 		case connectErr = <-connectDone:
-			timer.Stop()
-		case <-timer.C:
+			stopBudget()
+		case <-budget.Done():
 			connector.Stop() // best-effort: closes stopCh, unblocks WaitForCacheSync
-			return nil, fmt.Errorf("connect timed out after %s for context %s — agent may be stuck", to, contextName)
+			return nil, fmt.Errorf("connect to context %s stopped: %v — agent may be stuck", contextName, context.Cause(budget))
 		}
 	} else {
 		connectErr = <-connectDone
@@ -2313,13 +2361,12 @@ func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID
 }
 
 func evaluateInsights(connector *Connector, collector *metrics.Collector, engine *insights.Engine) {
-	// Helm releases aren't informer-backed (decoded on demand from storage
-	// Secrets) — fetch them here so the helm-release insight rules can run.
-	// A single label-selected Secret list per tick; cheap and best-effort.
-	var helmReleases []helm.Release
-	if secrets, err := connector.ListHelmReleaseSecrets(context.Background()); err == nil {
-		helmReleases = helm.DecodeReleases(secrets)
-	}
+	// Helm releases come from their storage's metadata; only the releases a
+	// Helm rule reports on (failed, pending-*) are decoded, each the first time
+	// it is seen. Best-effort: a failed read keeps the last decode.
+	helmCtx, helmCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	helmReleases, _ := connector.HelmReleasesWithStatus(helmCtx, insights.HelmStatusNeedsAttention)
+	helmCancel()
 	state := &insights.ClusterState{
 		Pods:            connector.GetPods(),
 		Deployments:     connector.GetDeployments(),

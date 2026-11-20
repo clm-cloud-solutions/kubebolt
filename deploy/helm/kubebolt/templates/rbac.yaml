@@ -61,6 +61,13 @@ rules:
   - apiGroups: ["cilium.io"]
     resources: ["ciliumnetworkpolicies", "ciliumclusterwidenetworkpolicies"]
     verbs: ["get", "list", "watch"]
+  # External Secrets Operator: which key of which external store a Secret is
+  # synced from, and whether the sync works. Read by Kobi to trace a rotated
+  # credential to its source (finding #91). These objects hold references,
+  # never secret values. Harmless when the operator is not installed.
+  - apiGroups: ["external-secrets.io"]
+    resources: ["externalsecrets", "secretstores", "clustersecretstores"]
+    verbs: ["get", "list", "watch"]
   # Security & Compliance scanner CRDs (E2 A2). The findings sweep LISTs these
   # cluster-wide every 10 min to build the Security dashboard. Same optional-CRD
   # stance as above — harmless when the scanner isn't installed. WITHOUT these
