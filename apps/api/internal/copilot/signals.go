@@ -141,8 +141,8 @@ const (
 
 // ToolResultNotSent is the status the chat shows for a call KubeBolt refused
 // before it reached anything: a connector command off its allowlist, or one
-// past the per-turn connector budget. Display only; the metrics keep
-// classifying those results from their shape.
+// past the per-turn connector budget. The metrics count it under its own
+// result too (MetricToolResult).
 const ToolResultNotSent = "not_sent"
 
 // ClassifyToolResult names the kind of a tool result from its shape. The

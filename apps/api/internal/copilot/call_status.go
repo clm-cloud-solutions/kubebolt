@@ -23,6 +23,22 @@ const (
 	ToolResultRateLimited = "rate_limited"
 )
 
+// MetricToolResult is the result a call counts under in the tool metrics:
+// ClassifyToolResult's class, except for a call that reached nothing —
+// refused by KubeBolt before the provider (not_sent) or held back by the
+// org's rate limit (rate_limited). Counted as errors they read as a failing
+// connector: one burst of refused calls looked like a credential or a role
+// gone wrong, when neither had anything to do with it.
+func MetricToolResult(r ToolResult, class string, budgetRefused bool) string {
+	switch {
+	case budgetRefused, r.NotSent:
+		return ToolResultNotSent
+	case r.RateLimited:
+		return ToolResultRateLimited
+	}
+	return class
+}
+
 // rateLimitedReason is the line a card shows under a rate-limited call.
 const rateLimitedReason = "cloud call limit reached for this minute"
 

@@ -55,3 +55,29 @@ func TestErrorReasonIsBounded(t *testing.T) {
 		t.Errorf("reason has %d runes: %q", n, got)
 	}
 }
+
+// Found live: a burst of refused calls counted as `error` in the tool metrics
+// and fired the platform's «connector failing» alert. A call that reached
+// nothing counts under its own result; everything else keeps its class.
+func TestMetricToolResult(t *testing.T) {
+	refused := ToolResult{Content: "Refused: ec2.describeinstances is blocked on this KubeBolt installation by its administrators.", IsError: true, NotSent: true}
+	limited := ToolResult{Content: "Rate limited, try again later: this organization made too many external tool calls in the last minute.", IsError: true, RateLimited: true}
+	failed := ToolResult{Content: `{"error":"the connection was reset"}`, IsError: true}
+	budget := MCPBudgetExhaustedResult(ToolCall{ID: "t1", Name: "mcp__aws__call"})
+	for _, c := range []struct {
+		name   string
+		r      ToolResult
+		budget bool
+		want   string
+	}{
+		{"refused before the provider", refused, false, ToolResultNotSent},
+		{"past the turn's budget", budget, true, ToolResultNotSent},
+		{"held back by the rate limit", limited, false, ToolResultRateLimited},
+		{"sent and failed", failed, false, ToolResultError},
+		{"answered", ToolResult{Content: `{"items":[1]}`}, false, ToolResultOK},
+	} {
+		if got := MetricToolResult(c.r, ClassifyToolResult(c.r), c.budget); got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+	}
+}

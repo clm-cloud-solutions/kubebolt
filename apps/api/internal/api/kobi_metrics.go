@@ -68,7 +68,7 @@ func NewKobiMetrics(reg prometheus.Registerer) *KobiMetrics {
 		}, []string{"tenant_id", "cluster_id", "kind"}),
 		toolResults: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "kubebolt_kobi_copilot_tool_results_total",
-			Help: "Kobi Copilot tool calls by source (kubebolt, mcp:<connector>) and result (ok, empty, not_found, denied, timeout, error).",
+			Help: "Kobi Copilot tool calls by source (kubebolt, mcp:<connector>) and result (ok, empty, not_found, denied, timeout, error; not_sent and rate_limited for a connector call that reached nothing).",
 		}, []string{"tenant_id", "cluster_id", "source", "result"}),
 
 		toolCalls: prometheus.NewCounterVec(prometheus.CounterOpts{
