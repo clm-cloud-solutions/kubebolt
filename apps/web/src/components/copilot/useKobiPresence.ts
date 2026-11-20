@@ -105,8 +105,8 @@ export function kobiPresenceOf(
 }
 
 export function useKobiPresence(): KobiPresence {
-  const { messages, isLoading, pendingToolCalls, turnWaitUntil } = useCopilot()
-  const waiting = turnWaitUntil != null
+  const { messages, isLoading, pendingToolCalls, turnWait } = useCopilot()
+  const waiting = turnWait != null
   return useMemo(
     () => kobiPresenceOf(messages, isLoading, pendingToolCalls, waiting),
     [messages, isLoading, pendingToolCalls, waiting],

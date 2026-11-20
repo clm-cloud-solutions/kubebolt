@@ -6,7 +6,7 @@ import { CloudProviderIcon } from '@/components/shared/CloudProviderIcon'
 import { MCP_CONNECTORS_KEY } from '@/components/admin/mcp/ConnectorBits'
 import { connectorShortName } from '@/utils/toolName'
 import type { McpConnector } from '@/services/api'
-import type { CopilotToolCall, CopilotToolResult } from '@/services/copilot/types'
+import type { CopilotToolCall, CopilotToolResult, TurnQueue } from '@/services/copilot/types'
 import { CLOUD_TOKENS } from './ToolCallCard'
 import { WAITING_FOR_SLOT } from './useKobiPresence'
 import {
@@ -183,20 +183,30 @@ export function GuideLine({
   )
 }
 
+// waitReason says whose limit keeps the question in line: the person's own
+// (they can free it) or the organization's.
+export function waitReason(wait: TurnQueue): string {
+  const n = wait.max
+  const questions = `${n} question${n === 1 ? '' : 's'}`
+  return wait.limit === 'person'
+    ? `You already have ${questions} running, the most one person can have at once.`
+    : `Kobi is answering ${questions} for your organization, the most it answers at once.`
+}
+
 // InvestigationStrip sits above the input while a question runs: how long,
 // how many reads, and a badge for each cloud the question has read, which
 // says "now" and pulses while a call to it is in flight. Stop lives here.
-// While the question waits for a free slot (waitUntil, busyRetry.ts), it says
-// so with the seconds left, or that it asked again and waits in line, under
-// Watching's dot, and Stop becomes Cancel.
+// While the question waits in line for a free turn (wait, the stream's
+// "queued" event), it says so, whose limit is full and how long the wait can
+// last, under Watching's dot, and Stop becomes Cancel.
 export function InvestigationStrip({
   live,
   onStop,
-  waitUntil,
+  wait,
 }: {
   live?: LiveInvestigation
   onStop: () => void
-  waitUntil?: number | null
+  wait?: TurnQueue | null
 }) {
   const [, setTick] = useState(0)
   useEffect(() => {
@@ -210,9 +220,8 @@ export function InvestigationStrip({
         ...live.byCloud.map(([id, n]) => `${n} in ${connectorShortName(id)}`),
       ].join(' · ')
     : ''
-  if (waitUntil != null) {
-    // Counting down to the next ask, or asked again and still in line.
-    const left = Math.ceil((waitUntil - Date.now()) / 1000)
+  if (wait) {
+    const left = Math.max(0, Math.ceil((wait.until - Date.now()) / 1000))
     return (
       <div
         role="status"
@@ -225,12 +234,10 @@ export function InvestigationStrip({
           <span className="flex items-baseline gap-2">
             <span className="font-medium text-kobi-text">{WAITING_FOR_SLOT}</span>
             <span className="font-mono text-[11.5px] tabular-nums text-kobi-text-secondary">
-              {left > 0 ? `asking again in ${left} s` : 'asked again, waiting in line'}
+              {left > 0 ? `in line · up to ${left} s` : 'in line'}
             </span>
           </span>
-          <span className="text-[11px] text-kobi-text-tertiary">
-            Kobi is answering as many questions as your plan allows at once.
-          </span>
+          <span className="text-[11px] text-kobi-text-tertiary">{waitReason(wait)}</span>
         </span>
         <button
           type="button"
