@@ -224,6 +224,19 @@ groups:
             The model stopped with a refusal in the last hour. The very first
             refusal of a process is counted from the second one on.
 
+      - alert: KobiKeepsAskingForWhatItMayNotDo
+        expr: sum by (connector) (increase(kubebolt_kobi_mcp_refusals_total[1h])) >= 5
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Kobi keeps asking the {{ $labels.connector }} connector for what it may not do'
+          description: >-
+            The MCP gateway refused at least 5 external tool calls in the last
+            hour before they reached the provider: tools Kobi's set does not
+            list, or input the connector refuses. Repeated attempts are the
+            shape of a prompt injection; each call is on the access trail
+            (mcp_tool_call).
+
       - alert: KobiAnswersCut
         expr: |
           (

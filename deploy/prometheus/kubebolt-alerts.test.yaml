@@ -223,3 +223,21 @@ tests:
         summary: Users rate Kobi's answers poorly
         description: More than 20% of the ratings users gave Kobi's answers over the last 24 hours were 👎 (at least 20 ratings). Administration › AI › Health splits them by reason; each 👎's comment stays
           with its conversation.
+- name: 'refused MCP calls: at least 5 in an hour (possible prompt injection)'
+  interval: 1m
+  input_series:
+  - series: kubebolt_kobi_mcp_refusals_total{tenant_id="", consumer="kobi", connector="aws", reason="tool_not_allowed", instance="api:8080", job="kubebolt"}
+    values: 0+1x60
+  alert_rule_test:
+  - eval_time: 3m
+    alertname: KobiKeepsAskingForWhatItMayNotDo
+    exp_alerts: []
+  - eval_time: 20m
+    alertname: KobiKeepsAskingForWhatItMayNotDo
+    exp_alerts:
+    - exp_labels:
+        connector: aws
+        severity: warning
+      exp_annotations:
+        summary: Kobi keeps asking the aws connector for what it may not do
+        description: 'The MCP gateway refused at least 5 external tool calls in the last hour before they reached the provider: tools Kobi''s set does not list, or input the connector refuses. Repeated attempts are the shape of a prompt injection; each call is on the access trail (mcp_tool_call).'

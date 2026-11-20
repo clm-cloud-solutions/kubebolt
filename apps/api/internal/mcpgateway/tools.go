@@ -156,6 +156,7 @@ type callRecord struct {
 	truncated bool
 	redacted  int
 	extra     map[string]any // the binding's CallResult.Audit
+	refusal   string         // refusalToolNotAllowed / refusalInput, "" otherwise
 }
 
 // Call runs one external tool call for the org in ctx. It never panics and
@@ -281,6 +282,9 @@ func (g *Gateway) Call(ctx context.Context, consumer mcpcatalog.Consumer, name s
 	rec.result, rec.reason = resultOK, ""
 	if res.IsError {
 		rec.result, rec.reason = resultToolError, "the tool returned an error"
+		if res.Own {
+			rec.refusal = refusalInput
+		}
 	}
 	// Own is the binding's refusal, written before anything reached the
 	// provider.
@@ -307,6 +311,7 @@ func invoke(ctx context.Context, e *entry, consumer mcpcatalog.Consumer, local s
 // tool results carry no error flag, so the sentence itself says it.
 func (g *Gateway) deny(rec *callRecord, name string) copilot.ToolResult {
 	rec.result, rec.reason = resultDenied, "tool not allowed"
+	rec.refusal = refusalToolNotAllowed
 	res := errResult(fmt.Sprintf("Tool not allowed: %q is not available to this assistant in this organization. Do not call it again.", cutRunes(name, 96, "…")))
 	res.NotSent = true
 	return res
@@ -374,6 +379,11 @@ func (g *Gateway) finishCall(ctx context.Context, rec *callRecord, took time.Dur
 		metricTool = "unlisted"
 	}
 	g.m.observe(metricConnector, metricTool, rec.result, took.Seconds(), rec.bytes, rec.called)
+	tenant := rec.org
+	if !auth.MultiTenantEnabled {
+		tenant = ""
+	}
+	g.m.refused(tenant, string(rec.consumer), metricConnector, rec.refusal)
 
 	if !audit.Enabled() {
 		return

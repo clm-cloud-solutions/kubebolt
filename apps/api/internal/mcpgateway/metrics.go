@@ -14,7 +14,18 @@ type metrics struct {
 	calls    *prometheus.CounterVec
 	duration *prometheus.HistogramVec
 	bytes    *prometheus.HistogramVec
+	refusals *prometheus.CounterVec
 }
+
+// Why the gateway refused a call before anything reached the provider.
+const (
+	// refusalToolNotAllowed: the model asked for a tool the org's current set
+	// does not list — invented, disabled, paused, above the caller's role.
+	refusalToolNotAllowed = "tool_not_allowed"
+	// refusalInput: the connector refused the arguments itself (a denied
+	// command, a value outside its allowlist) before calling the provider.
+	refusalInput = "input_refused"
+)
 
 func newMetrics(reg prometheus.Registerer, log *slog.Logger) *metrics {
 	m := &metrics{
@@ -33,10 +44,20 @@ func newMetrics(reg prometheus.Registerer, log *slog.Logger) *metrics {
 			Help:    "Size of external MCP tool responses before redaction and truncation, by connector.",
 			Buckets: prometheus.ExponentialBuckets(256, 4, 8), // 256 B … 4 MiB
 		}, []string{"connector"}),
+		// Per org, because the question is «whose assistant keeps asking for
+		// what it may not do» — the shape of a prompt injection. Under the
+		// kubebolt_kobi_ prefix: server-owned and reserved, so it never counts
+		// against the org's active series. The tenant is empty in a
+		// single-tenant install.
+		refusals: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "kubebolt_kobi_mcp_refusals_total",
+			Help: "External MCP tool calls the gateway refused before reaching the provider, by org, consumer (kobi, autopilot), connector and reason (tool_not_allowed, input_refused).",
+		}, []string{"tenant_id", "consumer", "connector", "reason"}),
 	}
 	if reg != nil {
 		m.calls = registerOrReuse(reg, m.calls, log)
 		m.duration = registerOrReuse(reg, m.duration, log)
+		m.refusals = registerOrReuse(reg, m.refusals, log)
 		m.bytes = registerOrReuse(reg, m.bytes, log)
 	}
 	return m
@@ -58,6 +79,14 @@ func registerOrReuse[T prometheus.Collector](reg prometheus.Registerer, c T, log
 	}
 	log.Warn("mcp gateway: metric not registered", slog.String("error", err.Error()))
 	return c
+}
+
+// refused counts one refusal; reason "" counts nothing.
+func (m *metrics) refused(tenant, consumer, connector, reason string) {
+	if reason == "" {
+		return
+	}
+	m.refusals.WithLabelValues(tenant, consumer, connector, reason).Inc()
 }
 
 func (m *metrics) observe(connector, tool, result string, seconds float64, bytes int, called bool) {
