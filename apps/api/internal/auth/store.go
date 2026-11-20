@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -700,6 +701,17 @@ type SettingStore interface {
 // Compile-time guarantee the Bolt impl satisfies the seam.
 var _ SettingStore = (*Store)(nil)
 
+// ErrSettingNotFound is what GetSetting returns (errors.Is) when the key has
+// no value. A caller that must fail closed — the blocked operations — tells
+// "nothing set" from "could not read" with it.
+var ErrSettingNotFound = errors.New("setting not found")
+
+// settingNotFound keeps the message every caller already logs.
+type settingNotFound struct{ key string }
+
+func (e settingNotFound) Error() string        { return fmt.Sprintf("setting %q not found", e.key) }
+func (e settingNotFound) Is(target error) bool { return target == ErrSettingNotFound }
+
 // OrgSettingStore is the seam for PER-ORG UI settings blobs (Copilot today;
 // general/notifications later). Unlike SettingStore (global install settings:
 // jwt_secret etc.), these are tenant-scoped: each org configures its own. The
@@ -763,7 +775,7 @@ func (s *Store) GetSetting(key string) ([]byte, error) {
 	err := s.db.View(func(tx *bolt.Tx) error {
 		v := tx.Bucket(settingsBucket).Get([]byte(key))
 		if v == nil {
-			return fmt.Errorf("setting %q not found", key)
+			return settingNotFound{key: key}
 		}
 		val = make([]byte, len(v))
 		copy(val, v)

@@ -240,6 +240,15 @@ type Env struct {
 	AWSPrincipalARN string
 }
 
+// OperationNamer is implemented by bindings whose tools run more than one
+// operation (the AWS `call`, the Azure routers). It names the operation a call
+// targets the way the blocked list (debt-09) names it, lowercased, without
+// contacting anything; "" when the arguments name none it would accept, and
+// the gateway then uses the tool's name.
+type OperationNamer interface {
+	OperationOf(tool string, args json.RawMessage) string
+}
+
 // ConfigValidator is implemented by binders that can check what the generic
 // schema cannot — that a pasted credential document is a kind this install
 // accepts, for instance. It never contacts the network. The gateway calls it

@@ -338,6 +338,21 @@ type azureEnvelope struct {
 	Parameters map[string]json.RawMessage `json:"parameters"`
 }
 
+// OperationOf names a router call by its command, lowercased: the form the
+// platform's blocked list uses for Azure (debt-09).
+func (b *azureBinding) OperationOf(tool string, args json.RawMessage) string {
+	var in map[string]json.RawMessage
+	if json.Unmarshal(args, &in) != nil {
+		return ""
+	}
+	cmd, _ := azureString(in["command"])
+	cmd = strings.ToLower(strings.TrimSpace(cmd))
+	if cmd == "" || azureSafeName(cmd) != cmd {
+		return ""
+	}
+	return cmd
+}
+
 func (b *azureBinding) callRouter(ctx context.Context, consumer Consumer, t *azureTool, in map[string]json.RawMessage) (CallResult, error) {
 	audit := map[string]any{"namespace": t.namespace}
 
