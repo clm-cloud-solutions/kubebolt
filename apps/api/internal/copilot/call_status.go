@@ -17,9 +17,9 @@ const (
 	// ToolResultUnsupported: the tool does not cover the kind it was asked
 	// for. Not a failure of anything.
 	ToolResultUnsupported = "unsupported"
-	// ToolResultRateLimited: the gateway held the call back because the
-	// organization spent its connector calls for the minute (the plan's rate
-	// limit). Nothing failed; the answer lacks that read.
+	// ToolResultRateLimited: the gateway held the call back at the
+	// organization's pace of connector calls (so many a minute, a quarter of
+	// them at once). Nothing failed; the answer lacks that read.
 	ToolResultRateLimited = "rate_limited"
 )
 
@@ -39,8 +39,14 @@ func MetricToolResult(r ToolResult, class string, budgetRefused bool) string {
 	return class
 }
 
-// rateLimitedReason is the line a card shows under a rate-limited call.
-const rateLimitedReason = "cloud call limit reached for this minute"
+// rateLimitedReason is the line a card shows under a rate-limited call the
+// gateway did not word itself (it names the pace: so many a minute, so many
+// at once).
+const rateLimitedReason = "cloud call limit reached"
+
+// kubeBoltNoteMark opens a line KubeBolt writes for the model inside a tool
+// result (mcpgateway's notePrefix).
+const kubeBoltNoteMark = "[KubeBolt] "
 
 // reasonMax bounds the one line a card shows for a call that did not read.
 const reasonMax = 140
@@ -58,6 +64,9 @@ func CallStatus(r ToolResult, class string, budgetRefused bool) (status, reason 
 	case r.NotSent:
 		return ToolResultNotSent, errorReason(r.Content)
 	case r.RateLimited:
+		if r.Reason != "" {
+			return ToolResultRateLimited, r.Reason
+		}
 		return ToolResultRateLimited, rateLimitedReason
 	case agentOffline(r.Content):
 		return ToolResultAgentOffline, ""
@@ -114,12 +123,15 @@ var (
 
 // errorReason is the first sentence of a failed call's error: the "error"
 // field of a JSON result, or the provider's own text inside the gateway's
-// wrapper. AWS errors read as "AccessDenied for kms:DescribeKey".
+// wrapper. AWS errors read as "AccessDenied for kms:DescribeKey". The mark
+// the gateway puts on KubeBolt's own lines for the model ("[KubeBolt] ") is
+// not part of the reason: found live as "Not sent — [KubeBolt] Refused: …".
 func errorReason(content string) string {
 	text := strings.TrimSpace(content)
 	if m := externalWrapperRE.FindStringSubmatch(text); m != nil {
 		text = strings.TrimSpace(m[1])
 	}
+	text = strings.TrimPrefix(text, kubeBoltNoteMark)
 	var obj map[string]any
 	if json.Unmarshal([]byte(text), &obj) == nil {
 		if msg, ok := obj["error"].(string); ok {

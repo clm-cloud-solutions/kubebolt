@@ -1044,7 +1044,6 @@ func (g *Gateway) liveBinding(org, id string, cfg settings.ResolvedConnector) *e
 	return e
 }
 
-// allowCall spends one token of the org's call budget.
 // callLimiter is one (org, consumer) bucket and the per-minute rate it was
 // built for: a plan change rebuilds it.
 type callLimiter struct {
@@ -1068,27 +1067,33 @@ func (g *Gateway) ratePerMin(org string, consumer mcpcatalog.Consumer) int {
 	return g.o.OrgRatePerMin
 }
 
-// allowCall spends one call of the (org, consumer) bucket. Kobi and
-// Autopilot draw from separate buckets: the chat never holds back a
-// remediation, and a remediation loop never silences the chat.
-func (g *Gateway) allowCall(org string, consumer mcpcatalog.Consumer) bool {
-	perMin := g.ratePerMin(org, consumer)
+// CallBurst is how many of a minute's connector calls may go out at once: a
+// quarter, at least one. Enough for a burst of parallel reads, not for
+// draining the minute in a second against a provider that throttles per
+// account; past it, calls are paced evenly over the minute. A held-back
+// call names both numbers.
+func CallBurst(perMin int) int {
+	if b := perMin / 4; b > 1 {
+		return b
+	}
+	return 1
+}
+
+// allowCall spends one call of the (org, consumer) bucket and returns the
+// bucket's budget per minute. Kobi and Autopilot draw from separate buckets:
+// the chat never holds back a remediation, and a remediation loop never
+// silences the chat.
+func (g *Gateway) allowCall(org string, consumer mcpcatalog.Consumer) (perMin int, ok bool) {
+	perMin = g.ratePerMin(org, consumer)
 	key := org + "\x00" + string(consumer)
 	g.mu.Lock()
 	lim := g.limiters[key]
 	if lim == nil || lim.perMin != perMin {
-		// A quarter of the minute's budget may be spent at once: enough for
-		// a burst of parallel reads, not for draining the minute in a
-		// second against a provider that throttles per account.
-		burst := perMin / 4
-		if burst < 1 {
-			burst = 1
-		}
-		lim = &callLimiter{Limiter: rate.NewLimiter(rate.Limit(float64(perMin)/60), burst), perMin: perMin}
+		lim = &callLimiter{Limiter: rate.NewLimiter(rate.Limit(float64(perMin)/60), CallBurst(perMin)), perMin: perMin}
 		g.limiters[key] = lim
 	}
 	g.mu.Unlock()
-	return lim.AllowN(g.now(), 1)
+	return perMin, lim.AllowN(g.now(), 1)
 }
 
 // allowTest paces connectivity tests per (org, connector): the point is not

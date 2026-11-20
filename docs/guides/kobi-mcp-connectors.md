@@ -40,8 +40,10 @@ It is enforced in layers, not promised:
   connector, tool, operation or command, duration, result; never arguments
   or responses) in the action history, `GET /api/v1/admin/actions?class=access`.
 
-Limits: 12 cloud calls per question, 120 per minute for the whole install,
-4 at a time per connector, 30 s per call (`KUBEBOLT_MCP_TOOL_TIMEOUT`).
+Limits: 12 cloud calls per question, 120 per minute for the whole install (a
+quarter of them may go out at once, the rest are spread over the minute; a
+call held back says both numbers), 4 at a time per connector, 30 s per call
+(`KUBEBOLT_MCP_TOOL_TIMEOUT`).
 
 ## Who can use a connector
 

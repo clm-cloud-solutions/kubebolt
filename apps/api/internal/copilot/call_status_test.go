@@ -20,9 +20,16 @@ func TestCallStatus(t *testing.T) {
 		{"refused by the connector's allowlist",
 			ToolResult{IsError: true, NotSent: true, Content: "Refused: the operation s3.PutObject is not read-only.\n" + notSentNote},
 			false, ToolResultNotSent, "Refused: the operation s3.PutObject is not read-only"},
-		{"held back by the organization's connector rate limit",
-			ToolResult{IsError: true, RateLimited: true, Content: "Rate limited, try again later: this organization made too many external tool calls in the last minute."},
-			false, ToolResultRateLimited, "cloud call limit reached for this minute"},
+		{"a binding's own refusal, as the gateway marks it for the model",
+			ToolResult{IsError: true, NotSent: true, Content: "[KubeBolt] Refused: TerminateInstances is not a read operation; this connector only reads."},
+			false, ToolResultNotSent, "Refused: TerminateInstances is not a read operation; this connector only reads"},
+		{"held back at the organization's pace, which the gateway names",
+			ToolResult{IsError: true, RateLimited: true, Reason: "cloud call limit: 120/min, 30 at once",
+				Content: "Rate limited: this organization's cloud calls are held to 120 a minute, at most 30 at once. Wait a few seconds before the next call, or continue without it."},
+			false, ToolResultRateLimited, "cloud call limit: 120/min, 30 at once"},
+		{"held back, with no pace named",
+			ToolResult{IsError: true, RateLimited: true, Content: "Rate limited."},
+			false, ToolResultRateLimited, "cloud call limit reached"},
 		{"the agent is not connected",
 			ToolResult{IsError: true, Content: `{"error":"` + AgentOfflineError + `","agentConnected":false}`},
 			false, ToolResultAgentOffline, ""},
@@ -61,7 +68,7 @@ func TestErrorReasonIsBounded(t *testing.T) {
 // nothing counts under its own result; everything else keeps its class.
 func TestMetricToolResult(t *testing.T) {
 	refused := ToolResult{Content: "Refused: ec2.describeinstances is blocked on this KubeBolt installation by its administrators.", IsError: true, NotSent: true}
-	limited := ToolResult{Content: "Rate limited, try again later: this organization made too many external tool calls in the last minute.", IsError: true, RateLimited: true}
+	limited := ToolResult{Content: "Rate limited: this organization's cloud calls are held to 120 a minute, at most 30 at once. Wait a few seconds before the next call, or continue without it.", IsError: true, RateLimited: true}
 	failed := ToolResult{Content: `{"error":"the connection was reset"}`, IsError: true}
 	budget := MCPBudgetExhaustedResult(ToolCall{ID: "t1", Name: "mcp__aws__call"})
 	for _, c := range []struct {

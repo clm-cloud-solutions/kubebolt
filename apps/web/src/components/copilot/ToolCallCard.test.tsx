@@ -165,8 +165,8 @@ describe('ToolCallCard — how the call ended', () => {
   })
 
   it('shows a call the rate limit held back in amber, as not read rather than failed', () => {
-    expect(failureLine('rate_limited', "cloud call limit reached for this minute", 1)).toEqual({
-      text: "Not read — cloud call limit reached for this minute",
+    expect(failureLine('rate_limited', "cloud call limit: 120/min, 30 at once", 1)).toEqual({
+      text: "Not read — cloud call limit: 120/min, 30 at once",
       color: 'text-kobi-st-warn',
     })
     expect(couldNotRead({ toolCallId: 'x', content: '', status: 'rate_limited', isError: true })).toBe(true)

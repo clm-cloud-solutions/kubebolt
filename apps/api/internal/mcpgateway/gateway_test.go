@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"golang.org/x/oauth2"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/audit"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
@@ -355,7 +356,7 @@ func TestCallRateLimitIsPerOrg(t *testing.T) {
 		t.Fatalf("first call: %+v", res)
 	}
 	res := h.gw.Call(a, mcpcatalog.ConsumerKobi, "mcp__fake__get_thing", nil)
-	if !res.IsError || !strings.Contains(res.Content, "Rate limited, try again later") {
+	if !res.IsError || !strings.Contains(res.Content, "held to 4 a minute, at most 1 at once") {
 		t.Fatalf("second call: %+v", res)
 	}
 	// The chat shows it as held back, not as a failure (copilot.CallStatus).
@@ -380,6 +381,133 @@ func TestCallRateLimitIsPerOrg(t *testing.T) {
 	}
 	if limited != 1 {
 		t.Fatalf("rate-limited audits = %d", limited)
+	}
+}
+
+// Found live: 31 parallel reads against a budget of 120 a minute held the
+// 31st back as "limit reached for this minute", with 89 calls of the minute
+// left. A quarter goes out at once; the refusal names both numbers.
+func TestCallRateLimitNamesTheBurst(t *testing.T) {
+	h := newHarness(t, func(o *Options) { o.OrgRatePerMin = 120 })
+	ctx := orgCtx("org-a")
+	h.enable(ctx, regionFieldA)
+	for i := 0; i < CallBurst(120); i++ {
+		if res := h.gw.Call(ctx, mcpcatalog.ConsumerKobi, "mcp__fake__get_thing", nil); res.IsError {
+			t.Fatalf("call %d of the burst: %+v", i+1, res)
+		}
+	}
+	res := h.gw.Call(ctx, mcpcatalog.ConsumerKobi, "mcp__fake__get_thing", nil)
+	if !res.RateLimited || !strings.Contains(res.Content, "held to 120 a minute, at most 30 at once") {
+		t.Fatalf("the call past the burst: %+v", res)
+	}
+	if res.Reason != "cloud call limit: 120/min, 30 at once" {
+		t.Fatalf("card reason = %q", res.Reason)
+	}
+	// Paced, not spent: one more goes out half a second later.
+	h.clock.Advance(500 * time.Millisecond)
+	if res := h.gw.Call(ctx, mcpcatalog.ConsumerKobi, "mcp__fake__get_thing", nil); res.IsError {
+		t.Fatalf("half a second later: %+v", res)
+	}
+}
+
+func TestCallBurst(t *testing.T) {
+	for perMin, want := range map[int]int{1: 1, 4: 1, 7: 1, 8: 2, 60: 15, 120: 30} {
+		if got := CallBurst(perMin); got != want {
+			t.Errorf("CallBurst(%d) = %d, want %d", perMin, got, want)
+		}
+	}
+}
+
+// Found live: a call that reached AWS and failed left an audit row with no
+// operation; only a blocked call named it. What the binding said about the
+// call is kept on a failure, and a call the binding never saw is named by the
+// gateway.
+func TestCallAuditNamesTheOperationOfACallThatFailed(t *testing.T) {
+	h := newHarness(t, func(o *Options) { o.OrgRatePerMin = 4 })
+	ctx := orgCtx("org-a")
+	h.enable(ctx, regionFieldA)
+	h.fb.set(func(f *fakeBinder) {
+		f.call = func(context.Context, *fakeBinding, mcpcatalog.Consumer, string, json.RawMessage) (mcpcatalog.CallResult, error) {
+			return mcpcatalog.CallResult{Audit: map[string]any{"operation": "DescribeThings"}}, errors.New("sign request: retrieve credentials: refused")
+		}
+	})
+	if res := h.gw.Call(ctx, mcpcatalog.ConsumerKobi, "mcp__fake__get_thing", nil); !res.IsError {
+		t.Fatalf("the failing call: %+v", res)
+	}
+	// The second is held back by the pace (4 a minute, 1 at once): the
+	// binding never sees it.
+	if res := h.gw.Call(ctx, mcpcatalog.ConsumerKobi, "mcp__fake__get_thing", nil); !res.RateLimited {
+		t.Fatalf("the second call: %+v", res)
+	}
+	got := map[string]any{}
+	for _, r := range h.records("org-a") {
+		got[r.Params["result"].(string)] = r.Params["operation"]
+	}
+	if got[resultError] != "DescribeThings" || got[resultRateLimited] != "get_thing" {
+		t.Fatalf("operation by result = %v", got)
+	}
+}
+
+// stsRefusal stands for the AWS SDK's errors around a refused AssumeRole
+// (smithy's OperationError over an APIError), by the methods the gateway
+// reads; mcpclient's tests hold the real SDK to the same methods.
+type stsRefusal struct{}
+
+func (stsRefusal) Error() string {
+	return "operation error STS: AssumeRole, https response error StatusCode: 403, RequestID: r-2, api error AccessDenied: User: arn:aws:iam::123456789012:user/kb is not authorized to perform: sts:AssumeRole on resource: arn:aws:iam::123456789012:role/missing"
+}
+func (stsRefusal) Service() string   { return "STS" }
+func (stsRefusal) Operation() string { return "AssumeRole" }
+func (stsRefusal) ErrorCode() string { return "AccessDenied" }
+
+// Found live: a role KubeBolt may not assume showed the card "Denied — quest:
+// sigv4: retrieve credentials: failed to refresh cached credentials,
+// operation error STS: AssumeRole, ht…". The model and the card now get
+// KubeBolt's sentence with what refused; the SDK's text stays in the log.
+func TestCallCredentialsFailureIsWorded(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := orgCtx("org-a")
+	h.enable(ctx, regionFieldA)
+	h.fb.set(func(f *fakeBinder) {
+		f.call = func(context.Context, *fakeBinding, mcpcatalog.Consumer, string, json.RawMessage) (mcpcatalog.CallResult, error) {
+			err := &mcpclient.CredentialsError{Err: fmt.Errorf("sigv4: retrieve credentials: failed to refresh cached credentials, %w", stsRefusal{})}
+			return mcpcatalog.CallResult{}, fmt.Errorf("mcpclient: tools/call: sign request: %w", err)
+		}
+	})
+	res := h.gw.Call(ctx, mcpcatalog.ConsumerKobi, "mcp__fake__get_thing", nil)
+	want := "STS AssumeRole refused KubeBolt (AccessDenied). KubeBolt could not get credentials for the Fake Cloud connector. Do not retry; tell the user an administrator should check the Fake Cloud connector in Settings."
+	if res.Content != want || !res.IsError || res.NotSent {
+		t.Fatalf("result = %+v\nwant content %q", res, want)
+	}
+	// What refused comes first: a card shows one line.
+	status, reason := copilot.CallStatus(res, copilot.ClassifyToolResult(res), false)
+	if status != copilot.ToolResultDenied || reason != "STS AssumeRole refused KubeBolt (AccessDenied)" {
+		t.Fatalf("card = (%q, %q)", status, reason)
+	}
+	if r := h.records("org-a")[0]; r.Params["result"] != resultUnauthorized {
+		t.Fatalf("audit result = %v", r.Params["result"])
+	}
+
+	// No SDK detail at all (a missing identity): the sentence alone.
+	h.fb.set(func(f *fakeBinder) {
+		f.call = func(context.Context, *fakeBinding, mcpcatalog.Consumer, string, json.RawMessage) (mcpcatalog.CallResult, error) {
+			return mcpcatalog.CallResult{}, &mcpclient.CredentialsError{Err: errors.New("sigv4: no credentials provider")}
+		}
+	})
+	res = h.gw.Call(ctx, mcpcatalog.ConsumerKobi, "mcp__fake__get_thing", nil)
+	if !strings.HasPrefix(res.Content, "KubeBolt could not get credentials for the Fake Cloud connector. Do not retry") {
+		t.Fatalf("result = %q", res.Content)
+	}
+
+	// Google's token endpoint names its refusal (a deleted key: invalid_grant).
+	h.fb.set(func(f *fakeBinder) {
+		f.call = func(context.Context, *fakeBinding, mcpcatalog.Consumer, string, json.RawMessage) (mcpcatalog.CallResult, error) {
+			return mcpcatalog.CallResult{}, &mcpclient.CredentialsError{Err: fmt.Errorf("google: get token: %w", &oauth2.RetrieveError{ErrorCode: "invalid_grant", ErrorDescription: "Invalid JWT Signature."})}
+		}
+	})
+	res = h.gw.Call(ctx, mcpcatalog.ConsumerKobi, "mcp__fake__get_thing", nil)
+	if !strings.HasPrefix(res.Content, "Fake Cloud refused KubeBolt's credentials (invalid_grant). Do not retry") {
+		t.Fatalf("result = %q", res.Content)
 	}
 }
 

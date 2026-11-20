@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/oauth2"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/audit"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
@@ -156,6 +158,7 @@ type callRecord struct {
 	truncated bool
 	redacted  int
 	extra     map[string]any // the binding's CallResult.Audit
+	operation string         // operationOf, once the tool is listed: the audit's fallback name
 	refusal   string         // refusalToolNotAllowed / refusalInput, "" otherwise
 }
 
@@ -235,11 +238,9 @@ func (g *Gateway) Call(ctx context.Context, consumer mcpcatalog.Consumer, name s
 		return res
 	}
 
-	if !g.allowCall(rec.org, consumer) {
+	if perMin, ok := g.allowCall(rec.org, consumer); !ok {
 		rec.result, rec.reason = resultRateLimited, "rate limited"
-		res := errResult("Rate limited, try again later: this organization made too many external tool calls in the last minute.")
-		res.RateLimited = true
-		return res
+		return rateLimitedResult(perMin)
 	}
 
 	callCtx, cancel := context.WithTimeout(ctx, g.o.CallTimeout)
@@ -258,6 +259,9 @@ func (g *Gateway) Call(ctx context.Context, consumer mcpcatalog.Consumer, name s
 	}
 	rec.called = true
 	res, err := invoke(callCtx, e, consumer, local, args)
+	// What the binding says about the call is kept on a failure too: a call
+	// that reached the provider and failed is the one the trail has to name.
+	rec.extra = res.Audit
 
 	if err != nil {
 		if errors.Is(err, mcpclient.ErrUnauthorized) {
@@ -283,7 +287,7 @@ func (g *Gateway) Call(ctx context.Context, consumer mcpcatalog.Consumer, name s
 	} else {
 		text, truncated, redactions = finishOutput(def.ID, local, res.Text, res.Notes...)
 	}
-	rec.bytes, rec.truncated, rec.redacted, rec.extra = len(res.Text), truncated, redactions, res.Audit
+	rec.bytes, rec.truncated, rec.redacted = len(res.Text), truncated, redactions
 	rec.result, rec.reason = resultOK, ""
 	if res.IsError {
 		rec.result, rec.reason = resultToolError, "the tool returned an error"
@@ -322,6 +326,19 @@ func (g *Gateway) deny(rec *callRecord, name string) copilot.ToolResult {
 	return res
 }
 
+// rateLimitedResult is a call the organization's pace held back. The model
+// and the card get the same two numbers: a burst over the quarter is held
+// back long before the minute's budget is spent, and "limit reached for this
+// minute" read as a limit nobody had reached.
+func rateLimitedResult(perMin int) copilot.ToolResult {
+	burst := CallBurst(perMin)
+	res := errResult(fmt.Sprintf("Rate limited: this organization's cloud calls are held to %d a minute, at most %d at once. Wait a few seconds before the next call, or continue without it.", perMin, burst))
+	res.RateLimited = true
+	// Short enough for one line of a card in the docked panel.
+	res.Reason = fmt.Sprintf("cloud call limit: %d/min, %d at once", perMin, burst)
+	return res
+}
+
 func errResult(content string) copilot.ToolResult {
 	return copilot.ToolResult{Content: content, IsError: true}
 }
@@ -352,6 +369,13 @@ func (g *Gateway) callError(def *mcpcatalog.ConnectorDef, local string, err erro
 	switch {
 	case errors.Is(err, errBindingPanic):
 		return "The external tool failed inside KubeBolt. Continue without it.", resultError
+	case errors.Is(err, mcpclient.ErrCredentials):
+		// The SDK's own text (ARNs, request ids, "failed to refresh cached
+		// credentials, operation error STS…") reached the card as the reason
+		// of a denied read. The log keeps it; the model and the card get
+		// what refused, by its code, in a first sentence short enough for
+		// one line of a card.
+		return credentialsRefusal(def.Name, err), resultUnauthorized
 	case errors.Is(err, mcpclient.ErrUnauthorized):
 		return fmt.Sprintf("%s rejected KubeBolt's credentials for this connector. Do not retry; tell the user an administrator should check the %s connector in Settings.", def.Name, def.Name), resultUnauthorized
 	case errors.Is(err, mcpclient.ErrRateLimited):
@@ -372,6 +396,50 @@ func (g *Gateway) callError(def *mcpcatalog.ConnectorDef, local string, err erro
 	}
 	detail, _, _ := finishOutput(def.ID, local, cutRunes(err.Error(), 1024, "…"))
 	return fmt.Sprintf("The %s call failed:\n%s", def.Name, detail), resultError
+}
+
+// sdkCode is the token an SDK's code or operation name must be to be shown.
+var sdkCode = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._-]{0,63}$`)
+
+// credentialsRefusal is the result of a call KubeBolt could not sign: what
+// refused first ("STS AssumeRole refused KubeBolt (AccessDenied)"), then what
+// the model should do. Never the SDK's message.
+func credentialsRefusal(name string, err error) string {
+	const next = "Do not retry; tell the user an administrator should check the %s connector in Settings."
+	op, code := credentialsDetail(err)
+	switch {
+	case op != "" && code != "":
+		return fmt.Sprintf("%s refused KubeBolt (%s). KubeBolt could not get credentials for the %s connector. "+next, op, code, name, name)
+	case code != "":
+		return fmt.Sprintf("%s refused KubeBolt's credentials (%s). "+next, name, code, name)
+	}
+	return fmt.Sprintf("KubeBolt could not get credentials for the %s connector. "+next, name, name)
+}
+
+// credentialsDetail names what refused KubeBolt's credentials: the operation
+// and the code from the AWS SDK's error types, matched by their methods
+// (smithy's OperationError and APIError) so the gateway imports no AWS SDK
+// ("STS AssumeRole", "AccessDenied"); the code Google's token endpoint gave
+// ("invalid_grant"). Empty when the error names nothing, as for a missing
+// identity.
+func credentialsDetail(err error) (op, code string) {
+	var (
+		coded interface{ ErrorCode() string }
+		named interface {
+			Service() string
+			Operation() string
+		}
+		token *oauth2.RetrieveError
+	)
+	if errors.As(err, &named) && sdkCode.MatchString(named.Service()) && sdkCode.MatchString(named.Operation()) {
+		op = named.Service() + " " + named.Operation()
+	}
+	if errors.As(err, &coded) && sdkCode.MatchString(coded.ErrorCode()) {
+		code = coded.ErrorCode()
+	} else if errors.As(err, &token) && sdkCode.MatchString(token.ErrorCode) {
+		code = token.ErrorCode
+	}
+	return op, code
 }
 
 // finishCall records the call in the audit trail and the metrics.
@@ -396,6 +464,12 @@ func (g *Gateway) finishCall(ctx context.Context, rec *callRecord, took time.Dur
 	params := make(map[string]any, len(rec.extra)+7)
 	for k, v := range rec.extra {
 		params[k] = v
+	}
+	// A call the binding said nothing about (held back by the rate limit,
+	// blocked, or a binding that failed before naming it) is named by the
+	// gateway, in the form the blocked list uses.
+	if _, named := params["operation"]; !named && rec.operation != "" {
+		params["operation"] = rec.operation
 	}
 	// Set after the binding's entries so they cannot be overridden.
 	params["connector"] = rec.connector
