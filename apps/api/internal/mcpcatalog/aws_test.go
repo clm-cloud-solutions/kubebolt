@@ -356,7 +356,7 @@ func TestAWSAutopilotIsASubsetOfKobi(t *testing.T) {
 	}
 	kobiOnly := [][2]string{
 		{"ce", "GetCostAndUsage"}, {"compute-optimizer", "GetEC2InstanceRecommendations"}, {"pricing", "GetProducts"},
-		{"support", "DescribeTrustedAdvisorChecks"}, {"secretsmanager", "DescribeSecret"}, {"ssm", "DescribeParameters"},
+		{"support", "DescribeTrustedAdvisorChecks"}, {"secretsmanager", "ListSecrets"}, {"ssm", "DescribeParameters"},
 		{"s3", "ListBuckets"}, {"xray", "GetTraceSummaries"}, {"iam", "SimulatePrincipalPolicy"},
 	}
 	for _, op := range kobiOnly {
@@ -479,7 +479,7 @@ func TestAWSSessionPoliciesFitSTSAndMatchTheAllowlist(t *testing.T) {
 			t.Errorf("autopilot action %s not granted to kobi", a)
 		}
 	}
-	for _, a := range []string{"ce:GetCostAndUsage", "secretsmanager:DescribeSecret", "ssm:DescribeParameters", "s3:ListBucket", "iam:SimulatePrincipalPolicy", "xray:GetTraceSummaries", "pricing:GetProducts"} {
+	for _, a := range []string{"ce:GetCostAndUsage", "secretsmanager:ListSecrets", "ssm:DescribeParameters", "s3:ListBucket", "iam:SimulatePrincipalPolicy", "xray:GetTraceSummaries", "pricing:GetProducts"} {
 		if awsIAMCoveredBy(actions[ConsumerAutopilot], a) {
 			t.Errorf("autopilot session grants the Kobi-only %s", a)
 		}
@@ -722,8 +722,12 @@ func TestAWSToolSpecs(t *testing.T) {
 		t.Logf("%s call description: %d characters", c, len(call.Description))
 	}
 	auto := awsToolSpecs(ConsumerAutopilot, "us-east-2")[0]
-	if strings.Contains(auto.Description, "Cost and right-sizing") || strings.Contains(auto.Description, "secretsmanager") {
-		t.Error("autopilot's call description lists Kobi-only services")
+	if strings.Contains(auto.Description, "Cost and right-sizing") || strings.Contains(auto.Description, "ListSecrets") ||
+		strings.Contains(auto.Description, "DescribeParameters") {
+		t.Error("autopilot's call description lists Kobi-only operations")
+	}
+	if !strings.Contains(auto.Description, "secretsmanager") {
+		t.Error("autopilot's call description leaves out the secret metadata it may read (finding #86)")
 	}
 }
 
@@ -1057,5 +1061,23 @@ func TestAWSRefusesARoleInKubeBoltsOwnAccount(t *testing.T) {
 	}
 	if err := v.ValidateConfig(awsModeAmbient, map[string]string{"roleArn": own, "region": "us-east-2"}, nil, Env{AmbientAllowed: true, AWSPrincipalARN: own}); err != nil {
 		t.Errorf("ambient mode: %v", err)
+	}
+}
+
+// Finding #86: a rotated secret broke a workload's database login and Autopilot
+// could not read when it rotated. It reads one secret's dates, never the list
+// of the account's secrets, and never a value.
+func TestAWSAutopilotReadsASecretsDatesNotItsValue(t *testing.T) {
+	for _, op := range []string{"DescribeSecret", "ListSecretVersionIds"} {
+		if _, err := awsCheck(ConsumerAutopilot, "secretsmanager", op); err != nil {
+			t.Errorf("autopilot secretsmanager.%s: %v", op, err)
+		}
+	}
+	for _, c := range []Consumer{ConsumerKobi, ConsumerAutopilot} {
+		for _, op := range []string{"GetSecretValue", "BatchGetSecretValue"} {
+			if _, err := awsCheck(c, "secretsmanager", op); err == nil {
+				t.Errorf("%s may call secretsmanager.%s", c, op)
+			}
+		}
 	}
 }

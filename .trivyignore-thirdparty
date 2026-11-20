@@ -65,5 +65,20 @@
 # ServiceAccount token, so neither the musl regcomp overflow nor the zlib gz_vacate
 # overflow is reachable in its use. Move the pin to the reviewed 4.0.0 image and
 # delete both entries.
-CVE-2026-107891  # 2026-11-09 lmaina — azure-mcp 3.0.0-beta.46 Alpine musl; see note above. Remove-by 2026-11-23
-CVE-2026-85091   # 2026-11-09 lmaina — azure-mcp 3.0.0-beta.46 Alpine zlib; see note above. Remove-by 2026-11-23
+#
+# 2026-11-11: closed. The pin moved to the reviewed azure-mcp 4.0.0-beta.6 (Alpine
+# 3.24.3): 0 CRITICAL/HIGH with the Trivy DB of 2026-11-10, and both entries are
+# removed. The 4.0 review found the 47 allowlisted commands under the same names,
+# with typed options (read from the server's own schema). Advisor now takes a
+# list of subscriptions and a service group: the list is pinned to the configured
+# subscription and a service group is refused (azurePinned).
+
+# 2026-11-19: victoria-metrics and vmagent v1.156.0-scratch (built on Go 1.27.3)
+# carry CVE-2026-97054 (net/http: an HTTP/1 server reads past MaxBytesReader's
+# limit), HIGH, fixed in Go 1.26.11 / 1.27.4. v1.156.0 (2026-11-09) is the latest
+# VictoriaMetrics release; none is built on a fixed Go yet. Our own binaries move
+# to Go 1.26.11 in the same change, so `.trivyignore` stays empty. VictoriaMetrics
+# runs as a ClusterIP Service that only the API calls, and vmagent pushes to it
+# from the cluster: neither is reachable from outside. Move both pins to the
+# first VictoriaMetrics release on Go >= 1.27.4 and delete this entry.
+CVE-2026-97054  # 2026-11-19 lmaina — Go stdlib (net/http) in victoria-metrics/vmagent v1.156.0-scratch; no fixed vendor release yet. Remove-by 2026-12-03

@@ -127,6 +127,8 @@ On connect, the manager probes permissions, starts the permitted informers
 and waits for them to sync. The metrics collector polls metrics-server every
 30 s; the agent, remote_write and promread fill VictoriaMetrics. The insights
 engine evaluates its rules on each cycle and records episode transitions;
-notifications fire on new insights (and, if enabled, on resolved ones). The REST API serves lists
-and details from the caches with metrics injected, the WebSocket tells the
-browser what changed, and TanStack Query refetches only what it needs.
+notifications fire on new insights (and, if enabled, on resolved ones), and a
+burst of them from one cluster goes out as one summary instead of one message
+each. The REST API serves lists and details from the caches with metrics
+injected, the WebSocket tells the browser what changed, and TanStack Query
+refetches only what it needs.

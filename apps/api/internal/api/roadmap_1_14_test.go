@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -24,7 +25,7 @@ func TestHandleListActions_EndToEnd(t *testing.T) {
 		ID: "2", Timestamp: time.Now(), Source: "ui",
 		Action: "restart_workload", TargetType: "deployments", TargetName: "web", Result: "success",
 	})
-	SetAuditStore(store, func() string { return "cluster-1" })
+	SetAuditStore(store, func(context.Context) string { return "cluster-1" })
 	t.Cleanup(func() { SetAuditStore(nil, nil) })
 
 	h := &handlers{}

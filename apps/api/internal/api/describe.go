@@ -101,7 +101,7 @@ func (h *handlers) getResourceDescribe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	restConfig := conn.RestConfig()
-	describer, found := describe.DescriberFor(gk, restConfig)
+	describer, found := cluster.DescriberFor(gk, restConfig)
 	if !found {
 		// No built-in describer (dynamic CRDs like cert-manager / ArgoCD /
 		// VPA / Cilium policies). Fall back to kubectl's generic describer via
@@ -117,7 +117,7 @@ func (h *handlers) getResourceDescribe(w http.ResponseWriter, r *http.Request) {
 				GroupVersionKind: gvr.GroupVersion().WithKind(gk.Kind),
 				Scope:            scope,
 			}
-			describer, found = describe.GenericDescriberFor(mapping, restConfig)
+			describer, found = cluster.GenericDescriberFor(mapping, restConfig)
 		}
 	}
 	if !found {

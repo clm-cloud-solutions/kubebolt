@@ -301,3 +301,12 @@ func (h *handlers) kobiConnectorTools(ctx context.Context) []copilot.ToolDefinit
 	}
 	return defs
 }
+
+// kobiConnectorsOutOfReach is the org's ready connectors whose Kobi role floor
+// is above the caller's role, for the session notes. Nil with connectors off.
+func (h *handlers) kobiConnectorsOutOfReach(ctx context.Context) []copilot.ConnectorOutOfReach {
+	if h.mcpGateway == nil {
+		return nil
+	}
+	return h.mcpGateway.ConnectorsOutOfReach(ctx)
+}

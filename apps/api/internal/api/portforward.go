@@ -261,6 +261,23 @@ func (m *PortForwardManager) List() []*PortForward {
 	return result
 }
 
+// ListForOrg returns only the forwards created by org, so one org never sees
+// another org's tunnels in its indicator and a switched-away org's own teardown
+// is never masked by survivors still shown. In single-tenant every forward
+// carries the same org, so this returns them all, as List did.
+func (m *PortForwardManager) ListForOrg(org string) []*PortForward {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make([]*PortForward, 0, len(m.forwards))
+	for _, pf := range m.forwards {
+		if pf.OrgID != org {
+			continue
+		}
+		result = append(result, pf)
+	}
+	return result
+}
+
 // Stop stops a port-forward by ID.
 func (m *PortForwardManager) Stop(id string) bool {
 	m.mu.Lock()
@@ -290,6 +307,26 @@ func (m *PortForwardManager) StopAll() {
 		log.Printf("Port-forward stopped (cluster switch): %s", id)
 	}
 	m.forwards = make(map[string]*PortForward)
+}
+
+// StopAllForOrg stops only the forwards created by org (called on cluster
+// switch): a switch tears down the switching org's forwards and leaves every
+// other org's running. In single-tenant every forward carries the same org, so
+// this stops them all, as StopAll did.
+func (m *PortForwardManager) StopAllForOrg(org string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, pf := range m.forwards {
+		if pf.OrgID != org {
+			continue
+		}
+		close(pf.stopCh)
+		if pf.endAudit != nil {
+			pf.endAudit("cluster switch", nil)
+		}
+		delete(m.forwards, id)
+		log.Printf("Port-forward stopped (cluster switch): %s", id)
+	}
 }
 
 // getFreePort asks the OS for a free port.
@@ -331,7 +368,7 @@ func (h *handlers) handleCreatePortForward(w http.ResponseWriter, r *http.Reques
 	// whatever the pod serves became reachable from the operator's machine. The
 	// tunnelled bytes are never recorded — only that the tunnel existed, to
 	// where, and for how long.
-	actor := actorFromRequest(r)
+	actor := actorFromRequest(r).withCluster(conn.ClusterUID())
 	pf, err := h.pfManager.Start(conn, body.Namespace, body.Pod, body.Container, body.RemotePort,
 		func(pf *PortForward) func(string, map[string]any) {
 			return auditAccessSession(actor, "port_forward", "pods", pf.Namespace, pf.Pod,
@@ -368,7 +405,7 @@ func (h *handlers) handleCreatePortForward(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *handlers) handleListPortForwards(w http.ResponseWriter, r *http.Request) {
-	respondJSON(w, http.StatusOK, h.pfManager.List())
+	respondJSON(w, http.StatusOK, h.pfManager.ListForOrg(auth.ContextTenantID(r)))
 }
 
 func (h *handlers) handleDeletePortForward(w http.ResponseWriter, r *http.Request) {

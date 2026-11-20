@@ -6,6 +6,354 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.6.7] — 2026-11-19
+
+A slow agent tunnel connects, and the terminal and the audit trail say what
+happened. A fix release: no migration; the agent stays on 1.4.9. Full note:
+[docs/releases/v2.6.7.md](docs/releases/v2.6.7.md).
+
+### Fixed
+
+- **The terminal says why a cluster refused it.** On a cluster whose agent
+  runs in reader mode (the default), opening a terminal printed "agent-proxy
+  SPDY: expected 101 Switching Protocols, got 403": the tunnel dropped the API
+  server's answer. It now carries the API server's Status, like client-go
+  does, and the terminal says that reader mode only reads and
+  `rbac.mode=operator` opens a terminal (on a kubeconfig cluster: that its
+  credentials may not exec).
+- **A terminal the cluster refuses is not audited as opened.** The session's
+  open record was written when the browser connected, before the exec stream
+  was negotiated, so a refused exec read as a successful session. The open is
+  now written when the stream runs; a refused stream leaves one open record
+  with `result: error` and the cluster's reason.
+- **The audit trail names the cluster a change was made on.** Cluster
+  mutations and the cluster-scoped administration routes stamped every record
+  with the cluster resolved from a background context, the install's default,
+  rather than the one the request acted on. The resolver now receives the
+  request's context; a mute records the cluster it silences, an unmute records
+  none, and an access record the handler could not tie to a cluster no longer
+  falls back to the default one.
+- **A connect through an agent is no longer cut while a page is on its way.**
+  The connect deadline counts from the last response, and one proxied request
+  may take the whole request timeout (30s), but the deadline defaulted to 25s:
+  a large cluster behind a slow tunnel failed its first connect. The default
+  is now 60s, and the connect deadline and the stuck-agent watchdog are never
+  applied below the request timeout + 5s, whatever is configured. The API
+  logs a raised value and Settings › Agents & Ingest says what runs.
+
+## [2.6.6] — 2026-11-19
+
+Agent metrics survive a VictoriaMetrics restart, Kobi reads a connector's
+first call by its own answer, and the Azure MCP Server sidecar moves to 4.0.
+A fix release: no migration; the agent stays on 1.4.9. Full note:
+[docs/releases/v2.6.6.md](docs/releases/v2.6.6.md).
+
+### Fixed
+
+- **A VictoriaMetrics restart no longer leaves a gap in agent metrics.** A
+  batch the API fails to write for a passing reason (connection error,
+  timeout, 5xx, 429) is held encoded, up to 64 MiB, oldest dropped first,
+  and written again oldest first once VictoriaMetrics answers, with the
+  samples' own timestamps (`agent/ingest_spool.go`, `SpoolingWriter`).
+- **A connector's first call is read by its own answer.** The procedure
+  Kobi puts in front of a connector's first answer made a failed first AWS
+  call read as `not_found`, with the procedure's header as its reason
+  (`WithoutConnectorSkill`).
+- **A cluster whose events KubeBolt cannot list says so.** `GET /events`
+  answers 403, the Events page shows *Access Restricted*, and Kobi gets a
+  permission error. Before, the API returned a 500 and Kobi's tool hit a
+  recovered panic.
+
+### Changed
+
+- **Kobi's `lastWrites` note treats a field manager name as a claim.** Any
+  client can write with any manager name, so `kubebolt-autopilot` is no
+  longer presented as proof that Autopilot made the write.
+
+### Security
+
+- **Azure MCP Server sidecar 4.0.0-beta.6** (chart and compose, by digest).
+  The 3.0 line's Alpine image carried two HIGH CVEs (musl, zlib), and both
+  waivers are removed from `.trivyignore-thirdparty`. If you pinned the
+  sidecar image yourself, move it to 4.0.0-beta.6 with this release.
+- **Go 1.26.11** for CVE-2026-97054 (net/http, an HTTP/1 server could read
+  past `MaxBytesReader`'s limit; HIGH): the API, the single image and the
+  krew/Homebrew binaries. VictoriaMetrics v1.156.0 carries it too, and no
+  VictoriaMetrics release is built on a fixed Go yet: it is waived in
+  `.trivyignore-thirdparty` until 2026-12-03. The bundled VictoriaMetrics
+  runs as a ClusterIP Service that only the API calls.
+
+## [2.6.5] — 2026-11-18
+
+A large cluster connects behind a slow agent tunnel, Helm's release history
+stays in the cluster until a view needs it, and the wait while a cluster
+loads says how far it is. A fix release: drop-in, no migration; the agent
+stays on 1.4.9. Full note: [docs/releases/v2.6.5.md](docs/releases/v2.6.5.md).
+
+### Fixed
+
+- **Helm's release history no longer crosses the agent tunnel at every
+  connect and again every minute**. Helm keeps every revision
+  of every release as a Secret holding the whole release (chart, values,
+  rendered manifests). The Secrets cache downloaded all of them at connect,
+  and the insight tick (every cluster, parked ones included) and the
+  Overview/Applications cache listed them again, payload included, every
+  minute. The Secrets cache now leaves Helm's storage out; lists and counts
+  read its metadata, once a minute; a release's payload is read when
+  something needs it — its latest revision, once, for the Applications list
+  or for an insight about a failed or stuck release — and the detail view
+  reads only that release. The Secrets list, a storage Secret's detail and
+  the Overview's counts still show them. On a lab cluster with 10 releases,
+  Secrets went from 7.1 MiB to 12 KiB per minute through the agent tunnel
+  with the Overview open, and a loaded Applications list answers in under a
+  millisecond (it took ~140 ms).
+- **A Helm release's History tab spaces its columns.** Revision, status,
+  chart and date ran into each other, and a long description (a failed
+  upgrade's error) squeezed them further; the table now follows the
+  Applications list's layout and wraps the description.
+- **An agent short of memory says so, with the command that fixes it.** When
+  a KubeBolt agent pod is OOMKilled or stays near its memory limit, the
+  *OOMKilled* and *Memory Near Limit* insights give the `helm upgrade` that
+  raises its limit (twice the current one, at least 256Mi; the promread
+  pod's own values key; pinned to the chart version it runs) instead of the
+  generic advice. The agent chart's default limits rise to 256Mi / 500m and
+  the agent caps one relayed response at a quarter of its memory limit,
+  answering with an error past it instead of being OOMKilled (agent
+  changelog, next agent release). The Advanced setup's resource hints say
+  the same.
+- **Documentation links open kubebolt.io.** The integration catalog, Cost,
+  Reliability and the add-cluster wizard linked guides in the GitHub
+  repository; they now open the published docs (agent, Trivy, Kyverno,
+  Falco, OpenCost, the Reliability tab). Reliability's link also pointed at
+  an anchor the chart README does not have. The Prometheus remote_write
+  cards and Ingest activity keep the repository guide until the site carries
+  its `prometheus.yml` snippets, `retry_on_http_429`, limits and
+  self-metrics queries.
+- **A wizard's agent token stops working if no agent uses it within a week,
+  and *Advanced setup* has a way back.** The onboarding and the add-cluster
+  wizard issue a token on every attempt and none expired: each abandoned
+  attempt left an ingest credential that worked until someone revoked it. A
+  token those wizards hand over to copy now stops working after 7 days unless
+  an agent uses it first; once one has, it keeps working. The wizards say
+  until when, and Agents › Tokens shows it (*if unused, in 7d*). A token the
+  API writes straight into the connected cluster's Secret (install,
+  configure) has no such window. *Advanced setup* opened from the onboarding
+  reuses the token the onboarding issued instead of issuing a second one,
+  keeps the name, and has *Back to the simple setup*. The issue-token
+  endpoint also honours the `ttlSeconds` it declared and ignored. Agents ›
+  Tokens read a future expiry as "just now"; it now reads "in 6d".
+- **A failed connect is not restarted by every request.** While a cluster's
+  connect kept failing, every request for it (the UI polls every few
+  seconds) started another full connect, each one restarting the initial LIST
+  through the agent: hundreds of MB in minutes without ever connecting. After
+  a failed attempt, requests now wait 30 s, then 1, 2 and 4 minutes, at most
+  5, and are told why (`… (next attempt in 40s)`). An agent's Hello and an
+  explicit switch to the cluster still try at once.
+- **A large cluster behind a slow agent tunnel connects.** The connect and
+  cache-sync timeouts were fixed deadlines, so a cluster whose objects take
+  longer than that to arrive failed at the same point on every attempt while
+  pages were still arriving. Both are now budgets of silence: a connect fails
+  when nothing arrives from the cluster for that long (a successful response
+  that is not a watch) and carries on while pages arrive, up to 10 minutes. A
+  stuck agent still fails at the same point. Every failed attempt to start a
+  cluster's background runtime is logged (`cluster runtime failed to
+  connect`, with the reason); that path used to drop the error.
+- **The wait while a cluster loads says how far it is, instead of a
+  spinner.** While KubeBolt loads a cluster's
+  cache — its first connect, after KubeBolt restarts, or after the connection
+  was lost — its pages show what is happening and why the wait is worth it,
+  the steps (agents, access, loading, first health check), a bar weighted by
+  the objects that have arrived (the API server's `remainingItemCount`),
+  the types loaded, the data received and its rate, the elapsed time, an
+  Activity log, and the cluster's CPU and memory, which the agents ship
+  before the cache has synced. Nothing about what the API serves changes:
+  the cluster's views still open together when it is ready. New read-only
+  `GET /clusters/progress`, which never starts or waits for a connect. A
+  switch to a cluster KubeBolt already holds stays instant, without the
+  card; the menu no longer shows the previous cluster's counts during a
+  switch, and the state pill says *Connecting* instead of *Disconnected*.
+- **A failed namespace LIST no longer scopes a cluster to guessed
+  namespaces.** When a type was denied cluster-wide, the permission probe
+  listed namespaces to look for namespace-level access, and on any error it
+  fell back to `default`, `kube-system` and `kube-public` in silence. Through
+  a slow agent tunnel the LIST could time out, and a large cluster connected
+  with some types served from two namespaces: lists that looked complete and
+  were not. The LIST is now retried; if it keeps failing those types stay
+  without access (the views say so and the limited-access banner counts
+  them). The common namespaces are tried only when the ServiceAccount may not
+  list namespaces at all (403). The log names the types instead of counting
+  them.
+
+## [2.6.4] — 2026-11-18
+
+A large cluster connects through its agent, and a burst of insights is one
+notification. A fix release: drop-in, no migration; the agent stays on 1.4.9.
+Full note: [docs/releases/v2.6.4.md](docs/releases/v2.6.4.md).
+
+### Fixed
+
+- **Namespaces on a large cluster.** The Overview's *Workloads by namespace*
+  drew every namespace at once (131 on a test cluster) and pushed the rest of
+  the page down: it now shows the first 12, the ones that need attention
+  first, and *Show all* for the rest (saying how many hidden ones need
+  attention). The Namespaces page asked for the list without a page, got the
+  API's first 50 and had no way to the others while saying "50 total": it now
+  pages 50 at a time like every other list, counts them all and filters by
+  name.
+- **A burst of insights is one notification, not hundreds.** When a cluster
+  opens 5 or more insights within 60 seconds (its first evaluation, a
+  reconnect after its episodes expired, a node failure), Slack, Discord and
+  instant email get one summary once the cluster has been quiet for 30
+  seconds (5 minutes at most, then a partial "still going" summary): the
+  count by severity, every critical named (up to 10), every rule with its
+  count and most affected namespaces. The first insights, sent before the
+  burst was clear, are counted and marked. Below the threshold every insight
+  is still sent at once. An hourly or daily digest with more than 20
+  insights is summarised the same way. Summaries cannot be turned off; the
+  thresholds come from `KUBEBOLT_NOTIFICATIONS_BURST_*` and
+  `KUBEBOLT_NOTIFICATIONS_DIGEST_LIST_LIMIT` and can be moved, within fixed
+  ranges, in Settings › Notifications › *Summaries*. The Notifications page
+  is laid out by what each setting does: what is sent on the left, where it
+  goes on the right.
+- **The initial informer LIST is paginated.** The same `resourceVersion=0` made
+  a large cluster's first LIST arrive as one body, too big for the agent's
+  memory and for the tunnel's per-request timeout. It now arrives 500 objects
+  at a time.
+- **The informer cache audit no longer downloads every list.** It asked for one
+  item with `resourceVersion=0`, which the API server answers from its watch
+  cache while ignoring the limit, so every 5 minutes it pulled the full Pod,
+  Deployment and ReplicaSet lists, through the agent on an agent-connected
+  cluster: on a large cluster, enough to exhaust the agent's memory. It now
+  reads the count from `remainingItemCount`, a few KB per type.
+- **A cluster switch no longer tears down more than it should.** Switching
+  clusters stopped every active port-forward and cancelled every in-flight
+  drain; it now scopes that teardown (and the switch notification) to the caller
+  itself, so another organization's forwards, drains and sockets are left alone.
+  A switch to the cluster that is already active is now a no-op, so returning to
+  a cluster view no longer closes the port-forwards you have open on it.
+  Single-tenant installs are unaffected.
+- **The active port-forward list is scoped to the caller.** `GET /portforward`
+  returned every organization's forwards; it now returns only the caller's own,
+  so one organization's indicator never shows another's tunnels. Single-tenant
+  installs are unaffected.
+- **Access-audit records carry the cluster the access reached.** Terminal,
+  port-forward and pod file-read records stamped the install's default cluster
+  rather than the one the access actually touched; they now record the resolved
+  cluster.
+- **Saving a secret store from the YAML editor keeps its inline credential.**
+  The viewer hides a store's inline credentials, and the save wrote the
+  placeholder back over them. A hidden value left as shown now keeps the
+  stored one, as with Secrets; one edited while still hidden is refused,
+  naming the field.
+
+### Security
+
+- The Helm release view shows a release's values and rendered manifest the way
+  the YAML viewer shows the objects themselves: Secret values hidden, and
+  credentials in the values hidden by name and shape.
+- The pod file browser requires the Editor role, like the terminal.
+- The audit trail and the API log no longer keep the values of environment
+  variables changed with set-env, only their names and sources. Older records
+  are cleaned at startup.
+- Runtime events are filtered for credentials when stored and when read.
+- An Argo CD Application's Helm values, parameters and plugin environment are
+  hidden in the YAML view, in describe and to Kobi.
+- Describe hides the ConfigMap values the YAML view hides.
+
+## [2.6.3] — 2026-11-16
+
+Kobi traces a rotated credential to its source through External Secrets, and
+Home answers for the cluster it names. A fix release: drop-in, no migration;
+the agent stays on 1.4.9. Full note:
+[docs/releases/v2.6.3.md](docs/releases/v2.6.3.md).
+
+### Fixed
+
+- **Kobi can trace a rotated credential through External Secrets** (finding
+  #91). Kobi could not read ExternalSecrets or their secret stores, so a Secret
+  synced from a cloud store could not be traced to its remote key, and Kobi had
+  to guess the secret's name. `get_resource_yaml` now reads them (v1, or v1beta1
+  on older operators):
+  - the remote key;
+  - the store's provider and region;
+  - whether the last sync worked, and when it last refreshed.
+
+  These objects hold references only, and a store's inline credentials are
+  hidden. Requires the chart's new read-only RBAC rule for
+  `external-secrets.io`.
+- **A credential error is no longer answered with a restart that changes
+  nothing** (finding #86). Kobi had no procedure for a login that starts
+  failing at a point in time, so a credential the cluster never received could
+  be read as stale pods. The `credential-errors` procedure tells three causes
+  apart:
+  - pods holding a stale credential: a restart fixes it;
+  - a cluster that never received the new one: a restart changes nothing, and
+    the procedure points at the sync, including one that has stopped while
+    still reporting Ready;
+  - a source and a database that disagree.
+
+  It names the change at its source: with the AWS connector, when the secret
+  rotated and who rotated it, never its value.
+
+- **A dependency behind an ExternalName Service is classified where it leads**
+  (finding #88). The flows name such a dependency by the Service it was dialed
+  through, so `get_external_connections` called it in-cluster and told Kobi not
+  to use a cloud connector for it. An RDS database behind `shop-data/shop-db`
+  was read that way. The chain is now followed to where it leaves the cluster,
+  and the answer also names the cluster's own provider.
+
+- **Home's links answer for the cluster they name** (finding #81). Home is a
+  global page, but parts of it still answered for the selected cluster:
+  - In «While you were away», an episode from another cluster now switches to
+    that cluster before opening. *See all bursts* and *open full history* show
+    every cluster over the report's own window, which is what the report
+    counted.
+  - Kobi's card names each conversation's cluster. One from another cluster
+    opens there instead of continuing against the selected one. The ask box
+    names the cluster it will ask about.
+
+- **A silenced insight no longer counts on Home and Fleet** (finding #80).
+  Both read each cluster's health from `/insights/summary`, which never applied
+  the mute overlay, so a silenced warning kept a cluster amber there while its
+  Overview said healthy. A critical still shows through a mute, as everywhere
+  else. In Home's «While you were away» a silenced episode keeps its row only
+  when the window has room: it never takes one of the three rows from an
+  episode that is not silenced, reads *muted* instead of *Review →*, draws as a
+  quiet dot on the timeline, and is never the report's "longest" sentence. The
+  episode list marks it (`muted`).
+
+## [2.6.2] — 2026-11-12
+
+Right-sizing on a cluster's first day, and Kobi says which role a connector
+needs. Drop-in, no migration; the agent stays on 1.4.9. Full note:
+[docs/releases/v2.6.2.md](docs/releases/v2.6.2.md).
+
+### Changed
+
+- **Kobi says when a cloud connector is out of reach.** A user below a
+  connector's minimum role (*Who can use it in Kobi*, editors and admins by
+  default) still gets no cloud tools, but Kobi now tells them the connector
+  exists, which role it needs, and that an admin can raise their role or open
+  the connector to everyone. Before, Kobi answered as if there were no
+  connector at all.
+
+### Fixed
+
+- **Right-sizing's minimum history is a setting.** It was fixed at two days, so
+  a cluster connected for a trial or a proof of concept showed no
+  recommendations on its first day. Settings › General › *Right-sizing* sets it
+  (48 h by default, 12–168 h), for every cluster and for Kobi, with no restart.
+  Recommendations from under 48 h say so: the panel reads "early estimate" with
+  the history they rest on, and Kobi says how much history the numbers have.
+  The "collecting samples" texts name the configured minimum in days and hours.
+- **No more burst of 401s every 15 minutes.** The access token was renewed only
+  after it had expired: the next requests in an open tab answered
+  `401 {"error":"invalid or expired token"}`, then a refresh and a retry that
+  succeeded, a column of red rows in DevTools — and a message sent to Kobi in
+  that window showed the 401. The token is now renewed a minute before it
+  expires, Kobi's chat included. The 401 → refresh → retry path stays for what
+  renewal cannot foresee.
+
 ## [2.6.1] — 2026-11-11
 
 Kobi reads more of ECR, and the traffic map shows only what is talking. Drop-in,

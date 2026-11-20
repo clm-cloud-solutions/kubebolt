@@ -15,7 +15,7 @@ import type { ClusterInfo } from '@/types/kubernetes'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { Modal } from '@/components/shared/Modal'
-import { tokenStatusOf, canMutate } from './agentTokenStatus'
+import { tokenStatusOf, canMutate, expiryOf } from './agentTokenStatus'
 
 const DEFAULT_TENANT_NAME = 'default'
 
@@ -747,7 +747,7 @@ export function AgentTokensPage() {
                 <td className="px-4 py-2.5"><StatusBadge token={tok} /></td>
                 <td className="px-4 py-2.5 text-xs text-kb-text-tertiary font-mono" title={formatAbsolute(tok.createdAt)}>{formatRelative(tok.createdAt)}</td>
                 <td className="px-4 py-2.5 text-xs text-kb-text-tertiary font-mono" title={formatAbsolute(tok.lastUsedAt)}>{formatRelative(tok.lastUsedAt)}</td>
-                <td className="px-4 py-2.5 text-xs text-kb-text-tertiary font-mono" title={tok.expiresAt ? formatAbsolute(tok.expiresAt) : ''}>{tok.expiresAt ? formatRelative(tok.expiresAt) : 'never'}</td>
+                <td className="px-4 py-2.5 text-xs text-kb-text-tertiary font-mono" title={expiryOf(tok).title}>{expiryOf(tok).label}</td>
                 <td className="px-4 py-2.5">
                   <div className="flex items-center justify-end gap-1">
                     <button

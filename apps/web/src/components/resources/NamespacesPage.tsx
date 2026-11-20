@@ -1,10 +1,12 @@
+import { useEffect, useState } from 'react'
 import { useResources } from '@/hooks/useResources'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { ResourceTypeIcon, resourceTypeDescription } from '@/utils/resourceIcons'
 import { StatusBadge } from './StatusBadge'
-import { FolderOpen } from 'lucide-react'
+import { PODS_PAGE_SIZE, PodsPager } from './WorkloadPodsPages'
+import { FolderOpen, Search } from 'lucide-react'
 import type { ResourceItem } from '@/types/kubernetes'
 import {
   useNamespaceQuotas,
@@ -132,14 +134,39 @@ function NamespaceCard({ ns, quota }: { ns: ResourceItem; quota?: NamespaceQuota
   )
 }
 
+// Server-side pages of 50 with the lists' shared footer (PodsPager). The page
+// used to ask for the list with no page at all, got the API's default first
+// page of 50 and had no way to the rest: a cluster with 131 namespaces showed
+// 50 and said "50 total".
+const PAGE_SIZE = PODS_PAGE_SIZE
+
 export function NamespacesPage() {
-  const { data, isLoading, error, refetch, dataUpdatedAt, isFetching } = useResources('namespaces')
+  const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [page, setPage] = useState(1)
+
+  // Debounce the filter like the other lists, and go back to page 1 with it.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(search)
+      setPage(1)
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [search])
+
+  const { data, isLoading, error, refetch, dataUpdatedAt, isFetching } = useResources('namespaces', {
+    search: debouncedSearch || undefined,
+    page,
+    limit: PAGE_SIZE,
+  })
   const { quotas } = useNamespaceQuotas()
 
-  if (isLoading) return <LoadingSpinner />
+  if (isLoading && !data) return <LoadingSpinner />
   if (error) return <ErrorState message={error.message} onRetry={() => refetch()} />
 
   const namespaces = data?.items || []
+  const total = data?.total ?? namespaces.length
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   return (
     <div>
@@ -151,18 +178,36 @@ export function NamespacesPage() {
               <h1 className="text-lg font-semibold text-kb-text-primary">Namespaces</h1>
             </div>
             <span className="text-[10px] font-mono px-2.5 py-0.5 rounded bg-kb-elevated text-kb-text-tertiary">
-              {namespaces.length} total
+              {total} total
             </span>
           </div>
-          <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-kb-text-tertiary" />
+              <input
+                type="text"
+                placeholder="Filter..."
+                aria-label="Filter namespaces"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="w-48 pl-8 pr-3 py-1.5 bg-kb-card border border-kb-border rounded-md text-xs text-kb-text-primary placeholder-kb-text-tertiary outline-none focus:border-kb-border-active transition-colors"
+              />
+            </div>
+            <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
+          </div>
         </div>
         <p className="text-xs text-kb-text-secondary mt-1">{resourceTypeDescription('namespaces')}</p>
       </div>
-      <div className="grid grid-cols-3 gap-3">
-        {namespaces.map((ns) => (
-          <NamespaceCard key={ns.name} ns={ns} quota={quotas[ns.name]} />
-        ))}
-      </div>
+      {namespaces.length === 0 && debouncedSearch ? (
+        <p className="py-10 text-center text-xs text-kb-text-tertiary">No namespace matches &ldquo;{debouncedSearch}&rdquo;.</p>
+      ) : (
+        <div className="grid grid-cols-3 gap-3">
+          {namespaces.map((ns) => (
+            <NamespaceCard key={ns.name} ns={ns} quota={quotas[ns.name]} />
+          ))}
+        </div>
+      )}
+      <PodsPager page={page} totalPages={totalPages} total={total} setPage={setPage} />
     </div>
   )
 }

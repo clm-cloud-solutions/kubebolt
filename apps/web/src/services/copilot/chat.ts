@@ -1,4 +1,4 @@
-import { getAccessToken, API_ORIGIN } from '@/services/api'
+import { freshAccessToken, API_ORIGIN } from '@/services/api'
 import type { CompactResponse, CopilotMessage, CopilotStreamEvent, CopilotUsage } from './types'
 
 // Best-effort IANA timezone of the browser. Falls back to empty string
@@ -107,7 +107,7 @@ export async function* sendCopilotChat(
   conversationId?: string | null,
   originatingInsightId?: string | null,
 ): AsyncGenerator<CopilotStreamEvent> {
-  const token = getAccessToken()
+  const token = await freshAccessToken()
   let res: Response
   try {
     res = await fetch(`${API_ORIGIN}/api/v1/copilot/chat`, {
@@ -219,7 +219,7 @@ export async function compactCopilotSession(
   resetAll: boolean,
   conversationId?: string | null,
 ): Promise<CompactResponse> {
-  const token = getAccessToken()
+  const token = await freshAccessToken()
   const res = await fetch(`${API_ORIGIN}/api/v1/copilot/compact`, {
     method: 'POST',
     headers: {

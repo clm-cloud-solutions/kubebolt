@@ -443,9 +443,9 @@ export function AgentConfigFields({
             {/* Resources */}
             <section className="space-y-2 pt-3 border-t border-kb-border">
               <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">Resources</div>
-              <p className="text-[10px] text-kb-text-tertiary">Kubernetes quantity strings. Defaults: requests 10m / 64Mi, limits 100m / 128Mi. Bump the limit (e.g. 256Mi) on busy nodes — Hubble flow parsing is the main driver.</p>
+              <p className="text-[10px] text-kb-text-tertiary">Kubernetes quantity strings. Defaults: requests 10m / 64Mi, limits 500m / 256Mi. Raise the memory limit (e.g. 512Mi) on clusters with thousands of objects or busy Hubble nodes: one API response relayed through the agent may take a quarter of it.</p>
               <div className="grid grid-cols-2 gap-3">
-                {([['cpuRequest', 'CPU request', '10m'], ['cpuLimit', 'CPU limit', '100m'], ['memoryRequest', 'Memory request', '64Mi'], ['memoryLimit', 'Memory limit', '128Mi']] as const).map(([key, label, ph]) => (
+                {([['cpuRequest', 'CPU request', '10m'], ['cpuLimit', 'CPU limit', '500m'], ['memoryRequest', 'Memory request', '64Mi'], ['memoryLimit', 'Memory limit', '256Mi']] as const).map(([key, label, ph]) => (
                   <div key={key}>
                     <label className="block text-[10px] font-mono text-kb-text-tertiary mb-1">{label}</label>
                     <input type="text" placeholder={ph} value={cfg.resources?.[key] ?? ''}

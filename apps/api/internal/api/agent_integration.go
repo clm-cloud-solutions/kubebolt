@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -110,6 +111,29 @@ type agentIssueTokenResponse struct {
 	TokenPrefix string `json:"tokenPrefix"`
 	TokenLabel  string `json:"tokenLabel"`
 	TenantID    string `json:"tenantId"`
+	// UnusedExpiresAt is when the token stops working if no agent has used it
+	// (RFC 3339), so the wizard can say how long its command works. Empty
+	// when the token has no such window (materialize path).
+	UnusedExpiresAt string `json:"unusedExpiresAt,omitempty"`
+}
+
+// wizardTokenUseBy is how long a token the wizards hand over to copy stays
+// usable if no agent ever uses it. Every onboarding or add-cluster attempt
+// issues one, and an abandoned attempt used to leave a credential that worked
+// forever. Once an agent has used it, it no longer expires on that account.
+const wizardTokenUseBy = 7 * 24 * time.Hour
+
+// issueWizardToken issues the token of an add-cluster flow. A token handed
+// over for the operator to run elsewhere (copy) gets a use-by date; one the
+// API writes straight into the connected cluster's Secret does not, since the
+// agent may only read it at its next restart, weeks later.
+func (h *handlers) issueWizardToken(ctx context.Context, orgID, teamID, label, issuer string, ttl *time.Duration, copied bool) (string, *auth.IngestToken, error) {
+	if copied {
+		if u, ok := h.ingestTokens.(auth.IngestTokenUseByIssuer); ok {
+			return u.IssueUseBy(ctx, orgID, "", teamID, label, issuer, ttl, time.Now().Add(wizardTokenUseBy))
+		}
+	}
+	return h.ingestTokens.Issue(ctx, orgID, "", teamID, label, issuer, ttl)
 }
 
 // handleAgentIssueToken issues a fresh ingest token for the given
@@ -159,7 +183,12 @@ func (h *handlers) handleAgentIssueToken(w http.ResponseWriter, r *http.Request)
 	// Cluster-unscoped at issue time — the agent's own cluster_id ships in its
 	// Hello after boot; TeamID (optional) decides which team owns the cluster
 	// once it registers.
-	plaintext, tok, err := h.ingestTokens.Issue(r.Context(), orgID, "", req.TeamID, label, issuer, nil)
+	var ttl *time.Duration
+	if req.TTLSeconds > 0 {
+		d := time.Duration(req.TTLSeconds) * time.Second
+		ttl = &d
+	}
+	plaintext, tok, err := h.issueWizardToken(r.Context(), orgID, req.TeamID, label, issuer, ttl, !req.Materialize)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
@@ -169,6 +198,9 @@ func (h *handlers) handleAgentIssueToken(w http.ResponseWriter, r *http.Request)
 		TokenPrefix: tok.Prefix,
 		TokenLabel:  tok.Label,
 		TenantID:    orgID,
+	}
+	if tok.UnusedExpiresAt != nil {
+		resp.UnusedExpiresAt = tok.UnusedExpiresAt.UTC().Format(time.RFC3339)
 	}
 
 	if req.Materialize {

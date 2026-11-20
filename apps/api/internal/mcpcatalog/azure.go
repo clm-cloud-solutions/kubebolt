@@ -31,7 +31,7 @@ const (
 	// tag in deploy/helm/kubebolt/values.yaml (a test compares them): the betas
 	// rename commands and parameters every few days, so a bump means running
 	// the live test (KUBEBOLT_MCP_LIVE_AZURE=1) against the new version.
-	azmcpVersion = "3.0.0-beta.46"
+	azmcpVersion = "4.0.0-beta.6"
 
 	azureGUIDPattern = `^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`
 )

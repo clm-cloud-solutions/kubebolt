@@ -8,7 +8,8 @@ go 1.26.0
 // apps/api/go.mod and packages/proto/go.mod.
 // 1.26.9 adds CVE-2026-78667 (net/http) and CVE-2026-97031 (crypto/tls);
 // 1.26.10 adds CVE-2026-111943 (crypto/x509).
-toolchain go1.26.10
+// 1.26.11 (2.6.6) adds CVE-2026-97054 (net/http MaxBytesReader, HIGH).
+toolchain go1.26.11
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.20.0

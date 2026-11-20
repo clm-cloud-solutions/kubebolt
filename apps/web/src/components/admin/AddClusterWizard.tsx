@@ -1,17 +1,27 @@
 import { useEffect, useState } from 'react'
-import { buildHelmCommand, unresolvedPlaceholders } from '@/utils/agentInstall'
+import { buildHelmCommand, tokenUseByText, unresolvedPlaceholders } from '@/utils/agentInstall'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { AlertTriangle, Check, Copy, Eye, EyeOff, Loader2, KeyRound, ExternalLink } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Check, Copy, Eye, EyeOff, Loader2, KeyRound, ExternalLink } from 'lucide-react'
 import { api, type AgentInstallConfig, type AgentIssueTokenResponse } from '@/services/api'
 import type { ClusterInfo } from '@/types/kubernetes'
 import { useAuth } from '@/contexts/AuthContext'
 import { Modal } from '@/components/shared/Modal'
 import { AgentConfigFields } from '@/components/admin/AgentConfigFields'
 import { Link } from 'react-router-dom'
+import { siteDoc } from '@/utils/docs'
 
 interface Props {
   onClose: () => void
+  // Opened as the first-cluster onboarding's «Advanced setup»: a way back to
+  // the simple flow, the token it already issued (so opening this no longer
+  // issues a second one) and the name already typed. onTokenIssued hands a
+  // re-generated token back, so going back shows the newest one.
+  onBack?: () => void
+  initialToken?: AgentIssueTokenResponse | null
+  initialClusterName?: string
+  onTokenIssued?: (resp: AgentIssueTokenResponse) => void
 }
+
 
 // AddClusterWizard registers a REMOTE cluster (not the current one). Unlike
 // AgentInstallWizard which installs the agent into the cluster KubeBolt is
@@ -21,18 +31,19 @@ interface Props {
 // flags by buildHelmCommand. The transport-TLS toggle defaults OFF (the common
 // dev/plaintext-backend case) and is honored in the command — no more hardcoded
 // tls.enabled=true.
-export function AddClusterWizard({ onClose }: Props) {
+export function AddClusterWizard({ onClose, onBack, initialToken, initialClusterName, onTokenIssued }: Props) {
   const [cfg, setCfg] = useState<AgentInstallConfig>({
     backendUrl: '',
-    clusterName: '',
+    clusterName: initialClusterName ?? '',
     rbacMode: 'reader',
     hubbleEnabled: false,
     authMode: 'ingest-token',
     tlsEnabled: false,
+    ...(initialToken?.token ? { authTokenSecret: 'kubebolt-agent-token' } : {}),
   })
   const [nodeSelector, setNodeSelector] = useState<Array<{ k: string; v: string }>>([])
   const [advancedOpen, setAdvancedOpen] = useState(false)
-  const [issuedToken, setIssuedToken] = useState<AgentIssueTokenResponse | null>(null)
+  const [issuedToken, setIssuedToken] = useState<AgentIssueTokenResponse | null>(initialToken?.token ? initialToken : null)
   const [issueError, setIssueError] = useState<string | null>(null)
   const [selectedTeamId, setSelectedTeamId] = useState<string>('')
   const [copied, setCopied] = useState(false)
@@ -134,6 +145,7 @@ export function AddClusterWizard({ onClose }: Props) {
     onSuccess: (resp) => {
       setIssueError(null)
       setIssuedToken(resp)
+      onTokenIssued?.(resp)
       // Default the Secret name the operator will create so the helm command and
       // the shared Token-Secret field reference the same name.
       setCfg((prev) => ({ ...prev, authTokenSecret: prev.authTokenSecret?.trim() || 'kubebolt-agent-token' }))
@@ -247,6 +259,9 @@ export function AddClusterWizard({ onClose }: Props) {
         return (
           <div className="space-y-1.5 pt-1">
             <div className="text-[11px] text-status-warn font-medium">Copy this token now — it's shown only once.</div>
+            {issuedToken === initialToken && (
+              <div className="text-[10px] text-kb-text-tertiary">The token the simple setup issued. Re-generate issues a new one.</div>
+            )}
             <div className="flex items-center gap-2 p-2 rounded bg-kb-card border border-kb-border">
               <code className="flex-1 text-[10px] font-mono text-kb-text-primary break-all">{showToken ? issuedToken.token : masked}</code>
               <button type="button" onClick={() => setShowToken((s) => !s)} className="shrink-0 text-kb-text-tertiary hover:text-kb-text-primary" title={showToken ? 'Hide' : 'Show'}>
@@ -267,6 +282,9 @@ export function AddClusterWizard({ onClose }: Props) {
               <input type="checkbox" checked={tokenAcked} onChange={(e) => setTokenAcked(e.target.checked)} className="accent-kb-accent" />
               I've copied and saved the token — it can't be shown again.
             </label>
+            {tokenUseByText(issuedToken.unusedExpiresAt) && (
+              <div className="text-[10px] text-kb-text-tertiary">{tokenUseByText(issuedToken.unusedExpiresAt)}</div>
+            )}
           </div>
         )
       })()}
@@ -400,8 +418,18 @@ export function AddClusterWizard({ onClose }: Props) {
         </div>
           </div>
           <div className="px-5 py-3 border-t border-kb-border flex justify-end gap-2 shrink-0">
+          {onBack && (
+            <button
+              type="button"
+              onClick={onBack}
+              className="mr-auto flex items-center gap-1 px-3 py-1.5 text-[11px] text-kb-text-secondary hover:text-kb-text-primary border border-kb-border rounded transition-colors"
+            >
+              <ArrowLeft className="w-3 h-3" />
+              Back to the simple setup
+            </button>
+          )}
           <a
-            href="https://github.com/clm-cloud-solutions/kubebolt/blob/main/deploy/helm/kubebolt-agent/README.md"
+            href={siteDoc('agent')}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-1 px-3 py-1.5 text-[11px] text-kb-text-secondary hover:text-kb-text-primary border border-kb-border rounded transition-colors"

@@ -1,10 +1,16 @@
 package cluster
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/httpstream"
 	utilspdy "k8s.io/apimachinery/pkg/util/httpstream/spdy"
 	"k8s.io/client-go/rest"
@@ -103,7 +109,7 @@ func (u *agentProxyUpgrader) NewConnection(resp *http.Response) (httpstream.Conn
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		slog.Warn("agent-proxy SPDY: NewConnection got non-101",
 			slog.Int("status", resp.StatusCode))
-		return nil, fmt.Errorf("agent-proxy SPDY: expected 101 Switching Protocols, got %d", resp.StatusCode)
+		return nil, upgradeFailure(resp)
 	}
 	body, ok := resp.Body.(*channel.TunnelHandshakeBody)
 	if !ok {
@@ -114,4 +120,44 @@ func (u *agentProxyUpgrader) NewConnection(resp *http.Response) (httpstream.Conn
 	conn := body.Extract()
 	slog.Info("agent-proxy SPDY: building SPDY connection over tunnel")
 	return utilspdy.NewClientConnection(conn)
+}
+
+// upgradeFailure turns the API server's refusal of an upgrade into the error
+// client-go's own SPDY round tripper returns: the Status it answered with, as a
+// StatusError. The agent forwards the refusal unchanged (status, headers,
+// body), so the reason is all there. Answering "expected 101, got 403" instead
+// dropped it, and the terminal could not tell a missing pods/exec permission
+// (an agent in reader mode) from any other failure.
+func upgradeFailure(resp *http.Response) error {
+	var body []byte
+	if resp.Body != nil {
+		body, _ = io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		_ = resp.Body.Close()
+	}
+	var status metav1.Status
+	if json.Unmarshal(body, &status) == nil && status.Kind == "Status" {
+		if status.Code == 0 {
+			status.Code = int32(resp.StatusCode)
+		}
+		return &apierrors.StatusError{ErrStatus: status}
+	}
+	msg := strings.TrimSpace(string(body))
+	if msg == "" {
+		msg = http.StatusText(resp.StatusCode)
+	}
+	// Not a Status body: still classified by its code, so a 403 reads as
+	// forbidden to apierrors.IsForbidden.
+	return apierrors.NewGenericServerResponse(resp.StatusCode, http.MethodPost,
+		schema.GroupResource{Resource: "pods"}, "", msg, 0, false)
+}
+
+// IsAgentProxyConfig reports whether cfg reaches its cluster through the
+// KubeBolt agent rather than a kubeconfig's credentials. What a refusal means
+// depends on it: through the agent, the agent's own role decides.
+func IsAgentProxyConfig(cfg *rest.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	_, ok := cfg.Transport.(*channel.AgentProxyTransport)
+	return ok
 }

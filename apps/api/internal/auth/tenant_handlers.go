@@ -112,6 +112,9 @@ type ingestTokenResponse struct {
 	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
 	RevokedAt  *time.Time `json:"revokedAt,omitempty"`
 	Active     bool       `json:"active"`
+	// UnusedExpiresAt is set only while the token has never been used: the
+	// date it stops working unless an agent uses it first.
+	UnusedExpiresAt *time.Time `json:"unusedExpiresAt,omitempty"`
 }
 
 // issuedTokenResponse is the only DTO that carries plaintext. Callers
@@ -142,7 +145,7 @@ func summarizeTenant(t *Tenant, tokens []IngestToken) tenantResponse {
 }
 
 func tokenInfo(tok IngestToken, now time.Time) ingestTokenResponse {
-	return ingestTokenResponse{
+	resp := ingestTokenResponse{
 		ID:         tok.ID,
 		Prefix:     tok.Prefix,
 		Label:      tok.Label,
@@ -153,6 +156,10 @@ func tokenInfo(tok IngestToken, now time.Time) ingestTokenResponse {
 		RevokedAt:  tok.RevokedAt,
 		Active:     tok.Active(now),
 	}
+	if tok.LastUsedAt == nil {
+		resp.UnusedExpiresAt = tok.UnusedExpiresAt
+	}
+	return resp
 }
 
 // ─── HTTP plumbing ────────────────────────────────────────────────────

@@ -249,13 +249,18 @@ func awsFamilyTable() []awsFamily {
 		},
 		{
 			Family: Family{
-				Label:  "Secret and parameter names",
-				Detail: "Whether a Secrets Manager secret or a Parameter Store parameter exists, its metadata, and when each version of a secret was created and which stages it holds. Never their values.",
-				Kobi:   true,
+				Label:     "Secret and parameter names",
+				Detail:    "A Secrets Manager secret's metadata: when it last changed or rotated, when each version was created and which stages it holds. Kobi also lists secrets and checks whether a Parameter Store parameter exists. Never their values.",
+				Kobi:      true,
+				Autopilot: true,
 			},
+			// Autopilot reads one secret's dates, the evidence that a rotation
+			// broke a workload's login (finding #86); listing the account's
+			// secrets and parameters stays Kobi's.
 			grants: []awsGrant{
-				{service: "secretsmanager", ops: []string{"DescribeSecret", "ListSecrets", "ListSecretVersionIds"}},
-				{service: "ssm", ops: []string{"DescribeParameters"}},
+				{service: "secretsmanager", ops: []string{"DescribeSecret", "ListSecretVersionIds"}},
+				{service: "secretsmanager", ops: []string{"ListSecrets"}, kobiOnly: true},
+				{service: "ssm", ops: []string{"DescribeParameters"}, kobiOnly: true},
 			},
 		},
 		{

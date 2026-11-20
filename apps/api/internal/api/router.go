@@ -325,6 +325,10 @@ func NewRouter(
 			// para que la etiqueta siga el mismo criterio que el dato que rotula.
 			r.With(h.WithClusterScope).Get("/clusters/names", h.handleClusterNames)
 			r.Post("/clusters/switch", h.switchCluster)
+			// How far the request's cluster's connect has gone. Outside
+			// requireConnector by design: it answers while the cluster is
+			// prepared, and never starts or waits for a connect.
+			r.Get("/clusters/progress", h.handleClusterProgress)
 
 			// Update check — reports the latest stable KubeBolt release
 			// on GitHub. Any logged-in role can read; admin toggles the
@@ -655,9 +659,6 @@ func NewRouter(
 				r.Get("/resources/{type}/{namespace}/{name}/yaml", h.getResourceYAML)
 				r.Get("/resources/{type}/{namespace}/{name}/describe", h.getResourceDescribe)
 				r.Get("/resources/pods/{namespace}/{name}/logs", h.getPodLogs)
-				r.Get("/resources/pods/{namespace}/{name}/files", h.handleListFiles)
-				r.Get("/resources/pods/{namespace}/{name}/files/content", h.handleFileContent)
-				r.Get("/resources/pods/{namespace}/{name}/files/download", h.handleFileDownload)
 				r.Get("/resources/deployments/{namespace}/{name}/pods", h.getDeploymentPods)
 				r.Get("/resources/deployments/{namespace}/{name}/history", h.getDeploymentHistory)
 				r.Get("/resources/statefulsets/{namespace}/{name}/pods", h.getStatefulSetPods)
@@ -694,6 +695,11 @@ func NewRouter(
 				// Write endpoints — Editor+ role required
 				r.Group(func(r chi.Router) {
 					r.Use(auth.RequireRole(auth.RoleEditor))
+					// The pod file browser runs `ls` / `cat` inside the
+					// container: it is exec, so Editor, like the terminal.
+					r.Get("/resources/pods/{namespace}/{name}/files", h.handleListFiles)
+					r.Get("/resources/pods/{namespace}/{name}/files/content", h.handleFileContent)
+					r.Get("/resources/pods/{namespace}/{name}/files/download", h.handleFileDownload)
 					r.Put("/resources/{type}/{namespace}/{name}/yaml", h.putResourceYAML)
 					// Create new resource from manifest — kubectl create -f
 					// equivalent. URL is /resources/:type/:ns (no :name —

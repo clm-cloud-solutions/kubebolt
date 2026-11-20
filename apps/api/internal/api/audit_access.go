@@ -41,6 +41,20 @@ type accessActor struct {
 	Username string
 	Role     string
 	TenantID string
+	// ClusterID is the cluster the access actually reached, set by the handler
+	// from the connector it resolved — the forensic field a review needs most.
+	// Empty means none was resolved, and the record says so rather than naming
+	// a cluster resolved from a background context.
+	ClusterID string
+}
+
+// withCluster returns a copy of the actor stamped with the cluster its access
+// actually reached. An empty id leaves the record without a cluster.
+func (a accessActor) withCluster(clusterID string) accessActor {
+	if clusterID != "" {
+		a.ClusterID = clusterID
+	}
+	return a
 }
 
 // actorFromRequest reads the actor off a normally-authenticated request.
@@ -78,7 +92,7 @@ func (a accessActor) record(action, targetType, namespace, name string, params m
 		UserID:          a.UserID,
 		Username:        a.Username,
 		Role:            a.Role,
-		ClusterID:       audit.ClusterID(),
+		ClusterID:       a.ClusterID,
 		Action:          action,
 		TargetType:      targetType,
 		TargetNamespace: namespace,
@@ -134,6 +148,68 @@ func auditAccessSession(actor accessActor, action, targetType, namespace, name s
 			emitClose(actor, action, targetType, namespace, name, params, extra, sessionID, openedAt, reason)
 		})
 	}
+}
+
+// auditAccessSessionPending is auditAccessSession for a session that can fail
+// before it starts. The terminal's WebSocket is up before its exec stream is
+// negotiated with the cluster, and recording the open at that point wrote a
+// successful session for every exec the cluster then refused (a "pod not
+// found" in under 60 ms read as `success`).
+//
+// start records the open; the caller fires it the moment the stream is
+// running. end records the close of a started session, or — when start never
+// fired — a single open record carrying the error, so a refused session reads
+// as refused and not as an open with no close.
+//
+// Both are idempotent and safe from any goroutine: the stream fires start from
+// its own copy loops while the handler may already be ending the session.
+func auditAccessSessionPending(actor accessActor, action, targetType, namespace, name string, params map[string]any) (start func(), end func(reason string, extra map[string]any)) {
+	if !audit.Enabled() {
+		return func() {}, func(string, map[string]any) {}
+	}
+	sessionID := uuid.New().String()
+	openParams := map[string]any{"sessionId": sessionID}
+	for k, v := range params {
+		openParams[k] = v
+	}
+
+	var mu sync.Mutex
+	var started, ended bool
+	var openedAt time.Time
+	start = func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if started || ended {
+			return
+		}
+		started = true
+		openedAt = time.Now()
+		audit.Emit(actor.record(action+"_open", targetType, namespace, name, openParams))
+	}
+	end = func(reason string, extra map[string]any) {
+		mu.Lock()
+		defer mu.Unlock()
+		if ended {
+			return
+		}
+		ended = true
+		if started {
+			emitClose(actor, action, targetType, namespace, name, params, extra, sessionID, openedAt, reason)
+			return
+		}
+		failParams := map[string]any{"reason": reason}
+		for k, v := range openParams {
+			failParams[k] = v
+		}
+		rec := actor.record(action+"_open", targetType, namespace, name, failParams)
+		rec.Result = "error"
+		rec.Error = reason
+		if e, ok := extra["error"].(string); ok && e != "" {
+			rec.Error = e
+		}
+		audit.Emit(rec)
+	}
+	return start, end
 }
 
 func emitClose(actor accessActor, action, targetType, namespace, name string,

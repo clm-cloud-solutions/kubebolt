@@ -46,7 +46,7 @@ func (p *falcoProvider) Meta() Integration {
 		ID:          FalcoID,
 		Name:        FalcoName,
 		Description: "Runtime threat detection. falcosidekick pushes rule hits to KubeBolt's ingest endpoint; they surface as the Runtime Threats feed on Security & Compliance. Needs an ingest token SCOPED TO A CLUSTER — a pushed event carries no other identity, so an unscoped token is refused.",
-		DocsURL:     "https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/integrations/falco.md",
+		DocsURL:     siteDoc("falco", ""),
 		Capabilities: []string{
 			"security.runtime",
 		},
