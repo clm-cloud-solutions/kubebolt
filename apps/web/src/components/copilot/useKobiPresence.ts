@@ -58,14 +58,38 @@ function currentCall(messages: CopilotMessage[]) {
   return undefined
 }
 
-// Precedence: investigating (the model is generating or tools are in
-// flight) wins over awaiting, because active work is the more current
-// signal: the operator may have sent a follow-up before deciding on the card.
+// The plan's limits, said in words over the face the brand guidelines give
+// them («The Face: Sentinel», the state table):
+// - A question waiting for a free slot (Kobi already answers as many as the
+//   plan allows) is Watching: Kobi is available, nothing runs for it yet and
+//   it needs nothing from the person. Not Awaiting: that is a person's
+//   approval, and its blue means «Kobi needs you».
+// - The month's AI credits spent is Unavailable (gray, eyes closed): Kobi is
+//   off for the organization until they come back.
+export const WAITING_FOR_SLOT = 'Waiting for a free slot'
+export const OUT_OF_CREDITS = 'Out of AI credits'
+
+// lastTurnOutOfCredits: the latest question ended refused for credits.
+function lastTurnOutOfCredits(messages: CopilotMessage[]): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m.failure) return m.failure.kind === 'credits'
+    if (m.role === 'user' && m.content && !m.toolResults?.length) return false
+  }
+  return false
+}
+
+// Precedence: a question waiting for a free slot is not being worked on yet;
+// then investigating (the model is generating or tools are in flight) wins
+// over awaiting, because active work is the more current signal: the
+// operator may have sent a follow-up before deciding on the card.
 export function kobiPresenceOf(
   messages: CopilotMessage[],
   isLoading: boolean,
   pendingToolCalls: string[],
+  waitingForSlot = false,
 ): KobiPresence {
+  if (isLoading && waitingForSlot) return { state: 'watching', label: WAITING_FOR_SLOT }
   if (isLoading || pendingToolCalls.length > 0) {
     const call = currentCall(messages)
     const t = call ? toolTitle(call.name, call.input ?? {}) : undefined
@@ -75,11 +99,16 @@ export function kobiPresenceOf(
       detail: t ? (t.chip ? `${t.title} · ${t.chip}` : t.title) : undefined,
     }
   }
+  if (lastTurnOutOfCredits(messages)) return { state: 'unavailable', label: OUT_OF_CREDITS }
   if (hasPendingProposal(messages)) return { state: 'awaiting', label: PRESENCE_LABEL.awaiting }
   return { state: 'watching', label: PRESENCE_LABEL.watching }
 }
 
 export function useKobiPresence(): KobiPresence {
-  const { messages, isLoading, pendingToolCalls } = useCopilot()
-  return useMemo(() => kobiPresenceOf(messages, isLoading, pendingToolCalls), [messages, isLoading, pendingToolCalls])
+  const { messages, isLoading, pendingToolCalls, turnWaitUntil } = useCopilot()
+  const waiting = turnWaitUntil != null
+  return useMemo(
+    () => kobiPresenceOf(messages, isLoading, pendingToolCalls, waiting),
+    [messages, isLoading, pendingToolCalls, waiting],
+  )
 }

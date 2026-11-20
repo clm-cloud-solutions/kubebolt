@@ -39,8 +39,11 @@ export interface CopilotMessage {
   cancelled?: boolean
   /** Set on the assistant turn that ended in an error before it answered: the
    * error as the server words it (friendlyCopilotError) and how long the
-   * question had run. The panel shows it as the investigation's last row. */
-  failure?: { message: string; afterMs?: number }
+   * question had run. The panel shows it as the investigation's last row.
+   * `kind` marks a plan limit, which is not a fault: 'busy' (Kobi already
+   * answers as many questions as the plan allows, blue) and 'credits' (the
+   * month's AI credits are spent, amber). Absent: a failure, red. */
+  failure?: { message: string; afterMs?: number; kind?: 'busy' | 'credits' }
   /** Set by the server on the final answer of a finished turn: the turn's id,
    * which a 👍/👎 names (POST /copilot/feedback). Round-trips with the
    * transcript so earlier answers stay rateable. */

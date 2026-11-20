@@ -10,6 +10,7 @@ import {
   Check as CheckSmall,
   ArrowUpRight,
   Ban,
+  Clock,
   Square,
   type LucideIcon,
 } from 'lucide-react'
@@ -304,6 +305,8 @@ function outcomeOf(status: string | undefined, isError: boolean | undefined): Ou
       return { icon: Ban, color: 'text-kobi-text-tertiary', word: 'not sent' }
     case 'agent_offline':
       return { icon: AlertCircle, color: 'text-kobi-st-warn', word: 'agent offline' }
+    case 'rate_limited':
+      return { icon: Clock, color: 'text-kobi-st-warn', word: 'rate limited' }
     case 'unsupported':
       return { icon: Ban, color: 'text-kobi-text-tertiary', word: 'not available' }
     case 'error':
@@ -314,8 +317,9 @@ function outcomeOf(status: string | undefined, isError: boolean | undefined): Ou
 
 // failureLine is the line under the title of a call that did not read, in
 // the colour of how it ended: red when it failed, amber when it could not read
-// through no fault of the call, grey when nothing was tried.
-function failureLine(
+// through no fault of the call (refused, agent away, held back by the
+// organization's rate limit), grey when nothing was tried.
+export function failureLine(
   status: string | undefined,
   reason: string | undefined,
   durationMs: number | undefined,
@@ -333,6 +337,8 @@ function failureLine(
       return { text: withReason('Denied'), color: 'text-kobi-st-warn' }
     case 'agent_offline':
       return { text: 'Agent disconnected — no live reads until it reconnects', color: 'text-kobi-st-warn' }
+    case 'rate_limited':
+      return { text: withReason('Not read'), color: 'text-kobi-st-warn' }
     case 'not_sent':
       return { text: withReason('Not sent'), color: 'text-kobi-text-tertiary' }
     case 'unsupported':

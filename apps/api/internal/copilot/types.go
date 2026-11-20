@@ -63,6 +63,10 @@ type ToolResult struct {
 	// allowlist, before anything reached the provider: it read nothing, so
 	// the per-turn connector budget does not count it. Never stored.
 	NotSent bool `json:"-"`
+	// RateLimited marks a connector call the gateway held back because the
+	// organization spent its calls for the minute: it read nothing, through
+	// no fault of the call or the cloud. Never stored; Status keeps it.
+	RateLimited bool `json:"-"`
 	// Status and DurationMs are what the chat showed for this call while it
 	// ran (ToolResultOK…, ToolResultNotSent) and how long it took; stored so
 	// a reloaded conversation reads the same. The provider adapters never
