@@ -93,8 +93,8 @@ func wasteFixture() ([]models.NamespaceWorkload, map[string]int64) {
 
 func TestEvaluate_OrderAndTotals(t *testing.T) {
 	wls, cpu := wasteFixture()
-	days := 3.0 // past ConfidenceDays, so the engine operates
-	res := Evaluate(wls, cpu, nil, &days)
+	days := 3.0 // past the default minimum history, so the engine operates
+	res := Evaluate(wls, cpu, nil, &days, 0)
 	var got []string
 	for _, r := range res.Recs {
 		got = append(got, r.Name)
@@ -117,7 +117,7 @@ func TestEvaluate_OrderAndTotals(t *testing.T) {
 	}
 }
 
-// Finding #74: below ConfidenceDays of history — or with no samples at all —
+// Finding #74: below the minimum history (48h by default) — or with no samples at all —
 // right-sizing emits NO recommendations and flags InsufficientHistory, instead
 // of recommending shrinks built on a quiet snapshot of a barely-run cluster.
 func TestEvaluate_InsufficientHistoryGate(t *testing.T) {
@@ -130,7 +130,7 @@ func TestEvaluate_InsufficientHistoryGate(t *testing.T) {
 		{"just under the bar", f64(1.9)},
 		{"no window at all", nil},
 	} {
-		res := Evaluate(wls, cpu, nil, tc.days)
+		res := Evaluate(wls, cpu, nil, tc.days, 0)
 		if len(res.Recs) != 0 || res.Totals.Count != 0 {
 			t.Errorf("%s: got %d recs, want 0 (still collecting)", tc.name, len(res.Recs))
 		}
@@ -138,10 +138,10 @@ func TestEvaluate_InsufficientHistoryGate(t *testing.T) {
 			t.Errorf("%s: InsufficientHistory=false, want true", tc.name)
 		}
 	}
-	// At exactly ConfidenceDays the engine operates (the gate is a strict <).
+	// At exactly the minimum the engine operates (the gate is a strict <).
 	at := 2.0
-	if Evaluate(wls, cpu, nil, &at).InsufficientHistory {
-		t.Error("exactly ConfidenceDays must operate, not collect")
+	if Evaluate(wls, cpu, nil, &at, 0).InsufficientHistory {
+		t.Error("exactly the default minimum must operate, not collect")
 	}
 }
 
@@ -157,7 +157,7 @@ func TestEvaluate_UnsampledWorkloadIsNotRecommended(t *testing.T) {
 		Key("shop", "Deployment", "truly-idle"): 0, // a real measured zero
 	}
 	days := 3.0
-	res := Evaluate(wls, cpu, nil, &days)
+	res := Evaluate(wls, cpu, nil, &days, 0)
 	var got []string
 	for _, r := range res.Recs {
 		got = append(got, r.Name)
@@ -168,3 +168,46 @@ func TestEvaluate_UnsampledWorkloadIsNotRecommended(t *testing.T) {
 }
 
 func f64(v float64) *float64 { return &v }
+
+// The platform may lower the minimum history so a trial cluster shows
+// recommendations on its first day (Settings › General). Below the default two
+// days they carry LowConfidence; the gate still holds below the lowered bar.
+func TestEvaluate_LoweredMinimumHistory(t *testing.T) {
+	wls, cpu := wasteFixture()
+
+	at44h := 44.0 / 24
+	res := Evaluate(wls, cpu, nil, &at44h, 36)
+	if res.InsufficientHistory || len(res.Recs) == 0 {
+		t.Fatalf("44h against a 36h minimum must operate: insufficient=%v recs=%d", res.InsufficientHistory, len(res.Recs))
+	}
+	if !res.LowConfidence {
+		t.Error("recommendations from under 48h of history must say they are low-confidence")
+	}
+	if res.MinHistoryHours != 36 {
+		t.Errorf("MinHistoryHours = %d, want 36", res.MinHistoryHours)
+	}
+
+	at30h := 30.0 / 24
+	if res := Evaluate(wls, cpu, nil, &at30h, 36); !res.InsufficientHistory || len(res.Recs) != 0 {
+		t.Errorf("30h against a 36h minimum must still collect: insufficient=%v recs=%d", res.InsufficientHistory, len(res.Recs))
+	}
+
+	if res := Evaluate(wls, cpu, nil, &at44h, 0); !res.InsufficientHistory || res.MinHistoryHours != DefaultMinHistoryHours {
+		t.Errorf("unset minimum must be the default 48h: insufficient=%v min=%d", res.InsufficientHistory, res.MinHistoryHours)
+	}
+
+	at3d := 3.0
+	if res := Evaluate(wls, cpu, nil, &at3d, 36); res.LowConfidence {
+		t.Error("three days of history is not low-confidence")
+	}
+}
+
+func TestClampMinHistoryHours(t *testing.T) {
+	for _, tc := range []struct{ in, want int }{
+		{0, 48}, {-5, 48}, {6, MinMinHistoryHours}, {12, 12}, {36, 36}, {500, MaxMinHistoryHours},
+	} {
+		if got := ClampMinHistoryHours(tc.in); got != tc.want {
+			t.Errorf("ClampMinHistoryHours(%d) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}

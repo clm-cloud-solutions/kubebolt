@@ -11,6 +11,25 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Default limits 256Mi / 500m** (were 128Mi / 100m; requests unchanged, so
+  scheduling does not move). The agent relays the API server's responses for
+  an agent-proxy cluster and holds each one whole: 128Mi was OOMKilled on a
+  cluster with thousands of ReplicaSets, and the connect of a large cluster,
+  which pages its LISTs through the agent, was CPU-throttled at 100m. The
+  static manifests under `deploy/agent/` follow (GOMEMLIMIT 230MiB).
+
+### Fixed
+
+- **A response too large for the agent's memory is an error, not an
+  OOMKill.** One relayed request or response body is capped at a quarter of
+  the container's memory limit (`KUBEBOLT_AGENT_MEMORY_LIMIT_BYTES`, set by
+  the chart from `limits.memory` through the downward API), on top of the
+  channel's 63 MiB. Past it the agent answers with an error that names the
+  cap, the limit and `resources.limits.memory`. At the new 256Mi default the
+  cap stays 63 MiB; at 128Mi it is 32 MiB.
+
 ## [1.4.9] — 2026-11-11
 
 Flow keys stop growing, and the node-exporter discovery finds

@@ -6,20 +6,24 @@ import (
 	"github.com/go-chi/chi/v5"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/helm"
 )
 
 // handleListHelmReleases returns the latest revision of every Helm release
 // the connected ServiceAccount can see (read-only, Sprint 4). Decodes Helm's
-// storage Secrets directly — no helm SDK.
+// storage Secrets directly — no helm SDK — and only the latest revision's.
 func (h *handlers) handleListHelmReleases(w http.ResponseWriter, r *http.Request) {
 	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
 	}
-	secrets, err := conn.ListHelmReleaseSecretsCached(r.Context())
-	if err != nil {
+	// The latest revision of each release, read the first time it is seen.
+	// A revision that could not be read is left out; the
+	// list fails only when nothing could be read.
+	releases, err := conn.HelmReleases(r.Context())
+	if err != nil && len(releases) == 0 {
 		if apierrors.IsForbidden(err) {
 			respondError(w, http.StatusForbidden, "not permitted to list Helm release secrets")
 			return
@@ -27,13 +31,12 @@ func (h *handlers) handleListHelmReleases(w http.ResponseWriter, r *http.Request
 		respondError(w, http.StatusInternalServerError, "failed to list Helm releases")
 		return
 	}
-	releases := helm.DecodeReleases(secrets)
 	respondJSON(w, http.StatusOK, map[string]any{"items": releases, "total": len(releases)})
 }
 
 // handleGetHelmRelease returns the detail view (latest revision values +
 // manifest + notes + dependencies, plus full revision history) for one
-// release.
+// release, with what the viewer hides hidden.
 func (h *handlers) handleGetHelmRelease(w http.ResponseWriter, r *http.Request) {
 	conn := h.manager.Connector(r.Context())
 	if conn == nil {
@@ -56,5 +59,9 @@ func (h *handlers) handleGetHelmRelease(w http.ResponseWriter, r *http.Request) 
 		respondError(w, http.StatusNotFound, "Helm release not found")
 		return
 	}
+	// A release's storage is a Secret holding the values and every object the
+	// chart rendered, its Secrets included. The view shows what the YAML
+	// viewer shows of those objects and no more.
+	cluster.RedactHelmRelease(detail)
 	respondJSON(w, http.StatusOK, detail)
 }

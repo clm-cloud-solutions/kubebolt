@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -275,6 +276,7 @@ func digestYAML(v map[string]any) string {
 	} else if want, ok := status["desiredNumberScheduled"].(float64); ok {
 		out = append(out, fmt.Sprintf("pods %d/%d ready", num(status["numberReady"]), int(want)))
 	}
+	out = append(out, externalSecretsDigest(obj, spec, status, v["store"])...)
 	if writes := asList(v["lastWrites"]); len(writes) > 0 {
 		w := "last write " + str(writes[0]["manager"])
 		if str(writes[0]["subresource"]) == "status" {
@@ -502,4 +504,78 @@ func num(v any) int {
 		return n
 	}
 	return 0
+}
+
+// externalSecretsDigest is what an External Secrets object says in one line
+// (finding #91): for an ExternalSecret, whether the sync works, when it last
+// ran, the store and the remote key; for a store, the provider, service and
+// region it reads.
+func externalSecretsDigest(obj, spec, status map[string]any, store any) []string {
+	var out []string
+	switch str(obj["kind"]) {
+	case "ExternalSecret":
+		for _, c := range asList(status["conditions"]) {
+			if str(c["type"]) != "Ready" {
+				continue
+			}
+			ready := "Ready=" + str(c["status"])
+			if r := str(c["reason"]); r != "" {
+				ready += " (" + r + ")"
+			}
+			out = append(out, ready)
+		}
+		if t := digestTimeString(str(status["refreshTime"])); t != "" {
+			out = append(out, "refreshed "+t)
+		}
+		if ref, ok := spec["secretStoreRef"].(map[string]any); ok && str(ref["name"]) != "" {
+			kind := str(ref["kind"])
+			if kind == "" {
+				kind = "SecretStore"
+			}
+			where := "store " + kind + "/" + str(ref["name"])
+			if st, ok := store.(map[string]any); ok && str(st["type"]) != "" {
+				parts := []string{str(st["type"])}
+				for _, k := range []string{"service", "region"} {
+					if x := str(st[k]); x != "" {
+						parts = append(parts, x)
+					}
+				}
+				where += " (" + strings.Join(parts, " ") + ")"
+			}
+			out = append(out, where)
+		}
+		var keys []string
+		for _, d := range asList(spec["data"]) {
+			if rr, ok := d["remoteRef"].(map[string]any); ok && str(rr["key"]) != "" && !slices.Contains(keys, str(rr["key"])) {
+				keys = append(keys, str(rr["key"]))
+			}
+		}
+		for _, d := range asList(spec["dataFrom"]) {
+			if ex, ok := d["extract"].(map[string]any); ok && str(ex["key"]) != "" && !slices.Contains(keys, str(ex["key"])) {
+				keys = append(keys, str(ex["key"]))
+			}
+		}
+		switch {
+		case len(keys) == 1:
+			out = append(out, "key "+keys[0])
+		case len(keys) > 1:
+			out = append(out, fmt.Sprintf("keys %s +%d", keys[0], len(keys)-1))
+		}
+	case "SecretStore", "ClusterSecretStore":
+		if p, ok := spec["provider"].(map[string]any); ok {
+			for name, cfg := range p {
+				m, _ := cfg.(map[string]any)
+				parts := []string{name}
+				if svc := str(m["service"]); svc != "" {
+					parts = append(parts, svc)
+				}
+				if region := str(m["region"]); region != "" {
+					parts = append(parts, region)
+				}
+				out = append(out, strings.Join(parts, " "))
+				break
+			}
+		}
+	}
+	return out
 }

@@ -47,9 +47,11 @@ Limits: 12 cloud calls per question, 120 per minute for the whole install,
 
 Each connector has a minimum role, set in its drawer under *Who can use it
 in Kobi*: *Editors and admins* (the default), *Everyone* or *Admins only*.
-A user below it does not see the connector's tools, and Kobi's prompt does
-not mention it; a call made anyway is refused and recorded as denied.
-Changing it does not affect the verification or the connector's session.
+A user below it does not get the connector's tools; Kobi tells them the
+connector exists and which role it needs, and a call made anyway is refused
+and recorded as denied. To give it to them, raise their role or set the
+connector to *Everyone*. Changing it does not affect the verification or the
+connector's session.
 
 A connector reads the same cloud account for every user who clears the
 minimum role. The public MCP endpoint (`/api/v1/mcp`) never serves connector
@@ -188,7 +190,7 @@ and the
 The server runs read-only, with response caching off (an answer during an
 incident is never a cached one), telemetry off, and its own sign-in off,
 which it allows only on loopback. KubeBolt pins the release its allowlist was
-reviewed against, `3.0.0-beta.46`: the betas rename commands, so the pin
+reviewed against, `4.0.0-beta.6`: the betas rename commands, so the pin
 moves only with a KubeBolt release.
 
 **Helm.** The chart runs it as a second container of the API pod
@@ -235,7 +237,7 @@ cd deploy && docker compose --profile azure up -d
 ```
 
 **Anywhere else** (the API on a host, or a container you run yourself): the
-drawer's setup guide gives the `npx -y @azure/mcp@3.0.0-beta.46 server start …`
+drawer's setup guide gives the `npx -y @azure/mcp@4.0.0-beta.6 server start …`
 command with the same options and environment. Run it on the API's host, or
 in a container that shares the API's network; set `KUBEBOLT_MCP_AZMCP_URL` on
 the API if it listens on another loopback port.

@@ -9,5 +9,5 @@ import (
 )
 
 func newAuditStore(db *bolt.DB, bucket []byte) audit.Store {
-	return audit.NewBoltStore(db, bucket)
+	return boltAuditStore(db, bucket)
 }

@@ -235,10 +235,15 @@ spec:
             - name: KUBEBOLT_AGENT_LOG_LEVEL
               value: "info"
             - name: GOMEMLIMIT
-              # Keep below limits.memory (128Mi) so the Go scavenger reclaims
-              # idle pages before the cgroup OOM-kills. Hubble flow parsing
-              # churns ~200MB/min; without this HeapSys ratchets past the limit.
-              value: "100MiB"
+              # Keep below limits.memory (256Mi, ~90%) so the Go scavenger
+              # reclaims idle pages before the cgroup OOM-kills. Hubble flow
+              # parsing churns ~200MB/min; without this HeapSys ratchets past
+              # the limit.
+              value: "230MiB"
+            # The container's own memory limit (downward API): the agent caps
+            # one proxied API-server body at a quarter of it.
+            - name: KUBEBOLT_AGENT_MEMORY_LIMIT_BYTES
+              valueFrom: { resourceFieldRef: { containerName: agent, resource: limits.memory } }
             - name: KUBEBOLT_AGENT_NODE_NAME
               valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
             - name: KUBEBOLT_AGENT_NODE_IP
@@ -273,5 +278,5 @@ spec:
               cpu: 10m
               memory: 64Mi
             limits:
-              cpu: 100m
-              memory: 128Mi
+              cpu: 500m
+              memory: 256Mi

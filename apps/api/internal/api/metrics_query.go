@@ -45,6 +45,12 @@ func (h *handlers) activeClusterUID(ctx context.Context) string {
 	if h.manager == nil {
 		return ""
 	}
+	// A cluster being prepared: its agents ship metrics under its cluster_id
+	// before the cache has synced, so the metrics answer while the views wait.
+	// Checked first because Connector would wait for the connect.
+	if cid := h.manager.ConnectingClusterIDFor(ctx); cid != "" {
+		return cid
+	}
 	conn := h.manager.Connector(ctx)
 	if conn == nil {
 		// Metrics-only cluster: no connector, but the agent ships metrics under its

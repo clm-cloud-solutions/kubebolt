@@ -78,6 +78,14 @@ spec:
             # is enabled cluster-wide.
             - name: KUBEBOLT_AGENT_MODE
               value: "daemonset"
+            # The container's own memory limit (downward API): the agent caps
+            # one proxied API-server body at a quarter of it and answers with
+            # an error naming the limit, instead of being OOMKilled reading it.
+            - name: KUBEBOLT_AGENT_MEMORY_LIMIT_BYTES
+              valueFrom:
+                resourceFieldRef:
+                  containerName: agent
+                  resource: limits.memory
             # Downward API — the kubelet target + leader-election identity
             # are per-pod values, so they must come from fieldRefs.
             - name: KUBEBOLT_AGENT_NODE_NAME

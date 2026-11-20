@@ -6,7 +6,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
-        with: { go-version: '1.26.10' }  # Explicit patch — see release.yml setup-go comment for the CVE rationale
+        with:
+          go-version: '1.26.11'  # Explicit patch — see release.yml setup-go comment for the CVE rationale
+          # setup-go looks for a go.sum at the repo root by default; ours live in
+          # apps/api and packages/*, so the cache was never restored and every run
+          # downloaded every module and compiled from scratch.
+          cache-dependency-path: |
+            go.work.sum
+            apps/api/go.sum
+            packages/*/go.sum
       - name: Build
         run: cd apps/api && go build ./...
       - name: Vet
@@ -18,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
-        with: { node-version: '22' }
+        with: { node-version: '22', cache: npm, cache-dependency-path: apps/web/package-lock.json }
       - name: Install
         run: cd apps/web && npm ci
       - name: Test

@@ -7,6 +7,7 @@ import (
 	"regexp"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
+	"github.com/kubebolt/kubebolt/apps/api/internal/rightsizing"
 )
 
 // General is a MIXED domain (Track D — per-tenant settings). It splits across
@@ -39,10 +40,15 @@ type StoredGeneralSettings struct {
 	// UpdateCheckEnabled toggles the GitHub releases poller that
 	// drives the "new version available" chip. PLATFORM (install-global).
 	UpdateCheckEnabled *bool `json:"updateCheckEnabled,omitempty"`
-	// CacheSyncTimeoutSeconds is the cold-connect informer cache-sync
-	// deadline. PLATFORM (install-global) — applies on the next cluster
+	// CacheSyncTimeoutSeconds is how long a cold connect's informer sync may
+	// go without receiving anything (a budget of silence, capped at 10 min
+	// overall). PLATFORM (install-global) — applies on the next cluster
 	// connect, no request org.
 	CacheSyncTimeoutSeconds *int `json:"cacheSyncTimeoutSeconds,omitempty"`
+	// RightSizingMinHistoryHours is the usage history right-sizing needs before
+	// it recommends anything. PLATFORM (install-global). Range
+	// [rightsizing.MinMinHistoryHours, rightsizing.MaxMinHistoryHours].
+	RightSizingMinHistoryHours *int `json:"rightSizingMinHistoryHours,omitempty"`
 }
 
 // orgFields / platformFields project a stored record onto the two field classes
@@ -57,8 +63,9 @@ func (s StoredGeneralSettings) orgFields() StoredGeneralSettings {
 
 func (s StoredGeneralSettings) platformFields() StoredGeneralSettings {
 	return StoredGeneralSettings{
-		UpdateCheckEnabled:      s.UpdateCheckEnabled,
-		CacheSyncTimeoutSeconds: s.CacheSyncTimeoutSeconds,
+		UpdateCheckEnabled:         s.UpdateCheckEnabled,
+		CacheSyncTimeoutSeconds:    s.CacheSyncTimeoutSeconds,
+		RightSizingMinHistoryHours: s.RightSizingMinHistoryHours,
 	}
 }
 
@@ -67,7 +74,7 @@ func (s StoredGeneralSettings) hasOrgFields() bool {
 }
 
 func (s StoredGeneralSettings) hasPlatformFields() bool {
-	return s.UpdateCheckEnabled != nil || s.CacheSyncTimeoutSeconds != nil
+	return s.UpdateCheckEnabled != nil || s.CacheSyncTimeoutSeconds != nil || s.RightSizingMinHistoryHours != nil
 }
 
 // General returns the resolved GeneralConfig for the request's org: the env
@@ -166,6 +173,9 @@ func applyStoredGeneral(cfg *config.GeneralConfig, stored *StoredGeneralSettings
 	if stored.CacheSyncTimeoutSeconds != nil {
 		cfg.CacheSyncTimeoutSeconds = *stored.CacheSyncTimeoutSeconds
 	}
+	if stored.RightSizingMinHistoryHours != nil {
+		cfg.RightSizingMinHistoryHours = *stored.RightSizingMinHistoryHours
+	}
 }
 
 // PutGeneral validates and persists a partial General settings patch, routing
@@ -240,6 +250,7 @@ func (r *Runtime) loadGeneral(ctx context.Context) StoredGeneralSettings {
 	plat := r.loadGeneralGlobal()
 	org.UpdateCheckEnabled = plat.UpdateCheckEnabled
 	org.CacheSyncTimeoutSeconds = plat.CacheSyncTimeoutSeconds
+	org.RightSizingMinHistoryHours = plat.RightSizingMinHistoryHours
 	return org
 }
 
@@ -307,6 +318,7 @@ type MaskedEffectiveGeneral struct {
 	ProdNamespacePattern          string `json:"prodNamespacePattern"`
 	UpdateCheckEnabled            bool   `json:"updateCheckEnabled"`
 	CacheSyncTimeoutSeconds       int    `json:"cacheSyncTimeoutSeconds"`
+	RightSizingMinHistoryHours    int    `json:"rightSizingMinHistoryHours"`
 }
 
 type MaskedStoredGeneral struct {
@@ -316,6 +328,7 @@ type MaskedStoredGeneral struct {
 	ProdNamespacePattern          *string `json:"prodNamespacePattern,omitempty"`
 	UpdateCheckEnabled            *bool   `json:"updateCheckEnabled,omitempty"`
 	CacheSyncTimeoutSeconds       *int    `json:"cacheSyncTimeoutSeconds,omitempty"`
+	RightSizingMinHistoryHours    *int    `json:"rightSizingMinHistoryHours,omitempty"`
 }
 
 func (r *Runtime) RenderMaskedGeneral(ctx context.Context) (MaskedGeneral, error) {
@@ -328,18 +341,21 @@ func (r *Runtime) RenderMaskedGeneral(ctx context.Context) (MaskedGeneral, error
 			ProdNamespacePattern:          resolved.ProdNamespacePattern,
 			UpdateCheckEnabled:            resolved.UpdateCheckEnabled,
 			CacheSyncTimeoutSeconds:       resolved.CacheSyncTimeoutSeconds,
+			RightSizingMinHistoryHours:    rightsizing.ClampMinHistoryHours(resolved.RightSizingMinHistoryHours),
 		},
 		Stored: MaskedStoredGeneral{
 			HasOverride: stored.DisplayName != nil ||
 				stored.DefaultRefreshIntervalSeconds != nil ||
 				stored.ProdNamespacePattern != nil ||
 				stored.UpdateCheckEnabled != nil ||
-				stored.CacheSyncTimeoutSeconds != nil,
+				stored.CacheSyncTimeoutSeconds != nil ||
+				stored.RightSizingMinHistoryHours != nil,
 			DisplayName:                   stored.DisplayName,
 			DefaultRefreshIntervalSeconds: stored.DefaultRefreshIntervalSeconds,
 			ProdNamespacePattern:          stored.ProdNamespacePattern,
 			UpdateCheckEnabled:            stored.UpdateCheckEnabled,
 			CacheSyncTimeoutSeconds:       stored.CacheSyncTimeoutSeconds,
+			RightSizingMinHistoryHours:    stored.RightSizingMinHistoryHours,
 		},
 	}
 	return out, nil
@@ -390,6 +406,11 @@ func validateGeneralPatch(p *StoredGeneralSettings) error {
 			return &ValidationError{Field: "cacheSyncTimeoutSeconds", Message: "must be between 5 and 600 seconds"}
 		}
 	}
+	if p.RightSizingMinHistoryHours != nil {
+		if h := *p.RightSizingMinHistoryHours; h < rightsizing.MinMinHistoryHours || h > rightsizing.MaxMinHistoryHours {
+			return &ValidationError{Field: "rightSizingMinHistoryHours", Message: fmt.Sprintf("must be between %d and %d hours", rightsizing.MinMinHistoryHours, rightsizing.MaxMinHistoryHours)}
+		}
+	}
 	return nil
 }
 
@@ -409,6 +430,9 @@ func mergeGeneral(base, patch StoredGeneralSettings) StoredGeneralSettings {
 	}
 	if patch.CacheSyncTimeoutSeconds != nil {
 		out.CacheSyncTimeoutSeconds = patch.CacheSyncTimeoutSeconds
+	}
+	if patch.RightSizingMinHistoryHours != nil {
+		out.RightSizingMinHistoryHours = patch.RightSizingMinHistoryHours
 	}
 	return out
 }

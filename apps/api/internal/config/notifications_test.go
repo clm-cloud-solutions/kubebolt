@@ -161,3 +161,33 @@ func TestParseBoolDefault(t *testing.T) {
 		}
 	}
 }
+
+// Summaries cannot be turned off from the environment: a threshold below 2 or
+// a list limit below 1 falls back to the default, like any invalid value.
+func TestLoadNotificationsConfig_BurstSummaries(t *testing.T) {
+	cases := []struct {
+		threshold, listLimit       string
+		wantThreshold, wantListLim int
+	}{
+		{"", "", DefaultBurstThreshold, DefaultDigestListLimit},
+		{"8", "50", 8, 50},
+		{"0", "0", DefaultBurstThreshold, DefaultDigestListLimit},
+		{"1", "-3", DefaultBurstThreshold, DefaultDigestListLimit},
+		{"lots", "many", DefaultBurstThreshold, DefaultDigestListLimit},
+	}
+	for _, c := range cases {
+		t.Setenv("KUBEBOLT_NOTIFICATIONS_BURST_THRESHOLD", c.threshold)
+		t.Setenv("KUBEBOLT_NOTIFICATIONS_DIGEST_LIST_LIMIT", c.listLimit)
+		cfg := LoadNotificationsConfig()
+		if cfg.BurstThreshold != c.wantThreshold || cfg.DigestListLimit != c.wantListLim {
+			t.Errorf("threshold %q / list %q → %d / %d, want %d / %d", c.threshold, c.listLimit,
+				cfg.BurstThreshold, cfg.DigestListLimit, c.wantThreshold, c.wantListLim)
+		}
+	}
+	t.Setenv("KUBEBOLT_NOTIFICATIONS_BURST_WINDOW", "2m")
+	t.Setenv("KUBEBOLT_NOTIFICATIONS_BURST_QUIET", "nope")
+	cfg := LoadNotificationsConfig()
+	if cfg.BurstWindow != 2*time.Minute || cfg.BurstQuiet != DefaultBurstQuiet || cfg.BurstMaxWait != DefaultBurstMaxWait {
+		t.Errorf("window %v, quiet %v, max wait %v", cfg.BurstWindow, cfg.BurstQuiet, cfg.BurstMaxWait)
+	}
+}

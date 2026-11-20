@@ -17,9 +17,6 @@ import (
 // that. So the first answer from a connector in a conversation carries the
 // connector's procedure, once.
 
-// connectorSkills maps a connector to the procedure for its tools.
-var connectorSkills = map[string]string{"aws": "aws-investigation"}
-
 const connectorSkillHeader = "[KubeBolt] %s, the procedure for these tools, attached to this conversation's first call to them (it is what load_skill %s returns). The call's answer follows it."
 
 // WithConnectorSkill puts the procedure of call's connector in front of its
@@ -31,7 +28,7 @@ func WithConnectorSkill(history []Message, round []ToolResult, call ToolCall, re
 	if !ok {
 		return result
 	}
-	name, ok := connectorSkills[id]
+	name, ok := skills.ForConnector(id)
 	if !ok {
 		return result
 	}
@@ -45,6 +42,35 @@ func WithConnectorSkill(history []Message, round []ToolResult, call ToolCall, re
 	}
 	result.Content = header + "\n\n" + skill.Body + "\n\n" + result.Content
 	return result
+}
+
+// WithoutConnectorSkill is a result's content without the procedure
+// WithConnectorSkill put in front of it: what the call itself answered. How a
+// call ended is read from that, never from the procedure, whose own words
+// (a "`not found`" an ECR tag gives, "an AccessDenied names the action") made a
+// failed first AWS call read as something it was not and named the procedure
+// as the reason. The header names the procedure; only a connector's procedure
+// (skills.IsConnectorProcedure) is ever put there.
+func WithoutConnectorSkill(content string) string {
+	rest, ok := strings.CutPrefix(content, "[KubeBolt] ")
+	if !ok {
+		return content
+	}
+	name, _, ok := strings.Cut(rest, ",")
+	if !ok || !skills.IsConnectorProcedure(name) {
+		return content
+	}
+	skill, ok := skills.Get(name)
+	if !ok {
+		return content
+	}
+	// The catalogue's own name, not the one read from the content: what goes
+	// back into a string is never text the tool's answer supplied.
+	prefix := fmt.Sprintf(connectorSkillHeader, skill.Name, skill.Name) + "\n\n" + skill.Body + "\n\n"
+	if answer, ok := strings.CutPrefix(content, prefix); ok {
+		return answer
+	}
+	return content
 }
 
 // skillDelivered reports whether the conversation called load_skill for name

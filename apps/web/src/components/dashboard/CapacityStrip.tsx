@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/services/api'
-import { useRightSizing, rightSizingState, collectedLabel, RIGHT_SIZING_ERROR_COPY } from '@/hooks/useRightSizing'
+import { useRightSizing, rightSizingState, collectedLabel, historyNeededLabel, historySpanLabel, RIGHT_SIZING_ERROR_COPY } from '@/hooks/useRightSizing'
 import { useCostAvailable } from '@/hooks/useCostAvailable'
 import { useNodeRates, estimateMonthlySavings } from '@/hooks/useClusterCost'
 import { formatCPU, formatMemory, formatMoney } from '@/utils/formatters'
@@ -79,7 +79,7 @@ export function CapacityStrip({ rangeMinutes, installed, overview }: Props) {
   const mem = usePeakSeries('mem', MEM_QUERY, rangeMinutes, installed)
   const cpuNodePeaks = useNodePeaks('cpu', CPU_BY_NODE, rangeMinutes, installed)
   const memNodePeaks = useNodePeaks('mem', MEM_BY_NODE, rangeMinutes, installed)
-  const { recs, totals, isLoading: recsLoading, error: recsError, windowDays, insufficientHistory } = useRightSizing(installed, overview)
+  const { recs, totals, isLoading: recsLoading, error: recsError, windowDays, insufficientHistory, minHistoryHours } = useRightSizing(installed, overview)
   // A failed read or a cluster still collecting has evaluated nothing: the card
   // shows "—", never "0" or "well sized" (the 0 claimed nothing was reclaimable).
   const rsState = rightSizingState({ isLoading: recsLoading, error: recsError, insufficientHistory }, totals.count)
@@ -293,7 +293,7 @@ export function CapacityStrip({ rangeMinutes, installed, overview }: Props) {
               : rsState === 'error'
                 ? RIGHT_SIZING_ERROR_COPY
                 : rsState === 'collecting'
-                  ? 'collecting samples — needs ~2 days'
+                  ? `collecting samples — needs ${historyNeededLabel(minHistoryHours)}`
                   : 'well sized — nothing to hand back'
         }
         viz={
@@ -311,10 +311,10 @@ export function CapacityStrip({ rangeMinutes, installed, overview }: Props) {
         caption={
           <>
             {rsState === 'collecting'
-              ? collectedLabel(windowDays)
+              ? collectedLabel(windowDays, minHistoryHours)
               : rsState === 'error'
                 ? 'P95 not computed'
-                : `P95 over ${windowDays != null ? `${Math.max(1, Math.round(windowDays))}d` : '7d'}`}
+                : `P95 over ${historySpanLabel(windowDays)}`}
             {totals.count > 0 && (
               <>
                 {' · '}

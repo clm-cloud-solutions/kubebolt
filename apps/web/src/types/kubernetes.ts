@@ -277,6 +277,36 @@ export interface WSEvent {
 }
 
 // Cluster info
+// ClusterProgress is how far a cluster's connect has gone (GET
+// /clusters/progress): what the Preparing view shows while the cache loads.
+export interface ClusterProgress {
+  context: string
+  state: 'connecting' | 'ready' | 'waiting_agent' | 'failed' | 'metrics_only' | 'idle'
+  startedAt?: string
+  // viaAgent: reached through its agents (agent-proxy), not a kubeconfig context.
+  viaAgent?: boolean
+  agents: number
+  accessChecked: boolean
+  readable: number
+  probed: number
+  // The resource types KubeBolt may not list.
+  denied?: string[]
+  types: ClusterTypeProgress[] | null
+  // Bytes of the initial LISTs received so far.
+  bytesReceived?: number
+  error?: string
+  retryAt?: string
+}
+
+export interface ClusterTypeProgress {
+  kind: string
+  synced: boolean
+  loaded: number
+  total: number
+  // Bytes its pages weighed so far.
+  bytes?: number
+}
+
 export interface ClusterInfo {
   name: string
   context: string

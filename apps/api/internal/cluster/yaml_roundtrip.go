@@ -7,10 +7,13 @@ import (
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// The YAML viewer (resourceYAML) hides three things: every Secret value, the
-// ConfigMap values that look like credentials, and the
+// The YAML viewer (resourceYAML) hides every Secret value, the ConfigMap
+// values that look like credentials, what viewer_redact.go hides in a spec (a
+// secret store's inline credentials, an Argo CD Application's values) and the
 // last-applied-configuration annotation. The editor sends the same text back
 // (ApplyResourceYAML), and an Update replaces the whole object. Before this
 // step a save wrote the placeholder over every hidden value — "REDACTED" is
@@ -133,8 +136,144 @@ func restoreHiddenValues(resourceType string, submitted, live map[string]interfa
 			s, ok := v.(string)
 			return ok && configMapValueHidden(k, s)
 		})
+	default:
+		restoreSpecHidden(submitted, live)
 	}
 	restoreLastApplied(submitted, live)
+}
+
+// A secret store's inline credentials (#91) and an Argo CD Application's
+// values are hidden inside the spec, not under data: one placeholder for
+// a credential, or a values text with some lines hidden. The viewer's own
+// rendering of the live object says where: a value the YAML still carries
+// exactly as the viewer showed it was not touched, and the stored one goes
+// back. A hidden value that was edited cannot be told apart from what the
+// person wrote, so an edit that still carries the placeholder is refused.
+// Before this, saving a secret store from the editor wrote "REDACTED" over its
+// credential.
+
+// specHiddenView is what the viewer shows of live, and whether it hid anything
+// in its spec.
+func specHiddenView(live map[string]interface{}) (map[string]interface{}, bool) {
+	if live == nil {
+		return nil, false
+	}
+	shown := runtime.DeepCopyJSON(live)
+	return shown, hideSpecFromViewer(shown)
+}
+
+// restoreSpecHidden puts back each hidden spec value the YAML kept as shown.
+func restoreSpecHidden(submitted, live map[string]interface{}) {
+	shown, hid := specHiddenView(live)
+	if !hid {
+		return
+	}
+	w := hiddenSpecWalk{restore: true}
+	w.walk(submitted, shown, live, "")
+}
+
+// checkSpecHiddenKept refuses an edit that changed a value the viewer hid in
+// part and still carries the placeholder: sending it would store the word.
+func checkSpecHiddenKept(submitted, live map[string]interface{}) error {
+	shown, hid := specHiddenView(live)
+	if !hid {
+		return nil
+	}
+	w := hiddenSpecWalk{}
+	w.walk(submitted, shown, live, "")
+	if len(w.refused) == 0 {
+		return nil
+	}
+	sort.Strings(w.refused)
+	return &EditRefusedError{Reason: fmt.Sprintf("%s held values the viewer hides and was changed while still reading %s. "+
+		"Leave a hidden value as the viewer shows it to keep it, or write the whole value.",
+		strings.Join(w.refused, ", "), redactedPlaceholder)}
+}
+
+type hiddenSpecWalk struct {
+	restore bool
+	refused []string
+}
+
+// walk visits submitted alongside the viewer's rendering of live (shown) and
+// live itself. Where shown differs from live the viewer hid something.
+func (w *hiddenSpecWalk) walk(sub, shown, live interface{}, path string) interface{} {
+	switch sh := shown.(type) {
+	case string:
+		lv, _ := live.(string)
+		if sh == lv {
+			return sub
+		}
+		v, ok := sub.(string)
+		if !ok {
+			return sub
+		}
+		if v == sh {
+			if w.restore {
+				return lv
+			}
+			return sub
+		}
+		if strings.Contains(v, redactedPlaceholder) {
+			w.refused = append(w.refused, path)
+		}
+		return sub
+	case map[string]interface{}:
+		sm, ok := sub.(map[string]interface{})
+		lm, ok2 := live.(map[string]interface{})
+		if !ok || !ok2 {
+			return sub
+		}
+		for k, sv := range sm {
+			if shv, ok := sh[k]; ok {
+				sm[k] = w.walk(sv, shv, lm[k], joinPath(path, k))
+			}
+		}
+		return sm
+	case []interface{}:
+		sl, ok := sub.([]interface{})
+		ll, ok2 := live.([]interface{})
+		if !ok || !ok2 || len(sl) != len(sh) || len(ll) != len(sh) {
+			// The list changed shape: a placeholder in it can no longer be
+			// matched to the value it stood for.
+			if containsPlaceholder(sub) {
+				w.refused = append(w.refused, path)
+			}
+			return sub
+		}
+		for i := range sl {
+			sl[i] = w.walk(sl[i], sh[i], ll[i], fmt.Sprintf("%s[%d]", path, i))
+		}
+		return sl
+	}
+	return sub
+}
+
+func joinPath(path, key string) string {
+	if path == "" {
+		return key
+	}
+	return path + "." + key
+}
+
+func containsPlaceholder(v interface{}) bool {
+	switch t := v.(type) {
+	case string:
+		return strings.Contains(t, redactedPlaceholder)
+	case map[string]interface{}:
+		for _, x := range t {
+			if containsPlaceholder(x) {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, x := range t {
+			if containsPlaceholder(x) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // restoreData replaces each placeholder in submitted.data with live.data's

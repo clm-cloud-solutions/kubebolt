@@ -484,8 +484,8 @@ mcpConnectors:
         # The release Kobi's Azure allowlist was reviewed against. Bump it
         # only with the API: the betas rename commands, and a test fails when
         # this tag differs from the version the API expects.
-        tag: 3.0.0-beta.46
-        digest: sha256:eaf976c3b537de579d043822e45f47958b8b1647aaf11b6c4e8e9d18ea05c810
+        tag: 4.0.0-beta.6
+        digest: sha256:3167085535a9c5054d22dd6af3560f20ef553f11850d934fc0d68e733873f90b
         pullPolicy: IfNotPresent
       resources:
         requests:
@@ -517,9 +517,12 @@ mcpConnectors:
 #     - name: KUBEBOLT_AGENT_TUNNEL_IDLE_TIMEOUT
 #       value: "10m"
 #     # Agent-proxy resilience timeouts (widen under heavy agent concurrency, tighten to
-#     # fail faster). Connect deadline / stuck-watchdog (0 disables) / request fallback.
+#     # fail faster). Connect (how long a connect may receive nothing; one that keeps
+#     # receiving pages carries on, up to 10 min) / stuck-watchdog (0 disables) /
+#     # request fallback. Connect and stuck are never applied below the request
+#     # timeout + 5s.
 #     - name: KUBEBOLT_AGENT_PROXY_CONNECT_TIMEOUT
-#       value: "25s"
+#       value: "60s"
 #     - name: KUBEBOLT_AGENT_PROXY_STUCK_TIMEOUT
 #       value: "45s"
 #     - name: KUBEBOLT_AGENT_PROXY_REQUEST_TIMEOUT

@@ -21,6 +21,7 @@ import (
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/audit"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/fieldmanager"
 )
@@ -54,7 +55,19 @@ var setImageableTypes = map[string]bool{
 // (operational log line) AND, when an audit store is wired (Sprint 1),
 // persists a durable record to the kobi_actions bucket for the admin
 // action-history view.
+//
+// The record is stamped with the cluster the request resolved, which is the
+// cluster a resource action ran on. A mutation whose subject is another
+// cluster, or none, says so with auditMutationOn.
 func auditMutation(r *http.Request, action, resourceType, namespace, name string, params map[string]any, err error) {
+	auditMutationOn(r, audit.ClusterIDFor(r.Context()), action, resourceType, namespace, name, params, err)
+}
+
+// auditMutationOn is auditMutation with the cluster named by the caller: the
+// cluster a mute silences, or "" for a change that belongs to no cluster. The
+// cluster the person had selected would be an association the record invents.
+func auditMutationOn(r *http.Request, clusterID, action, resourceType, namespace, name string, params map[string]any, err error) {
+	params = auditParams(params)
 	actor := actionActorOf(r)
 	source := actor.Source
 	var userID, username string
@@ -99,7 +112,6 @@ func auditMutation(r *http.Request, action, resourceType, namespace, name string
 	// loop opened in Sprint 0 (frontend sends X-KubeBolt-Origin-Insight when
 	// the Kobi chat was seeded from an insight).
 	if audit.Enabled() {
-		clusterID := audit.ClusterID()
 		rec := &audit.Record{
 			ID:        uuid.New().String(),
 			Timestamp: time.Now().UTC(),
@@ -927,4 +939,26 @@ func respondGovernanceBlocked(w http.ResponseWriter, setting, msg string) {
 		"governanceBlocked": true,
 		"setting":           setting,
 	})
+}
+
+// auditParams is params as the log and the trail keep them: a JSON copy (the
+// caller's structs stay untouched), with no literal env value
+// (audit.DropEnvValues) and what cluster.RedactObject hides in annotations,
+// args and messages. Both outlive the mutation by months; neither needs a
+// value to say what changed.
+func auditParams(params map[string]any) map[string]any {
+	if params == nil {
+		return nil
+	}
+	raw, err := json.Marshal(params)
+	if err != nil {
+		return map[string]any{"params": "not recorded: " + err.Error()}
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return map[string]any{"params": "not recorded: " + err.Error()}
+	}
+	audit.DropEnvValues(out)
+	cluster.RedactObject(out)
+	return out
 }

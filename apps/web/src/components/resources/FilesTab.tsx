@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Folder, FileText, FileCode, Link2, ChevronRight, Download, X, ShieldOff } from 'lucide-react'
 import { api } from '@/services/api'
+import { useAuth } from '@/contexts/AuthContext'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import type { ResourceItem } from '@/types/kubernetes'
@@ -32,17 +33,20 @@ export function FilesTab({ namespace, name, item }: { namespace: string; name: s
   const [selectedContainer, setSelectedContainer] = useState(containers[0] ?? '')
   const [currentPath, setCurrentPath] = useState('/')
   const [viewingFile, setViewingFile] = useState<string | null>(null)
+  // Reading a pod's files is exec: Editor, like the terminal.
+  const { hasRole } = useAuth()
+  const canRead = hasRole('editor')
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['pod-files', namespace, name, selectedContainer, currentPath],
     queryFn: () => api.listFiles(namespace, name, selectedContainer, currentPath),
-    enabled: !!selectedContainer,
+    enabled: canRead && !!selectedContainer,
   })
 
   const { data: fileContent, isLoading: contentLoading } = useQuery({
     queryKey: ['pod-file-content', namespace, name, selectedContainer, viewingFile],
     queryFn: () => api.getFileContent(namespace, name, selectedContainer, viewingFile!),
-    enabled: !!viewingFile,
+    enabled: canRead && !!viewingFile,
   })
 
   const pathSegments = currentPath.split('/').filter(Boolean)
@@ -83,6 +87,10 @@ export function FilesTab({ namespace, name, item }: { namespace: string; name: s
 
   const podStatus = String(item.status ?? '').toLowerCase()
   const canBrowse = podStatus === 'running'
+
+  if (!canRead) {
+    return <div className="text-center text-xs text-kb-text-tertiary py-12">Editor role required to browse a pod's files</div>
+  }
 
   if (!canBrowse) {
     return <div className="text-center text-xs text-kb-text-tertiary py-12">Pod must be running to browse files</div>
