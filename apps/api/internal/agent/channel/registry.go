@@ -442,6 +442,20 @@ func (r *AgentRegistry) Unregister(a *Agent) {
 	}
 }
 
+// LiveKeys returns the (cluster_id, agent_id) of every agent connected to
+// THIS replica — what a LivenessStore heartbeat refreshes.
+func (r *AgentRegistry) LiveKeys() []AgentKey {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []AgentKey
+	for _, bucket := range r.agents {
+		for _, a := range bucket {
+			out = append(out, AgentKey{ClusterID: a.ClusterID, AgentID: a.AgentID})
+		}
+	}
+	return out
+}
+
 // List returns a snapshot of every connected agent across all clusters,
 // sorted (cluster_id, agent_id) for stable test output.
 func (r *AgentRegistry) List() []AgentSummary {

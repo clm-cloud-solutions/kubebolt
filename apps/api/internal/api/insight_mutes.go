@@ -131,7 +131,7 @@ func (h *handlers) handleCreateMute(w http.ResponseWriter, r *http.Request) {
 	if m.ExpiresAt != nil {
 		params["expiresAt"] = m.ExpiresAt.UTC().Format(time.RFC3339)
 	}
-	auditMutation(r, "mute", "insight-mute", "", m.RuleID+" "+m.Resource, params, err)
+	auditMutationOn(r, m.ClusterID, "mute", "insight-mute", "", m.RuleID+" "+m.Resource, params, err)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "could not create mute")
 		return
@@ -334,7 +334,9 @@ func (h *handlers) handleDeleteMute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err := h.mutes.DeleteMute(r.Context(), auth.ContextTenantID(r), id, muteActor(r))
-	auditMutation(r, "unmute", "insight-mute", "", id, nil, err)
+	// The mute names its cluster; the request does not, and the id is all the
+	// record has without reading the mute back.
+	auditMutationOn(r, "", "unmute", "insight-mute", "", id, nil, err)
 	if errors.Is(err, insights.ErrMuteNotFound) {
 		respondError(w, http.StatusNotFound, "mute not found")
 		return

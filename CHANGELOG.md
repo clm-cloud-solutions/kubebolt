@@ -6,6 +6,83 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.6.7] — 2026-11-19
+
+A slow agent tunnel connects, and the terminal and the audit trail say what
+happened. A fix release: no migration; the agent stays on 1.4.9. Full note:
+[docs/releases/v2.6.7.md](docs/releases/v2.6.7.md).
+
+### Fixed
+
+- **The terminal says why a cluster refused it.** On a cluster whose agent
+  runs in reader mode (the default), opening a terminal printed "agent-proxy
+  SPDY: expected 101 Switching Protocols, got 403": the tunnel dropped the API
+  server's answer. It now carries the API server's Status, like client-go
+  does, and the terminal says that reader mode only reads and
+  `rbac.mode=operator` opens a terminal (on a kubeconfig cluster: that its
+  credentials may not exec).
+- **A terminal the cluster refuses is not audited as opened.** The session's
+  open record was written when the browser connected, before the exec stream
+  was negotiated, so a refused exec read as a successful session. The open is
+  now written when the stream runs; a refused stream leaves one open record
+  with `result: error` and the cluster's reason.
+- **The audit trail names the cluster a change was made on.** Cluster
+  mutations and the cluster-scoped administration routes stamped every record
+  with the cluster resolved from a background context, the install's default,
+  rather than the one the request acted on. The resolver now receives the
+  request's context; a mute records the cluster it silences, an unmute records
+  none, and an access record the handler could not tie to a cluster no longer
+  falls back to the default one.
+- **A connect through an agent is no longer cut while a page is on its way.**
+  The connect deadline counts from the last response, and one proxied request
+  may take the whole request timeout (30s), but the deadline defaulted to 25s:
+  a large cluster behind a slow tunnel failed its first connect. The default
+  is now 60s, and the connect deadline and the stuck-agent watchdog are never
+  applied below the request timeout + 5s, whatever is configured. The API
+  logs a raised value and Settings › Agents & Ingest says what runs.
+
+## [2.6.6] — 2026-11-19
+
+Agent metrics survive a VictoriaMetrics restart, Kobi reads a connector's
+first call by its own answer, and the Azure MCP Server sidecar moves to 4.0.
+A fix release: no migration; the agent stays on 1.4.9. Full note:
+[docs/releases/v2.6.6.md](docs/releases/v2.6.6.md).
+
+### Fixed
+
+- **A VictoriaMetrics restart no longer leaves a gap in agent metrics.** A
+  batch the API fails to write for a passing reason (connection error,
+  timeout, 5xx, 429) is held encoded, up to 64 MiB, oldest dropped first,
+  and written again oldest first once VictoriaMetrics answers, with the
+  samples' own timestamps (`agent/ingest_spool.go`, `SpoolingWriter`).
+- **A connector's first call is read by its own answer.** The procedure
+  Kobi puts in front of a connector's first answer made a failed first AWS
+  call read as `not_found`, with the procedure's header as its reason
+  (`WithoutConnectorSkill`).
+- **A cluster whose events KubeBolt cannot list says so.** `GET /events`
+  answers 403, the Events page shows *Access Restricted*, and Kobi gets a
+  permission error. Before, the API returned a 500 and Kobi's tool hit a
+  recovered panic.
+
+### Changed
+
+- **Kobi's `lastWrites` note treats a field manager name as a claim.** Any
+  client can write with any manager name, so `kubebolt-autopilot` is no
+  longer presented as proof that Autopilot made the write.
+
+### Security
+
+- **Azure MCP Server sidecar 4.0.0-beta.6** (chart and compose, by digest).
+  The 3.0 line's Alpine image carried two HIGH CVEs (musl, zlib), and both
+  waivers are removed from `.trivyignore-thirdparty`. If you pinned the
+  sidecar image yourself, move it to 4.0.0-beta.6 with this release.
+- **Go 1.26.11** for CVE-2026-97054 (net/http, an HTTP/1 server could read
+  past `MaxBytesReader`'s limit; HIGH): the API, the single image and the
+  krew/Homebrew binaries. VictoriaMetrics v1.156.0 carries it too, and no
+  VictoriaMetrics release is built on a fixed Go yet: it is waived in
+  `.trivyignore-thirdparty` until 2026-12-03. The bundled VictoriaMetrics
+  runs as a ClusterIP Service that only the API calls.
+
 ## [2.6.5] — 2026-11-18
 
 A large cluster connects behind a slow agent tunnel, Helm's release history

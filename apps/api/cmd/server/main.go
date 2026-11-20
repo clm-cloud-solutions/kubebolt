@@ -609,10 +609,11 @@ func main() {
 		// Durable mutation-audit store (Sprint 1). Persists every cluster
 		// mutation (UI + Kobi-proposed) to the kobi_actions bucket so the
 		// admin action-history view survives restarts. The cluster-id
-		// resolver stamps the active cluster onto each record.
+		// resolver stamps the cluster the REQUEST resolved onto each record,
+		// not whichever cluster a background context resolves to.
 		actionAuditStore = newAuditStore(boltHandle(store), auth.KobiActionsBucket())
-		api.SetAuditStore(actionAuditStore, func() string {
-			if c := manager.Connector(context.Background()); c != nil {
+		api.SetAuditStore(actionAuditStore, func(ctx context.Context) string {
+			if c := manager.Connector(ctx); c != nil {
 				return c.ClusterUID()
 			}
 			return ""
@@ -1071,7 +1072,10 @@ func main() {
 
 	// The agent ingest writes to the store the readers use, even when it did
 	// not answer at boot: a VictoriaMetrics started later starts receiving.
-	writer := agent.NewVMWriter(metricsStoreURL)
+	// A batch it fails to write for a passing reason (a restart) is held and
+	// written again once it answers (agent.SpoolingWriter).
+	writer := agent.NewSpoolingWriter(agent.NewVMWriter(metricsStoreURL), agent.DefaultIngestSpoolBytes, prometheus.DefaultRegisterer)
+	go writer.Run(agentCtx)
 	// AgentRegistry was created above NewRouter; wire it into the
 	// cluster.Manager here so AddAgentProxyCluster can resolve
 	// reachability via the live registry. Same effect as the
@@ -1103,25 +1107,33 @@ func main() {
 	// when settings are unavailable (auth disabled) and by the live providers wired
 	// just after. Operators WIDEN under heavy agent concurrency or TIGHTEN to fail
 	// faster; stuck=0 disables the watchdog.
+	// The connect deadline and the stuck watchdog are idle budgets: neither is
+	// applied below the request timeout plus headroom
+	// (config.EffectiveIdleBudgetSeconds), or one slow page ends a connect, or
+	// a channel, that is still receiving.
 	icBaseline := config.LoadIngestChannelConfig()
-	cluster.DefaultConnectTimeout = time.Duration(icBaseline.ConnectTimeoutSeconds) * time.Second
-	channel.StuckTimeout = time.Duration(icBaseline.StuckTimeoutSeconds) * time.Second
+	effectiveConnect := config.EffectiveIdleBudgetSeconds(icBaseline.ConnectTimeoutSeconds, icBaseline.RequestTimeoutSeconds)
+	effectiveStuck := config.EffectiveIdleBudgetSeconds(icBaseline.StuckTimeoutSeconds, icBaseline.RequestTimeoutSeconds)
+	cluster.DefaultConnectTimeout = time.Duration(effectiveConnect) * time.Second
+	channel.StuckTimeout = time.Duration(effectiveStuck) * time.Second
 	channel.DefaultProxyTimeout = time.Duration(icBaseline.RequestTimeoutSeconds) * time.Second
 	slog.Info("agent-proxy resilience timeouts",
 		slog.Duration("connect", cluster.DefaultConnectTimeout),
 		slog.Duration("stuck", channel.StuckTimeout),
 		slog.Duration("request", channel.DefaultProxyTimeout),
 	)
+	warnRaisedIdleBudget("connect", icBaseline.ConnectTimeoutSeconds, effectiveConnect, icBaseline.RequestTimeoutSeconds)
+	warnRaisedIdleBudget("stuck", icBaseline.StuckTimeoutSeconds, effectiveStuck, icBaseline.RequestTimeoutSeconds)
 	// Live providers read the resolved IngestChannel setting on each use (connect
 	// deadline per cold connect, request timeout per proxied call). Fall back to
 	// the env baseline via config when settingsRuntime is unavailable. The
 	// stuck-watchdog provider is a Server option (WithStuckTimeoutFunc), wired at
 	// NewServer below since it belongs to the ingest server.
-	agentProxySecs := func(pick func(config.IngestChannelConfig) int) int {
+	agentProxyConfig := func() config.IngestChannelConfig {
 		if settingsRuntime != nil {
-			return pick(settingsRuntime.IngestChannel())
+			return settingsRuntime.IngestChannel()
 		}
-		return pick(config.LoadIngestChannelConfig())
+		return config.LoadIngestChannelConfig()
 	}
 	// On-change observability: each provider logs when the resolved value
 	// changes, AT THE POINT OF USE (next connect / watchdog tick / proxied
@@ -1129,28 +1141,38 @@ func main() {
 	// as proof the runtime picked it up live — no restart. atomic.Swap dedups
 	// the log across the concurrent watchdog/request goroutines. The first read
 	// logs the boot value (prev=0), which also confirms the env baseline.
+	// A connect deadline or watchdog raised to the request-timeout floor is
+	// logged as such, with the value someone configured.
 	var lastConnectSecs, lastStuckSecs, lastRequestSecs atomic.Int64
-	logTimeoutChange := func(name string, last *atomic.Int64, secs int) {
+	logTimeoutChange := func(name string, last *atomic.Int64, secs, configured, request int) {
 		if prev := last.Swap(int64(secs)); prev != int64(secs) {
 			slog.Info("agent-proxy timeout in effect (live from Settings → Agents & Ingest)",
 				slog.String("timeout", name),
 				slog.Int("seconds", secs),
 				slog.Int64("previous_seconds", prev))
+			warnRaisedIdleBudget(name, configured, secs, request)
 		}
 	}
-	agentProxyTimeout := func(name string, last *atomic.Int64, pick func(config.IngestChannelConfig) int) time.Duration {
-		secs := agentProxySecs(pick)
-		logTimeoutChange(name, last, secs)
+	// pick returns the configured value; idle budgets are raised to the
+	// request-timeout floor before they are applied.
+	agentProxyTimeout := func(name string, last *atomic.Int64, idleBudget bool, pick func(config.IngestChannelConfig) int) time.Duration {
+		ic := agentProxyConfig()
+		configured := pick(ic)
+		secs := configured
+		if idleBudget {
+			secs = config.EffectiveIdleBudgetSeconds(configured, ic.RequestTimeoutSeconds)
+		}
+		logTimeoutChange(name, last, secs, configured, ic.RequestTimeoutSeconds)
 		return time.Duration(secs) * time.Second
 	}
 	manager.SetConnectTimeoutProvider(func() time.Duration {
-		return agentProxyTimeout("connect", &lastConnectSecs, func(ic config.IngestChannelConfig) int { return ic.ConnectTimeoutSeconds })
+		return agentProxyTimeout("connect", &lastConnectSecs, true, func(ic config.IngestChannelConfig) int { return ic.ConnectTimeoutSeconds })
 	})
 	channel.RequestTimeoutProvider = func() time.Duration {
-		return agentProxyTimeout("request", &lastRequestSecs, func(ic config.IngestChannelConfig) int { return ic.RequestTimeoutSeconds })
+		return agentProxyTimeout("request", &lastRequestSecs, false, func(ic config.IngestChannelConfig) int { return ic.RequestTimeoutSeconds })
 	}
 	stuckTimeoutProvider := func() time.Duration {
-		return agentProxyTimeout("stuck", &lastStuckSecs, func(ic config.IngestChannelConfig) int { return ic.StuckTimeoutSeconds })
+		return agentProxyTimeout("stuck", &lastStuckSecs, true, func(ic config.IngestChannelConfig) int { return ic.StuckTimeoutSeconds })
 	}
 	// Spec #09 V2 — hot-reload the tunnel idle timeout from the
 	// settings runtime. A 30s ticker re-reads the value and rewrites
@@ -1297,10 +1319,14 @@ func main() {
 			}
 		}
 
-		// Prune disconnected records older than the horizon. Records
-		// for agents currently connected (DisconnectedAt zero) never
-		// expire. The horizon is configurable so SaaS operators can
-		// shorten it if they don't want stale orgs in their data set.
+		// Prune disconnected records older than the horizon. A record
+		// for an agent currently connected (DisconnectedAt zero) never
+		// expires — except in a store several replicas share, where each
+		// replica refreshes the records of the agents it holds and a
+		// connected record nobody refreshed for the horizon is pruned
+		// (channel.LivenessStore). The horizon is configurable so SaaS
+		// operators can shorten it if they don't want stale orgs in their
+		// data set.
 		//
 		// Spec #09 V2 — the horizon is hot-reloadable. The ticker
 		// re-reads `settingsRuntime.IngestChannel().AgentRegistryPruneHorizon`
@@ -1308,6 +1334,10 @@ func main() {
 		// pass without a restart. Falls back to the env-only baseline
 		// when the runtime isn't available (auth-disabled mode).
 		pruneJob := opsmetrics.NewJob("agent_registry_prune", time.Hour)
+		liveness, _ := agentStore.(channel.LivenessStore)
+		if liveness != nil {
+			go channel.RunLivenessHeartbeat(agentCtx, agentRegistry, liveness, channel.LivenessHeartbeat)
+		}
 		go func() {
 			ticker := time.NewTicker(1 * time.Hour)
 			defer ticker.Stop()
@@ -1333,11 +1363,22 @@ func main() {
 						slog.Warn("agent registry prune failed", slog.String("error", err.Error()))
 						continue
 					}
+					unseen := 0
+					if liveness != nil {
+						unseenHorizon := channel.UnseenHorizon(horizon)
+						unseen, err = liveness.PruneUnseen(time.Now().UTC().Add(-unseenHorizon))
+						if err != nil {
+							run.End()
+							slog.Warn("agent registry prune of unseen records failed", slog.String("error", err.Error()))
+							continue
+						}
+					}
 					run.OK()
 					run.End()
-					if removed > 0 {
+					if removed > 0 || unseen > 0 {
 						slog.Info("agent registry pruned",
 							slog.Int("removed", removed),
+							slog.Int("unseen", unseen),
 							slog.Duration("horizon", horizon),
 						)
 					}
