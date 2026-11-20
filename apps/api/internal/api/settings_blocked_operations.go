@@ -3,11 +3,13 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sort"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/mcpcatalog"
 	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
 )
 
@@ -73,7 +75,7 @@ func (h *handlers) handlePutSettingsBlockedOperations(w http.ResponseWriter, r *
 		respondError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
-	list, err := h.settingsRuntime.PutBlockedOperations(body)
+	list, err := h.putBlockedOperations(body)
 	if err != nil {
 		var ve *settings.ValidationError
 		if errors.As(err, &ve) {
@@ -103,4 +105,40 @@ func (h *handlers) handlePutSettingsBlockedOperations(w http.ResponseWriter, r *
 		)
 	}
 	respondJSON(w, http.StatusOK, h.blockedOperationsView(list))
+}
+
+// putBlockedOperations stores the lists after checking what the store cannot
+// see: a list for a connector this install does not register, and an entry
+// that matches no name the connector gives a call (an AWS one without its
+// service). Either would block nothing while the tab reads as if it did. An
+// empty list always passes: it clears.
+func (h *handlers) putBlockedOperations(body settings.BlockedOperations) (settings.BlockedOperations, error) {
+	norm, err := settings.NormalizeBlockedOperations(body)
+	if err != nil {
+		return settings.BlockedOperations{}, err
+	}
+	conns := make([]string, 0, len(norm.Connectors))
+	for conn := range norm.Connectors {
+		conns = append(conns, conn)
+	}
+	sort.Strings(conns)
+	for _, conn := range conns {
+		var def *mcpcatalog.ConnectorDef
+		if h.mcpCatalog != nil {
+			def, _ = h.mcpCatalog.Get(conn)
+		}
+		if def == nil {
+			return settings.BlockedOperations{}, &settings.ValidationError{Field: "connectors." + conn,
+				Message: fmt.Sprintf("this installation has no %s connector: nothing would be blocked", conn)}
+		}
+		if def.BlockEntry == nil {
+			continue
+		}
+		for _, e := range norm.Connectors[conn] {
+			if msg := def.BlockEntry(e); msg != "" {
+				return settings.BlockedOperations{}, &settings.ValidationError{Field: "connectors." + conn, Message: msg}
+			}
+		}
+	}
+	return h.settingsRuntime.PutBlockedOperations(body)
 }

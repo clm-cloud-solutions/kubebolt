@@ -141,6 +141,11 @@ type ConnectorDef struct {
 	Guide func(env Env, fields map[string]string) SetupGuide
 	// Binder opens a live binding for an org's configuration.
 	Binder Binder
+	// BlockEntry checks an entry of the platform's blocked list (debt-09)
+	// against the names the gateway gives this connector's calls, and says
+	// why it can match none of them; "" when it can. Such an entry would
+	// block nothing while the form reads as if it did. nil accepts any.
+	BlockEntry func(entry string) string
 }
 
 // ToolSpec is one tool a binding exposes, under its LOCAL name. The gateway

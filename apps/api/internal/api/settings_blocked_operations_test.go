@@ -80,3 +80,32 @@ func TestBlockedOperationsSettings_ReadBlockRefuse(t *testing.T) {
 		t.Fatalf("malformed entry = %d %s, want 400 on connectors.aws", rec.Code, rec.Body.String())
 	}
 }
+
+// Found live: an AWS entry without its service, and a list for a connector
+// the install does not register, were stored and blocked nothing. Both are
+// refused under the connector's field; an empty list still clears.
+func TestBlockedOperationsSettings_RefuseWhatBlocksNothing(t *testing.T) {
+	h := blockedOpsHandlers(t)
+	for _, c := range []struct {
+		body, field, says string
+	}{
+		{`{"connectors":{"aws":["ec2.describevpcs","describeinstances"]}}`, "connectors.aws", "names no AWS service"},
+		{`{"connectors":{"aws":["ec2*"]}}`, "connectors.aws", "service.* to block a whole service"},
+		{`{"connectors":{"gcp":["compute_list_instances"]}}`, "connectors.gcp", "this installation has no gcp connector"},
+	} {
+		rec, _ := blockedOpsRequest(t, h, http.MethodPut, c.body)
+		var body map[string]string
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		if rec.Code != http.StatusBadRequest || body["field"] != c.field || !strings.Contains(body["message"], c.says) {
+			t.Errorf("PUT %s = %d %s, want 400 on %s saying %q", c.body, rec.Code, rec.Body.String(), c.field, c.says)
+		}
+	}
+	if list, err := h.settingsRuntime.BlockedOperations(); err != nil || len(list.Connectors) != 0 {
+		t.Fatalf("a refused PUT stored %+v (%v)", list.Connectors, err)
+	}
+
+	rec, v := blockedOpsRequest(t, h, http.MethodPut, `{"connectors":{"aws":["search_documentation","ec2.*","s3.get*"],"gcp":[]}}`)
+	if rec.Code != http.StatusOK || strings.Join(v.Connectors["aws"], ",") != "ec2.*,s3.get*,search_documentation" {
+		t.Fatalf("valid PUT = %d %s", rec.Code, rec.Body.String())
+	}
+}
