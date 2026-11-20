@@ -88,6 +88,14 @@ func normalizeBlocked(in BlockedOperations) (BlockedOperations, error) {
 	return out, nil
 }
 
+// NormalizeBlockedOperations runs the check a PUT starts with, for a caller
+// that adds its own (the API checks each entry against the catalog): the
+// lists trimmed, lowercased, deduped and sorted, an unknown connector or a
+// malformed entry refused. A connector whose list ends up empty is left out.
+func NormalizeBlockedOperations(in BlockedOperations) (BlockedOperations, error) {
+	return normalizeBlocked(in)
+}
+
 // BlockedOperations reads the stored list. Nothing stored is an empty list;
 // a store that cannot be read, or a record that does not decode, is an error.
 func (r *Runtime) BlockedOperations() (BlockedOperations, error) {

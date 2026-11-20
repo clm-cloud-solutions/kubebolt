@@ -48,14 +48,12 @@ export function serializeMessages(messages: CopilotMessage[]) {
     }))
 }
 
-// isAbort reports whether an error is a user-initiated cancel (cancelMessage →
-// AbortController.abort()). That is NOT a connection failure — the caller
-// renders it as "Stopped by you" — so it must propagate untouched.
 /**
- * CopilotRefusal is a question the server declined before it started, for a
- * limit it sets. Neither kind is a fault:
- * - 'busy' (429): as many questions are running as the server allows at
- *   once; the panel waits retryAfterSec and asks again (busyRetry.ts).
+ * CopilotRefusal is a question the server declined, for a limit it sets.
+ * Neither kind is a fault:
+ * - 'busy': as many questions are running as the server allows at once, and
+ *   none freed while the question waited in line (the stream's "queued"
+ *   event, then an "error" of kind busy; a 429 says the same).
  * - 'credits' (402): the AI credits for the period are spent; someone has
  *   to act or wait for them to come back.
  */
@@ -63,20 +61,15 @@ export class CopilotRefusal extends Error {
   constructor(
     public readonly kind: 'busy' | 'credits',
     message: string,
-    public readonly retryAfterSec?: number,
   ) {
     super(message)
     this.name = 'CopilotRefusal'
   }
 }
 
-// retryAfterSeconds reads a Retry-After header in seconds; the HTTP-date form
-// and anything unreadable fall back to the server's usual 10 s.
-export function retryAfterSeconds(header: string | null): number {
-  const n = Number(header)
-  return Number.isFinite(n) && n > 0 ? Math.min(n, 60) : 10
-}
-
+// isAbort reports whether an error is a user-initiated cancel (cancelMessage →
+// AbortController.abort()). That is NOT a connection failure — the caller
+// renders it as "Stopped by you" — so it must propagate untouched.
 function isAbort(err: unknown, signal?: AbortSignal): boolean {
   return Boolean(signal?.aborted) || (err instanceof DOMException && err.name === 'AbortError')
 }
@@ -159,13 +152,12 @@ export async function* sendCopilotChat(
     } catch {
       parsed = null
     }
-    // Questions in flight at the server's limit (HTTP 429, after its own
-    // short queue). Not an error: the panel waits Retry-After and asks again.
+    // Questions in flight at the server's limit, refused before the stream.
+    // Not an error.
     if (res.status === 429 && parsed?.limitType === 'concurrent_turns') {
       throw new CopilotRefusal(
         'busy',
         parsed.error || 'Kobi is already answering as many questions as it allows at once.',
-        retryAfterSeconds(res.headers.get('Retry-After')),
       )
     }
     if (parsed?.error) {

@@ -60,14 +60,14 @@ func NewBearerSigner(ts oauth2.TokenSource, userProject string) Signer {
 
 func (s *bearerSigner) Sign(_ context.Context, req *http.Request, _ []byte) error {
 	if s.ts == nil {
-		return errors.New("google: no token source")
+		return &CredentialsError{Err: errors.New("google: no token source")}
 	}
 	tok, err := s.ts.Token()
 	if err != nil {
-		return fmt.Errorf("google: get token: %w", err)
+		return &CredentialsError{Err: fmt.Errorf("google: get token: %w", err)}
 	}
 	if tok.AccessToken == "" {
-		return errors.New("google: empty access token")
+		return &CredentialsError{Err: errors.New("google: empty access token")}
 	}
 	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 	if s.userProject != "" {

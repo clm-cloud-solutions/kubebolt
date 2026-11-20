@@ -1123,8 +1123,9 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 				toolBreakdown[call.Name] = s
 			}
 			toolResult := copilot.ClassifyToolResult(result)
-			s.Results[toolResult]++
-			kobiMetrics().ObserveToolCall(call.Name, s.Source, toolResult, toolDur)
+			metricResult := copilot.MetricToolResult(result, toolResult, budgetRefused)
+			s.Results[metricResult]++
+			kobiMetrics().ObserveToolCall(call.Name, s.Source, metricResult, toolDur)
 			s.Calls++
 			s.Bytes += outBytes
 			s.DurationMs += toolDur.Milliseconds()

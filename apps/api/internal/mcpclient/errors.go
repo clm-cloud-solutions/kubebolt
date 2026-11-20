@@ -26,6 +26,12 @@ var (
 	// a *RateLimitError carrying the Retry-After the server asked for.
 	ErrRateLimited = errors.New("mcpclient: rate limited")
 
+	// ErrCredentials means KubeBolt could not get the credentials it signs a
+	// request with (an AWS role STS would not let it assume, a Google token
+	// it could not fetch), so nothing was sent. The concrete error is a
+	// *CredentialsError.
+	ErrCredentials = errors.New("mcpclient: could not get credentials")
+
 	// ErrResponseTooLarge means an initialize or tools/list reply exceeded the
 	// list cap. A truncated catalog would silently drop tools, so it fails
 	// instead of being returned partially (tools/call truncates and flags).
@@ -57,6 +63,14 @@ func (e *HTTPError) Error() string {
 	}
 	return msg
 }
+
+// CredentialsError is the concrete ErrCredentials. Err is the signer's own
+// error, with the SDK's (STS AccessDenied, an oauth2 refusal) inside it: fit
+// for a log line, never for a person, since it carries ARNs and request ids.
+type CredentialsError struct{ Err error }
+
+func (e *CredentialsError) Error() string   { return e.Err.Error() }
+func (e *CredentialsError) Unwrap() []error { return []error{ErrCredentials, e.Err} }
 
 // RateLimitError is the concrete ErrRateLimited. RetryAfter is zero when the
 // server did not say.

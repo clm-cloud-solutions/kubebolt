@@ -151,21 +151,23 @@ describe('InvestigationStrip', () => {
     expect(onStop).toHaveBeenCalledOnce()
   })
 
-  it('while the question waits for a free slot, says so and how long, and Cancel ends the wait', async () => {
+  it('while the question waits in line, says whose limit is full and how long, and Cancel ends the wait', async () => {
     const onStop = vi.fn()
-    render(<InvestigationStrip onStop={onStop} waitUntil={Date.now() + 8_000} />)
+    render(<InvestigationStrip onStop={onStop} wait={{ limit: 'person', max: 3, until: Date.now() + 28_000 }} />)
     expect(screen.getByText('Waiting for a free slot')).toBeInTheDocument()
-    expect(screen.getByText('asking again in 8 s')).toBeInTheDocument()
+    expect(screen.getByText('in line · up to 28 s')).toBeInTheDocument()
+    expect(screen.getByText('You already have 3 questions running, the most one person can have at once.')).toBeInTheDocument()
     expect(screen.queryByText('Investigating')).not.toBeInTheDocument()
     await act(() => userEvent.click(screen.getByRole('button', { name: 'Cancel' })))
     expect(onStop).toHaveBeenCalledOnce()
   })
 
-  it('once it asked again, says it waits in line until the answer starts', () => {
-    render(<InvestigationStrip onStop={vi.fn()} waitUntil={0} />)
-    expect(screen.getByText('Waiting for a free slot')).toBeInTheDocument()
-    expect(screen.getByText('asked again, waiting in line')).toBeInTheDocument()
-    expect(screen.queryByText('Investigating')).not.toBeInTheDocument()
+  it("names the organization's limit, and stays in line once the server's wait is due", () => {
+    render(<InvestigationStrip onStop={vi.fn()} wait={{ limit: 'organization', max: 1, until: Date.now() - 1 }} />)
+    expect(screen.getByText('in line')).toBeInTheDocument()
+    expect(
+      screen.getByText('Kobi is answering 1 question for your organization, the most it answers at once.'),
+    ).toBeInTheDocument()
   })
 
   it('keeps the badge of every cloud the question read, still between its calls', () => {

@@ -201,7 +201,7 @@ export function CopilotPanel() {
     staleResume,
     newConversation,
     dismissStaleResume,
-    turnWaitUntil,
+    turnWait,
   } = useCopilot()
   const { layout, toggleMode, setDockedWidth, setFloatingSize } = layoutState
   // Connector settings live in the admin-only AI hub; only admins get links there.
@@ -854,7 +854,7 @@ export function CopilotPanel() {
       <div className="border-t border-kobi-border p-3 shrink-0">
         {/* While a question runs, the strip says how it goes and holds Stop. */}
         {isLoading && (
-          <InvestigationStrip live={liveInvestigation(messages)} onStop={cancelMessage} waitUntil={turnWaitUntil} />
+          <InvestigationStrip live={liveInvestigation(messages)} onStop={cancelMessage} wait={turnWait} />
         )}
         <div className="flex gap-2 items-end">
           {/* AI bezel — gradient border that rotates around the box
@@ -1161,7 +1161,7 @@ const LONG_WAIT_MS = 15000
 const MODEL_LONG_WAIT_MS = 60000
 
 function StreamStatusHint() {
-  const { isLoading, lastActivityAt, messages, turnWaitUntil } = useCopilot()
+  const { isLoading, lastActivityAt, messages, turnWait } = useCopilot()
   const [, setTick] = useState(0)
   useEffect(() => {
     if (!isLoading) return
@@ -1171,7 +1171,7 @@ function StreamStatusHint() {
 
   // Waiting for a free slot is said by the strip above the input; nothing is
   // thinking yet.
-  if (!isLoading || turnWaitUntil != null) return null
+  if (!isLoading || turnWait != null) return null
   const phase = livePhase(messages)
   const idleMs = lastActivityAt ? Date.now() - lastActivityAt : 0
 

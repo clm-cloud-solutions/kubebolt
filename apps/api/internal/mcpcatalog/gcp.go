@@ -127,8 +127,9 @@ func newGCPDef() *ConnectorDef {
 			"Read Kubernetes objects or pod logs through GKE: KubeBolt reads the cluster itself, with its own redaction",
 			"Read a project other than the one set here",
 		},
-		Guide:  gcpGuide,
-		Binder: gcpBinder{},
+		Guide:      gcpGuide,
+		Binder:     gcpBinder{},
+		BlockEntry: gcpBlockEntry,
 	}
 }
 

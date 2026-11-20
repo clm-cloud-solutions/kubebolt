@@ -33,6 +33,7 @@ func (g *Gateway) blockedByPlatform(rec *callRecord, def *mcpcatalog.ConnectorDe
 		return copilot.ToolResult{}, false
 	}
 	op := operationOf(b, tool, args)
+	rec.operation = op
 	blocked, err := g.st.OperationBlocked(def.ID, op)
 	if err != nil {
 		g.log.Warn("mcp gateway: could not read the blocked operations; refusing the call",
@@ -44,7 +45,6 @@ func (g *Gateway) blockedByPlatform(rec *callRecord, def *mcpcatalog.ConnectorDe
 		return copilot.ToolResult{}, false
 	}
 	rec.result, rec.reason = resultBlocked, "blocked by the platform"
-	rec.extra = map[string]any{"operation": op}
 	return copilot.ToolResult{
 		Content: fmt.Sprintf("Refused: %s is blocked on this KubeBolt installation by its administrators. Do not try it again; continue without it.", op),
 		IsError: true,

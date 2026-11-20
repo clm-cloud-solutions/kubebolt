@@ -300,7 +300,7 @@ function KobiHealthBody({ charts, perInterval, perPoint }: HealthFrameProps) {
           accents={FAILURE_PALETTE}
           seriesColor={(l) => (l.result === 'none' ? '#94a3b8' : undefined)}
           emptyMessage="No Kobi turns in this window."
-          emptyHint="Empty, not found, denied, timed-out and failed results, one colour per source and result. A turn whose tools all answered reads as 0."
+          emptyHint="Empty, not found, denied, timed-out and failed results, one colour per source and result. A connector call that never left reads as not sent (KubeBolt refused it) or rate limited (the limit held it back), never as failed. A turn whose tools all answered reads as 0."
           footnote={`kubebolt_kobi_copilot_tool_results_total{result!="ok"} by (source, result) · ${perInterval}`}
         />
         <MetricChart
