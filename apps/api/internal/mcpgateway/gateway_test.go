@@ -1206,3 +1206,70 @@ func TestKobiRoleFloor(t *testing.T) {
 		t.Fatalf("an editor under an admin floor: %v", names)
 	}
 }
+
+// bill-08: Kobi and Autopilot spend separate buckets, so the chat never holds
+// back a remediation.
+func TestCallRateLimitKeepsKobiAndAutopilotApart(t *testing.T) {
+	h := newHarness(t, func(o *Options) { o.OrgRatePerMin = 4; o.AutopilotRatePerMin = 4 })
+	ctx := orgCtx("org-a")
+	h.enable(ctx, regionFieldA)
+
+	if res := h.gw.Call(ctx, mcpcatalog.ConsumerKobi, "mcp__fake__get_thing", nil); res.IsError {
+		t.Fatalf("Kobi's first call: %+v", res)
+	}
+	if res := h.gw.Call(ctx, mcpcatalog.ConsumerKobi, "mcp__fake__get_thing", nil); !res.IsError {
+		t.Fatalf("Kobi's second call within the burst should be limited: %+v", res)
+	}
+	// Autopilot's bucket is untouched by Kobi's spending.
+	if res := h.gw.Call(ctx, mcpcatalog.ConsumerAutopilot, "cloud_fake_get_thing", nil); res.IsError && strings.Contains(res.Content, "Rate limited") {
+		t.Fatalf("Autopilot was limited by Kobi's spending: %+v", res)
+	}
+}
+
+func TestCallRateLimitFollowsThePlan(t *testing.T) {
+	plan := "team"
+	h := newHarness(t, func(o *Options) {
+		o.MultiTenant = true
+		o.PlanFor = func(string) string { return plan }
+		o.OrgRatePerMin = 6000
+		o.RateForPlan = func(p string, c mcpcatalog.Consumer) int {
+			if p == "team" {
+				return 4 // one token of burst
+			}
+			return 0 // the defaults
+		}
+	})
+	ctx := orgCtx("org-a")
+	h.enable(ctx, regionFieldA)
+	h.gw.Call(ctx, mcpcatalog.ConsumerKobi, "mcp__fake__get_thing", nil)
+	if res := h.gw.Call(ctx, mcpcatalog.ConsumerKobi, "mcp__fake__get_thing", nil); !res.IsError || !strings.Contains(res.Content, "Rate limited") {
+		t.Fatalf("the plan's 4/min did not apply: %+v", res)
+	}
+	// An upgrade takes effect on the next call: the bucket is rebuilt.
+	plan = "business"
+	if res := h.gw.Call(ctx, mcpcatalog.ConsumerKobi, "mcp__fake__get_thing", nil); res.IsError && strings.Contains(res.Content, "Rate limited") {
+		t.Fatalf("after the plan change the default budget did not apply: %+v", res)
+	}
+}
+
+// A single-org install has no plan, and the per-plan budget is still asked:
+// RateForPlan gets plan "" instead of being skipped.
+func TestCallRateLimitAsksForTheNoPlanBudget(t *testing.T) {
+	var asked []string
+	h := newHarness(t, func(o *Options) {
+		o.OrgRatePerMin = 6000
+		o.RateForPlan = func(p string, c mcpcatalog.Consumer) int {
+			asked = append(asked, p)
+			return 4 // one token of burst
+		}
+	})
+	ctx := orgCtx("org-a")
+	h.enable(ctx, regionFieldA)
+	h.gw.Call(ctx, mcpcatalog.ConsumerKobi, "mcp__fake__get_thing", nil)
+	if res := h.gw.Call(ctx, mcpcatalog.ConsumerKobi, "mcp__fake__get_thing", nil); !res.IsError || !strings.Contains(res.Content, "Rate limited") {
+		t.Fatalf("the no-plan budget of 4/min did not apply: %+v", res)
+	}
+	if len(asked) == 0 || asked[0] != "" {
+		t.Fatalf("RateForPlan asked with %q, want the empty plan of a single-org install", asked)
+	}
+}
