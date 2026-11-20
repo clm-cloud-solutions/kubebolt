@@ -94,6 +94,12 @@ type Store interface {
 	// ListOrg returns up to `limit` most-recent records belonging to orgID
 	// (newest first). A limit <= 0 returns all of that org's records.
 	ListOrg(orgID string, limit int) ([]Record, error)
+	// ListOrgClass is ListOrg narrowed to one class (ClassOf: an empty class
+	// is a mutation) BEFORE the limit, so a page asked for in one class is
+	// full of that class. Filtering a ListOrg page afterwards does not do
+	// that: a busy hour of shells and cloud calls fills the page, and the
+	// mutations behind it are never read. An empty class lists every class.
+	ListOrgClass(orgID, class string, limit int) ([]Record, error)
 	// PruneOrg deletes orgID's records older than `before`, returning the count
 	// removed. Per-org rather than a single global DELETE for the same reason
 	// the rest of retention is (see cmd/server/retention.go): under RLS a
@@ -112,6 +118,12 @@ type Store interface {
 // is" must not resolve to "everyone's" when there are several tenants.
 func matchesOrg(rec *Record, orgID string) bool {
 	return rec.TenantID == orgID || rec.TenantID == ""
+}
+
+// matchesClass reports whether a record is of class; an empty class matches
+// every record.
+func matchesClass(rec *Record, class string) bool {
+	return class == "" || ClassOf(rec) == class
 }
 
 // recordKey orders records chronologically in BoltDB byte order: a
@@ -152,6 +164,10 @@ func (s *BoltStore) Append(rec *Record) error {
 }
 
 func (s *BoltStore) ListOrg(orgID string, limit int) ([]Record, error) {
+	return s.ListOrgClass(orgID, "", limit)
+}
+
+func (s *BoltStore) ListOrgClass(orgID, class string, limit int) ([]Record, error) {
 	var out []Record
 	err := s.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(s.bucket)
@@ -159,15 +175,16 @@ func (s *BoltStore) ListOrg(orgID string, limit int) ([]Record, error) {
 			return fmt.Errorf("bucket %s not found", s.bucket)
 		}
 		// Cursor in reverse = newest first (keys are time-ordered). The limit
-		// is applied AFTER the org filter, so a foreign record can never
-		// consume a slot and silently shorten this org's page.
+		// is applied AFTER the org and class filters, so a foreign record or
+		// one of another class can never consume a slot and silently shorten
+		// this page.
 		c := b.Cursor()
 		for k, v := c.Last(); k != nil; k, v = c.Prev() {
 			var rec Record
 			if err := json.Unmarshal(v, &rec); err != nil {
 				continue // skip corrupt records
 			}
-			if !matchesOrg(&rec, orgID) {
+			if !matchesOrg(&rec, orgID) || !matchesClass(&rec, class) {
 				continue
 			}
 			out = append(out, rec)
@@ -241,11 +258,15 @@ func (s *MemoryStore) Append(rec *Record) error {
 }
 
 func (s *MemoryStore) ListOrg(orgID string, limit int) ([]Record, error) {
+	return s.ListOrgClass(orgID, "", limit)
+}
+
+func (s *MemoryStore) ListOrgClass(orgID, class string, limit int) ([]Record, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var out []Record
 	for i := range s.records {
-		if matchesOrg(&s.records[i], orgID) {
+		if matchesOrg(&s.records[i], orgID) && matchesClass(&s.records[i], class) {
 			out = append(out, s.records[i])
 		}
 	}

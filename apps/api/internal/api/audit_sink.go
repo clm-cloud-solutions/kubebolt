@@ -42,13 +42,18 @@ func (h *handlers) handleListActions(w http.ResponseWriter, r *http.Request) {
 	}
 	// class filters mutation vs access. Default "all" keeps the existing
 	// behaviour, but the filter has to exist: access events (terminals, tunnels,
-	// file reads) are far more frequent than mutations, so without a way to
-	// separate them a busy day's browsing would push every mutation off the
-	// first page — turning a trail that got MORE complete into one that reads as
-	// less useful.
+	// file reads, cloud calls) are far more frequent than mutations, so without
+	// a way to separate them a busy day's browsing would push every mutation off
+	// the first page — turning a trail that got MORE complete into one that
+	// reads as less useful. The store applies it before the limit: filtering the
+	// page afterwards left exactly that, a page of access events with the
+	// mutations cut away and nothing left to show.
 	class := r.URL.Query().Get("class")
+	if class == "all" {
+		class = ""
+	}
 
-	recs, err := auditStore.ListOrg(auth.ContextTenantID(r), limit)
+	recs, err := auditStore.ListOrgClass(auth.ContextTenantID(r), class, limit)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to read action history")
 		return
@@ -59,9 +64,6 @@ func (h *handlers) handleListActions(w http.ResponseWriter, r *http.Request) {
 		// Normalized on read so the client always receives a class, including
 		// for records written before the field existed.
 		rec.Class = audit.ClassOf(&rec)
-		if class != "" && class != "all" && rec.Class != class {
-			continue
-		}
 		out = append(out, rec)
 	}
 	respondJSON(w, http.StatusOK, map[string]any{"items": out, "total": len(out)})
