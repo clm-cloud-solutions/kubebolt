@@ -63,3 +63,27 @@ func TestRefusalsCarryNoTenantOnASingleTenantInstall(t *testing.T) {
 		t.Errorf("single-tenant refusal = %v, want 1 under an empty tenant", got)
 	}
 }
+
+// Found live: Prometheus' increase() reads the first sample of a new series
+// as nothing, so five refusals on a connector that had none yet fired no
+// alert. A single-tenant install starts every refusal series at 0; a
+// multi-tenant one cannot name its orgs and reads increase_pure.
+func TestRefusalSeriesStartAtZeroOnASingleTenantInstall(t *testing.T) {
+	h := newHarness(t, nil)
+	// Two consumers × (the fake connector's two reasons + an unknown name).
+	if n := testutil.CollectAndCount(h.gw.m.refusals); n != 6 {
+		t.Fatalf("refusal series before any call = %d, want 6", n)
+	}
+	for _, consumer := range []mcpcatalog.Consumer{mcpcatalog.ConsumerKobi, mcpcatalog.ConsumerAutopilot} {
+		for _, labels := range [][2]string{{"fake", refusalToolNotAllowed}, {"fake", refusalInput}, {"unknown", refusalToolNotAllowed}} {
+			if got := testutil.ToFloat64(h.gw.m.refusals.WithLabelValues("", string(consumer), labels[0], labels[1])); got != 0 {
+				t.Errorf("%s %v = %v, want 0", consumer, labels, got)
+			}
+		}
+	}
+
+	multi := newHarness(t, func(o *Options) { o.MultiTenant = true })
+	if n := testutil.CollectAndCount(multi.gw.m.refusals); n != 0 {
+		t.Errorf("multi-tenant refusal series before any call = %d, want none", n)
+	}
+}

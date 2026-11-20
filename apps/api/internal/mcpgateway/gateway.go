@@ -311,6 +311,9 @@ func New(cat *mcpcatalog.Catalog, st *settings.Runtime, o Options) *Gateway {
 			g.log.Warn("mcp gateway: ignoring an invalid Azure MCP sidecar URL", slog.String("error", err.Error()))
 		}
 	}
+	if !o.MultiTenant {
+		g.m.zeroRefusals(cat)
+	}
 	if o.MultiTenant && o.AmbientAllowed {
 		g.log.Warn("mcp gateway: ambient cloud credentials are allowed in a multi-tenant install (KUBEBOLT_MCP_ALLOW_AMBIENT); every org would read clouds with KubeBolt's own identity — development only")
 	}

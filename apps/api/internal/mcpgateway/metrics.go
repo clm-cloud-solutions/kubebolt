@@ -5,6 +5,8 @@ import (
 	"log/slog"
 
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/mcpcatalog"
 )
 
 // metrics are the gateway's Prometheus series. Labels stay bounded: the
@@ -79,6 +81,25 @@ func registerOrReuse[T prometheus.Collector](reg prometheus.Registerer, c T, log
 	}
 	log.Warn("mcp gateway: metric not registered", slog.String("error", err.Error()))
 	return c
+}
+
+// zeroRefusals starts a single-tenant install's refusal series at 0. A
+// Prometheus that first sees a series at 5 has no earlier sample, and
+// increase() reads that first burst as nothing: the alert on repeated
+// refusals (KobiKeepsAskingForWhatItMayNotDo) stayed silent on the first
+// injection attempt after a restart. A multi-tenant install cannot name its
+// orgs here, and its rules read VictoriaMetrics' increase_pure, which counts
+// a new series from 0.
+func (m *metrics) zeroRefusals(cat *mcpcatalog.Catalog) {
+	for _, consumer := range []mcpcatalog.Consumer{mcpcatalog.ConsumerKobi, mcpcatalog.ConsumerAutopilot} {
+		// A name that parses to no connector of the catalog.
+		m.refusals.WithLabelValues("", string(consumer), "unknown", refusalToolNotAllowed)
+		for _, d := range cat.List() {
+			for _, reason := range []string{refusalToolNotAllowed, refusalInput} {
+				m.refusals.WithLabelValues("", string(consumer), d.ID, reason)
+			}
+		}
+	}
 }
 
 // refused counts one refusal; reason "" counts nothing.
