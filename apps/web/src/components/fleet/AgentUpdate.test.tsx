@@ -66,4 +66,24 @@ describe('AgentUpdate', () => {
     expect(screen.getByText('Agent before 1.4.4 → 1.4.9')).toBeTruthy()
     expect(screen.getByText(/every agent before 1.4.4 sends 1.0.0/)).toBeTruthy()
   })
+
+  // Seen live on 2026-11-21: yagan's release is kubebolt-agent-ee in
+  // kubebolt-agent and it read OpenCost twice; the default names fit neither.
+  it('names the release read from the cluster and says why it turns promRead.cost off', () => {
+    const yagan: AgentUpdate = {
+      ...unreported,
+      release: 'kubebolt-agent-ee',
+      namespace: 'kubebolt-agent',
+      turnsOffPromReadCost: true,
+      upgrade:
+        'helm upgrade kubebolt-agent-ee oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \\\n' +
+        '  --namespace kubebolt-agent --version 1.4.10 --reset-then-reuse-values \\\n  --set agent.promRead.cost.enabled=false',
+    }
+    render(<AgentUpdateModal clusterName="yagan-eks-prod" update={yagan} onClose={() => {}} />)
+    expect(screen.getByText(/read from the cluster/).textContent).toContain('kubebolt-agent-ee in kubebolt-agent')
+    expect(screen.getByText(/reads OpenCost twice/)).toBeTruthy()
+    expect(screen.queryByText(/Installed with another release name/)).toBeNull()
+    expect(screen.getByText(/helm get values kubebolt-agent-ee -n kubebolt-agent/)).toBeTruthy()
+  })
 })
+

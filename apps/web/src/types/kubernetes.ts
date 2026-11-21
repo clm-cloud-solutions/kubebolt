@@ -370,6 +370,13 @@ export interface AgentUpdate {
   level: 'current' | 'available' | 'recommended'
   reasons?: string[]
   upgrade?: string
+  // The agent's own Helm release and namespace, read from the cluster; when
+  // set, `upgrade` names them instead of kubebolt-agent / kubebolt-system.
+  release?: string
+  namespace?: string
+  // The install reads OpenCost twice (promRead.cost and the exporter); the
+  // command turns promRead.cost off, as the chart requires from 1.4.10.
+  turnsOffPromReadCost?: boolean
 }
 
 // API params
