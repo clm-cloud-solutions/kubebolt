@@ -2,7 +2,7 @@ import { createContext, useContext, useState, useCallback, useEffect, useRef, ty
 import { useLocation } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/services/api'
-import { compactCopilotSession, sendCopilotChat, serializeMessages } from '@/services/copilot/chat'
+import { compactCopilotSession, CopilotRefusal, sendCopilotChat, serializeMessages } from '@/services/copilot/chat'
 import { useCopilotLayout } from '@/hooks/useCopilotLayout'
 import { useAuth } from '@/contexts/AuthContext'
 import type {
@@ -12,6 +12,7 @@ import type {
   ConversationDetail,
   CopilotToolCall,
   CopilotToolResult,
+  TurnQueue,
 } from '@/services/copilot/types'
 import {
   applyLiveText,
@@ -56,6 +57,10 @@ interface CopilotContextValue {
    * idle. The UI ticks against it to tell "actively streaming" from "stalled"
    * and to escalate a waiting hint. */
   lastActivityAt: number | null
+  /** While the in-flight question waits in line because Kobi already answers
+   * as many questions as the plan allows (the stream's "queued" event): whose
+   * limit, how many, until when; null otherwise. Stop ends the wait. */
+  turnWait: TurnQueue | null
   error: string | null
   messages: CopilotMessage[]
   pendingToolCalls: string[]
@@ -259,6 +264,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
   // "stalled" and surface a waiting/cancel affordance.
   const abortRef = useRef<AbortController | null>(null)
   const [lastActivityAt, setLastActivityAt] = useState<number | null>(null)
+  const [turnWait, setTurnWait] = useState<TurnQueue | null>(null)
   const [messages, setMessages] = useState<CopilotMessage[]>([])
   const [pendingToolCalls, setPendingToolCalls] = useState<string[]>([])
   const [usedFallback, setUsedFallback] = useState(false)
@@ -534,9 +540,13 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
       // Set by an `error` event: the turn ends there, and its last row says
       // what failed (markLiveFailed) instead of a banner under the chat.
       let turnError: string | null = null
-      const failTurn = (message: string) =>
+      const failTurn = (message: string, kind?: 'busy' | 'credits') =>
         setMessages((prev) =>
-          markLiveFailed(prev, turnKey, round, { message, afterMs: Date.now() - userMsg.timestamp.getTime() }),
+          markLiveFailed(prev, turnKey, round, {
+            message,
+            afterMs: Date.now() - userMsg.timestamp.getTime(),
+            ...(kind ? { kind } : {}),
+          }),
         )
       setMessages((prev) => [
         ...prev,
@@ -551,6 +561,10 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
       // seed the auto-compact check with.
       const carriedLastRoundUsage = fresh ? null : lastRoundUsage
 
+      // The turn's error event said Kobi was busy: the question waited in
+      // line and no turn freed. Said in blue, as a limit, not a failure.
+      let turnBusy = false
+      let waiting = false
       try {
         for await (const event of sendCopilotChat(
           newMessages,
@@ -564,6 +578,21 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
           // Every event is a sign of life — bump so the UI can distinguish an
           // actively-streaming turn from a stalled one and escalate its hint.
           setLastActivityAt(Date.now())
+          if (event.type === 'queued') {
+            // The turns are full: the server keeps the question in line and
+            // the strip says so, whose limit and for how long, with Cancel.
+            waiting = true
+            setTurnWait({
+              limit: event.limit === 'person' ? 'person' : 'organization',
+              max: event.max ?? 0,
+              until: Date.now() + (event.waitSeconds ?? 30) * 1000,
+            })
+            continue
+          }
+          if (waiting) {
+            waiting = false
+            setTurnWait(null)
+          }
           if (event.type === 'meta') {
             if (event.fallback) setUsedFallback(true)
             if (typeof event.escalated === 'string' && event.escalated) setEscalatedModel(event.escalated)
@@ -637,6 +666,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
             ])
           } else if (event.type === 'error') {
             turnError = event.error || 'Unknown error from copilot'
+            turnBusy = event.kind === 'busy'
           } else if (event.type === 'done') {
             // Replace the frontend transcript with the server's full
             // messages array so tool_calls and tool_results from this
@@ -698,7 +728,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         }
         // A turn that paused at the step limit and then failed to write its
         // close already says so in the step-limit notice.
-        if (turnError && maxRoundsHit == null) failTurn(turnError)
+        if (turnError && maxRoundsHit == null) failTurn(turnError, turnBusy ? 'busy' : undefined)
       } catch (err) {
         // User-initiated cancel (cancelMessage → ac.abort()) surfaces as an
         // AbortError. That's not a failure: keep whatever streamed so far
@@ -707,10 +737,13 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         // or empty answer must not read as completed or hung).
         if (ac.signal.aborted) {
           setMessages((prev) => markLiveCancelled(prev, turnKey, round))
+        } else if (err instanceof CopilotRefusal) {
+          failTurn(err.message, err.kind)
         } else {
           failTurn(err instanceof Error ? err.message : 'Failed to reach copilot backend')
         }
       } finally {
+        setTurnWait(null)
         setIsLoading(false)
         setLastActivityAt(null)
         setPendingToolCalls([])
@@ -1075,6 +1108,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         isOpen,
         isLoading,
         lastActivityAt,
+        turnWait,
         error,
         messages,
         pendingToolCalls,

@@ -89,6 +89,27 @@ describe('TurnFailure', () => {
     expect(screen.getByText("Kobi couldn't finish")).toBeInTheDocument()
     expect(screen.getByText('0:58')).toBeInTheDocument()
     expect(screen.getByText('The AI provider is overloaded. Try again in a minute.').className).toContain('text-kobi-st-error')
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+  })
+
+  it('says Kobi was busy in the waiting blue, not as a failure', () => {
+    render(
+      <TurnFailure
+        kind="busy"
+        message="Kobi is already answering as many questions as your plan allows at once. Try again in a few seconds."
+        afterMs={41_000}
+      />,
+    )
+    expect(screen.getByText('Kobi is busy')).toBeInTheDocument()
+    expect(screen.queryByText("Kobi couldn't finish")).not.toBeInTheDocument()
+    expect(screen.getByText(/as many questions as your plan allows/).className).toContain('text-kobi-st-info')
+    expect(screen.getByRole('status')).toBeInTheDocument()
+  })
+
+  it('says the credits ran out in amber: someone has to act', () => {
+    render(<TurnFailure kind="credits" message="You've used all of this month's AI credits." />)
+    expect(screen.getByText('Out of AI credits')).toBeInTheDocument()
+    expect(screen.getByText("You've used all of this month's AI credits.").className).toContain('text-kobi-st-warn')
   })
 })
 
@@ -128,6 +149,25 @@ describe('InvestigationStrip', () => {
     expect(badge.className).toContain('animate-pulse')
     await act(() => userEvent.click(screen.getByRole('button', { name: /Stop/ })))
     expect(onStop).toHaveBeenCalledOnce()
+  })
+
+  it('while the question waits in line, says whose limit is full and how long, and Cancel ends the wait', async () => {
+    const onStop = vi.fn()
+    render(<InvestigationStrip onStop={onStop} wait={{ limit: 'person', max: 3, until: Date.now() + 28_000 }} />)
+    expect(screen.getByText('Waiting for a free slot')).toBeInTheDocument()
+    expect(screen.getByText('in line · up to 28 s')).toBeInTheDocument()
+    expect(screen.getByText('You already have 3 questions running, the most one person can have at once.')).toBeInTheDocument()
+    expect(screen.queryByText('Investigating')).not.toBeInTheDocument()
+    await act(() => userEvent.click(screen.getByRole('button', { name: 'Cancel' })))
+    expect(onStop).toHaveBeenCalledOnce()
+  })
+
+  it("names the organization's limit, and stays in line once the server's wait is due", () => {
+    render(<InvestigationStrip onStop={vi.fn()} wait={{ limit: 'organization', max: 1, until: Date.now() - 1 }} />)
+    expect(screen.getByText('in line')).toBeInTheDocument()
+    expect(
+      screen.getByText('Kobi is answering 1 question for your organization, the most it answers at once.'),
+    ).toBeInTheDocument()
   })
 
   it('keeps the badge of every cloud the question read, still between its calls', () => {

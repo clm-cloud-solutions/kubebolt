@@ -141,6 +141,11 @@ type ConnectorDef struct {
 	Guide func(env Env, fields map[string]string) SetupGuide
 	// Binder opens a live binding for an org's configuration.
 	Binder Binder
+	// BlockEntry checks an entry of the platform's blocked list (debt-09)
+	// against the names the gateway gives this connector's calls, and says
+	// why it can match none of them; "" when it can. Such an entry would
+	// block nothing while the form reads as if it did. nil accepts any.
+	BlockEntry func(entry string) string
 }
 
 // ToolSpec is one tool a binding exposes, under its LOCAL name. The gateway
@@ -238,6 +243,15 @@ type Env struct {
 	// from (env KUBEBOLT_MCP_AWS_PRINCIPAL_ARN). The setup guide prints it in
 	// the trust policy; empty leaves a placeholder the admin fills in.
 	AWSPrincipalARN string
+}
+
+// OperationNamer is implemented by bindings whose tools run more than one
+// operation (the AWS `call`, the Azure routers). It names the operation a call
+// targets the way the blocked list (debt-09) names it, lowercased, without
+// contacting anything; "" when the arguments name none it would accept, and
+// the gateway then uses the tool's name.
+type OperationNamer interface {
+	OperationOf(tool string, args json.RawMessage) string
 }
 
 // ConfigValidator is implemented by binders that can check what the generic

@@ -1,13 +1,14 @@
 import { useContext, useEffect, useState } from 'react'
 import { QueryClientContext } from '@tanstack/react-query'
-import { AlertCircle, BookOpen, ChevronDown, ListChecks, Loader2, Square } from 'lucide-react'
+import { AlertCircle, BookOpen, ChevronDown, Clock, ListChecks, Loader2, Square } from 'lucide-react'
 import { KobiStateDot } from '@/components/kobi'
 import { CloudProviderIcon } from '@/components/shared/CloudProviderIcon'
 import { MCP_CONNECTORS_KEY } from '@/components/admin/mcp/ConnectorBits'
 import { connectorShortName } from '@/utils/toolName'
 import type { McpConnector } from '@/services/api'
-import type { CopilotToolCall, CopilotToolResult } from '@/services/copilot/types'
+import type { CopilotToolCall, CopilotToolResult, TurnQueue } from '@/services/copilot/types'
 import { CLOUD_TOKENS } from './ToolCallCard'
+import { WAITING_FOR_SLOT } from './useKobiPresence'
 import {
   cloudScope,
   couldNotRead,
@@ -120,18 +121,41 @@ export function InvestigationSummary({
   )
 }
 
-// TurnFailure is the last row of a question that ended in an error before it
-// answered: "Kobi couldn't finish 0:58", and under it the error as the server
-// words it. It takes a card's place, so the steps above stay as they were.
-export function TurnFailure({ message, afterMs }: { message: string; afterMs?: number }) {
+// TurnFailure is the last row of a question that ended before it answered:
+// "Kobi couldn't finish 0:58", and under it the reason as the server words it.
+// It takes a card's place, so the steps above stay as they were. Its colour
+// says what the person has to do: red, something broke; amber, someone has to
+// act (the month's credits are spent); blue, nothing broke and it clears on
+// its own (Kobi was answering as many questions as the plan allows, even
+// after the panel asked again).
+const TURN_ENDINGS = {
+  failed: { icon: AlertCircle, color: 'text-kobi-st-error', title: "Kobi couldn't finish" },
+  busy: { icon: Clock, color: 'text-kobi-st-info', title: 'Kobi is busy' },
+  credits: { icon: AlertCircle, color: 'text-kobi-st-warn', title: 'Out of AI credits' },
+} as const
+
+export function TurnFailure({
+  message,
+  afterMs,
+  kind,
+}: {
+  message: string
+  afterMs?: number
+  kind?: 'busy' | 'credits'
+}) {
+  const ending = TURN_ENDINGS[kind ?? 'failed']
+  const Icon = ending.icon
   return (
-    <div className="rounded-lg bg-kobi-bg border border-kobi-border overflow-hidden text-[10px] font-mono">
+    <div
+      className="rounded-lg bg-kobi-bg border border-kobi-border overflow-hidden text-[10px] font-mono"
+      role={kind ? 'status' : 'alert'}
+    >
       <div className="flex items-center gap-2 px-3 py-1.5 text-kobi-text-tertiary">
-        <AlertCircle className="w-3 h-3 shrink-0 text-kobi-st-error" aria-hidden />
-        <span className="text-kobi-text">Kobi couldn't finish</span>
+        <Icon className={`w-3 h-3 shrink-0 ${ending.color}`} aria-hidden />
+        <span className="text-kobi-text">{ending.title}</span>
         {afterMs !== undefined && <span className="ml-auto tabular-nums">{formatClock(afterMs)}</span>}
       </div>
-      <div className="pl-8 pr-3 pb-1.5 -mt-0.5 text-kobi-st-error break-words">{message}</div>
+      <div className={`pl-8 pr-3 pb-1.5 -mt-0.5 break-words ${ending.color}`}>{message}</div>
     </div>
   )
 }
@@ -159,10 +183,31 @@ export function GuideLine({
   )
 }
 
+// waitReason says whose limit keeps the question in line: the person's own
+// (they can free it) or the organization's.
+export function waitReason(wait: TurnQueue): string {
+  const n = wait.max
+  const questions = `${n} question${n === 1 ? '' : 's'}`
+  return wait.limit === 'person'
+    ? `You already have ${questions} running, the most one person can have at once.`
+    : `Kobi is answering ${questions} for your organization, the most it answers at once.`
+}
+
 // InvestigationStrip sits above the input while a question runs: how long,
 // how many reads, and a badge for each cloud the question has read, which
 // says "now" and pulses while a call to it is in flight. Stop lives here.
-export function InvestigationStrip({ live, onStop }: { live?: LiveInvestigation; onStop: () => void }) {
+// While the question waits in line for a free turn (wait, the stream's
+// "queued" event), it says so, whose limit is full and how long the wait can
+// last, under Watching's dot, and Stop becomes Cancel.
+export function InvestigationStrip({
+  live,
+  onStop,
+  wait,
+}: {
+  live?: LiveInvestigation
+  onStop: () => void
+  wait?: TurnQueue | null
+}) {
   const [, setTick] = useState(0)
   useEffect(() => {
     const id = window.setInterval(() => setTick((t) => t + 1), 1000)
@@ -175,6 +220,36 @@ export function InvestigationStrip({ live, onStop }: { live?: LiveInvestigation;
         ...live.byCloud.map(([id, n]) => `${n} in ${connectorShortName(id)}`),
       ].join(' · ')
     : ''
+  if (wait) {
+    const left = Math.max(0, Math.ceil((wait.until - Date.now()) / 1000))
+    return (
+      <div
+        role="status"
+        className="flex items-center gap-2 mb-2 pl-2.5 pr-2 py-1.5 rounded-lg bg-kobi-card border border-kobi-border text-[12px]"
+      >
+        {/* Watching's dot: Kobi is available and needs nothing from the
+            person (the awaiting blue would say it does). */}
+        <KobiStateDot state="watching" halo />
+        <span className="flex flex-col min-w-0">
+          <span className="flex items-baseline gap-2">
+            <span className="font-medium text-kobi-text">{WAITING_FOR_SLOT}</span>
+            <span className="font-mono text-[11.5px] tabular-nums text-kobi-text-secondary">
+              {left > 0 ? `in line · up to ${left} s` : 'in line'}
+            </span>
+          </span>
+          <span className="text-[11px] text-kobi-text-tertiary">{waitReason(wait)}</span>
+        </span>
+        <button
+          type="button"
+          onClick={onStop}
+          title="Stop waiting"
+          className="ml-auto shrink-0 inline-flex items-center gap-[5px] px-2 py-[3px] rounded-md bg-kobi-elevated border border-kobi-border text-[11.5px] text-kobi-text-secondary hover:text-kobi-text transition-colors"
+        >
+          Cancel
+        </button>
+      </div>
+    )
+  }
   return (
     <div className="flex items-center gap-2 mb-2 pl-2.5 pr-2 py-1.5 rounded-lg bg-kobi-card border border-kobi-border text-[12px]">
       {/* The state's dot, the same one the floating head's pill starts

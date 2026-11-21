@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kubebolt/kubebolt/packages/shared/costmetrics"
 )
 
 // DefaultMatchers is the surgical matcher set the Reader falls back to
@@ -91,16 +93,13 @@ var DefaultMatchers = []string{
 // Appended — never replacing the base set — so enabling cost can't
 // drop the core metrics KubeBolt needs. Explicit names (no =~) for the
 // same GMP portability reason as DefaultMatchers.
-var CostMatchers = []string{
-	"node_total_hourly_cost",
-	"node_cpu_hourly_cost",
-	"node_ram_hourly_cost",
-	"node_gpu_hourly_cost",
-	"container_cpu_allocation",
-	"container_gpu_allocation",
-	"container_memory_allocation_bytes",
-	"pv_hourly_cost",
-}
+//
+// It is packages/shared/costmetrics' list, the one the API's classifier and
+// the OpenCost exporter filter read too. The hand-kept copy that lived here
+// lacked pod_pvc_allocation, kubecost_node_is_spot, the network costs and
+// kubecost_load_balancer_cost, and asked for two GPU families nothing reads
+// (finding #101).
+var CostMatchers = costmetrics.Families
 
 // envPrefix is shared by all promread env vars. Kept in one place so
 // the env-template docs (.env.example × 4 per feedback_document_env_vars)

@@ -75,8 +75,9 @@ func newAWSConnector() *ConnectorDef {
 			"Read object contents from S3 or a function's code, or hand out pre-signed URLs.",
 			"Run code of its own: every call is one read operation from the list above.",
 		},
-		Guide:  awsGuide,
-		Binder: &awsBinder{},
+		Guide:      awsGuide,
+		Binder:     &awsBinder{},
+		BlockEntry: awsBlockEntry,
 	}
 }
 

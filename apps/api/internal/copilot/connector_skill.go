@@ -22,8 +22,15 @@ const connectorSkillHeader = "[KubeBolt] %s, the procedure for these tools, atta
 // WithConnectorSkill puts the procedure of call's connector in front of its
 // result, unless the conversation already loaded it or received it: history
 // is the conversation so far, the calls of this round included, and round
-// the results this round already holds.
+// the results this round already holds. A call that reached nothing (refused
+// by KubeBolt, held back by the rate limit) is not an answer from the
+// connector and does not carry it: found live, about 9.7 KB went with a
+// refusal of a tool the organization could not use at all. The procedure
+// comes with the first call that does reach the cloud.
 func WithConnectorSkill(history []Message, round []ToolResult, call ToolCall, result ToolResult) ToolResult {
+	if result.NotSent || result.RateLimited {
+		return result
+	}
 	id, ok := MCPConnectorID(call.Name)
 	if !ok {
 		return result

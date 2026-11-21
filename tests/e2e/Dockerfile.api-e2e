@@ -19,11 +19,13 @@ ENV CGO_ENABLED=0
 
 # Module manifests first so go mod download caches well.
 COPY packages/proto/go.mod packages/proto/go.sum ./packages/proto/
+COPY packages/shared/go.mod ./packages/shared/
 COPY apps/api/go.mod apps/api/go.sum ./apps/api/
 RUN cd apps/api && go mod download
 
 # Sources.
 COPY packages/proto/ ./packages/proto/
+COPY packages/shared/ ./packages/shared/
 COPY apps/api/ ./apps/api/
 
 # The web/dist embed in cmd/server/main.go uses //go:embed all:web/dist.

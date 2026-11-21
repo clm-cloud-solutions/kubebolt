@@ -9,10 +9,31 @@ each tag.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.4.10] — 2026-11-21
+
+OpenCost's cost reaches KubeBolt whole and alone, the agent is sized for the
+clusters it proxies, and it builds on Go 1.26.11. Same v1.0 metric/label
+schema — drop-in within 1.x, with one new chart rule (below).
+
+### Added
+
+- **The chart refuses two sources of cost.** `agent.promRead.cost.enabled`
+  together with the agent's OpenCost exporter (`collectors.exporters.opencost`
+  or `opencost.enabled`) now fails the render, next to the existing
+  `scrape` + `promRead` rule: with both, every cost family was stored twice
+  and every cost total read double. Pick one: `promRead.cost` reads OpenCost
+  from your Prometheus, the exporter reads OpenCost directly.
 
 ### Changed
 
+- **OpenCost ships the families KubeBolt reads, and only those.** One list of
+  13 cost families (`packages/shared/costmetrics`) is what the exporter
+  forwards (plus OpenCost's `kube_*`), what promread asks for when
+  `promRead.cost.enabled`, and what the chart's scrape keep regex keeps.
+  Before, the exporter forwarded about twice as many series as anything
+  reads (metadata, OpenCost's own HTTP metrics, GPU allocation on clusters
+  without GPUs), and the backend now drops that remainder from older agents
+  anyway.
 - **Default limits 256Mi / 500m** (were 128Mi / 100m; requests unchanged, so
   scheduling does not move). The agent relays the API server's responses for
   an agent-proxy cluster and holds each one whole: 128Mi was OOMKilled on a
@@ -29,6 +50,23 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   channel's 63 MiB. Past it the agent answers with an error that names the
   cap, the limit and `resources.limits.memory`. At the new 256Mi default the
   cap stays 63 MiB; at 128Mi it is 32 MiB.
+- **promread reads every cost family.** It never asked for
+  `pod_pvc_allocation`, `kubecost_node_is_spot`, the four
+  `kubecost_network_*_egress_cost` or `kubecost_load_balancer_cost`, so
+  storage, spot, network and load-balancer cost never arrived on the
+  promread path; it asked for two GPU families nothing reads.
+- **promread keeps OpenCost's own labels.** A Prometheus that scrapes
+  OpenCost without `honor_labels` (a kube-prometheus ServiceMonitor's
+  default) puts the OpenCost pod's `namespace`, `pod`, `container` and
+  `instance` on every cost series and renames OpenCost's to `exported_*`:
+  read as it came, every container's cost landed in the namespace OpenCost
+  runs in. On a cost family promread now gives the `exported_*` labels back,
+  before the cluster and tenant labels it stamps, which they can never
+  replace. Other families stay as scraped.
+
+### Security
+
+- **Go 1.26.11** (CVE-2026-97054, Go standard library).
 
 ## [1.4.9] — 2026-11-11
 

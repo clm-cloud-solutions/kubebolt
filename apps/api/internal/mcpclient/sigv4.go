@@ -61,11 +61,11 @@ func newSigV4Signer(creds aws.CredentialsProvider, signer httpSigner, service, r
 
 func (s *sigV4Signer) Sign(ctx context.Context, req *http.Request, body []byte) error {
 	if s.creds == nil {
-		return errors.New("sigv4: no credentials provider")
+		return &CredentialsError{Err: errors.New("sigv4: no credentials provider")}
 	}
 	creds, err := s.creds.Retrieve(ctx)
 	if err != nil {
-		return fmt.Errorf("sigv4: retrieve credentials: %w", err)
+		return &CredentialsError{Err: fmt.Errorf("sigv4: retrieve credentials: %w", err)}
 	}
 	sum := sha256.Sum256(body)
 	// Connection is hop-by-hop: an intermediary may rewrite it, which would

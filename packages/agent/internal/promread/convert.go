@@ -11,7 +11,31 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
+	"github.com/kubebolt/kubebolt/packages/shared/costmetrics"
 )
+
+// restoreExportedLabels gives OpenCost's cost series their own labels back
+// (finding #101). A Prometheus that scrapes OpenCost without honor_labels —
+// a kube-prometheus ServiceMonitor's default — stamps its target labels
+// (namespace, pod, container, instance of the OpenCost pod) over OpenCost's
+// and renames OpenCost's to exported_*. Read as it comes, every container's
+// allocation lands in the namespace OpenCost runs in: seen on kind-kubebolt-dev,
+// 2.42 cores of allocation all under namespace="opencost". The exported_
+// value is the exporter's, so it wins; a series scraped with honor_labels
+// carries no exported_* and is left as it is.
+func restoreExportedLabels(labels map[string]string) {
+	var keys []string
+	for k := range labels {
+		if strings.HasPrefix(k, "exported_") && len(k) > len("exported_") {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		labels[strings.TrimPrefix(k, "exported_")] = labels[k]
+		delete(labels, k)
+	}
+}
 
 // safeUTF8 replaces invalid UTF-8 byte runs with the replacement char so a
 // string from the customer's Prometheus (metric name or label) is safe in the
@@ -67,6 +91,11 @@ func Convert(
 			// to valid UTF-8 so a misbehaving exporter can't fail proto.Marshal
 			// of the Sample and tear down the AgentChannel session.
 			baseLabels[safeUTF8(k)] = safeUTF8(v)
+		}
+		// Before the stamps below, so an exported_cluster_id or
+		// exported_tenant_id can never replace them.
+		if costmetrics.IsCostFamily(metricName) {
+			restoreExportedLabels(baseLabels)
 		}
 		if clusterID != "" {
 			baseLabels["cluster_id"] = clusterID

@@ -39,8 +39,11 @@ export interface CopilotMessage {
   cancelled?: boolean
   /** Set on the assistant turn that ended in an error before it answered: the
    * error as the server words it (friendlyCopilotError) and how long the
-   * question had run. The panel shows it as the investigation's last row. */
-  failure?: { message: string; afterMs?: number }
+   * question had run. The panel shows it as the investigation's last row.
+   * `kind` marks a plan limit, which is not a fault: 'busy' (Kobi already
+   * answers as many questions as the plan allows, blue) and 'credits' (the
+   * month's AI credits are spent, amber). Absent: a failure, red. */
+  failure?: { message: string; afterMs?: number; kind?: 'busy' | 'credits' }
   /** Set by the server on the final answer of a finished turn: the turn's id,
    * which a 👍/👎 names (POST /copilot/feedback). Round-trips with the
    * transcript so earlier answers stay rateable. */
@@ -81,6 +84,7 @@ export interface CopilotUsage {
 
 // SSE event types streamed from /api/v1/copilot/chat
 export type CopilotStreamEventType =
+  | 'queued'
   | 'meta'
   | 'tool_call'
   | 'tool_result'
@@ -89,6 +93,17 @@ export type CopilotStreamEventType =
   | 'done'
   | 'usage'
   | 'compact'
+
+// Whose limit of questions at once keeps a question waiting.
+export type TurnLimit = 'person' | 'organization'
+
+// TurnQueue is a question waiting in line for a free turn: whose limit is
+// full, how many it allows, and the epoch ms the server stops waiting.
+export interface TurnQueue {
+  limit: TurnLimit
+  max: number
+  until: number
+}
 
 export interface CopilotStreamEvent {
   type: CopilotStreamEventType
@@ -106,6 +121,15 @@ export interface CopilotStreamEvent {
   digest?: string
   reason?: string
   error?: string
+  // "error" payload: 'busy' when the question waited in line for a free turn
+  // and none freed; the panel says it in blue, as a limit, not a failure.
+  kind?: 'busy'
+  // "queued" payload, the stream's first event when the turns are full: whose
+  // limit (the person's own, or the organization's), how many turns it allows
+  // at once, and how long the server keeps the question in line.
+  limit?: TurnLimit
+  max?: number
+  waitSeconds?: number
   fallback?: boolean
   // "meta" payload: the conversation runs on this escalation model — sent
   // when it first leaves the cluster, and at the start of every later turn.

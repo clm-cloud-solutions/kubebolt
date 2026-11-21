@@ -13,6 +13,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
+	"github.com/kubebolt/kubebolt/packages/shared/costmetrics"
 )
 
 // Exporter scrapes an arbitrary in-cluster Prometheus exporter
@@ -108,6 +109,24 @@ func (e *Exporter) Name() string { return "exporter_" + e.name }
 // exporter would be pure cardinality waste.
 var droppedExporterPrefixes = []string{"go_", "process_", "promhttp_"}
 
+// openCostExporter is the name OpenCost runs under: the bundled chart lists it
+// as `opencost=<url>`, and a customer's own OpenCost goes under
+// `collectors.exporters.opencost`.
+const openCostExporter = "opencost"
+
+// keepFromExporter decides, per exporter, which families ship. OpenCost keeps
+// only what KubeBolt reads (costmetrics.KeepFromOpenCost: the cost families and
+// its kube_* compatibility families); everything else it publishes
+// (`deployment_match_labels`, `pod_info`, `kubecost_http_*`, GPU allocations
+// on nodes without one…) was about half its series and read by nothing
+// (finding #101). Any other exporter ships what it publishes.
+func keepFromExporter(exporter, metric string) bool {
+	if exporter == openCostExporter {
+		return costmetrics.KeepFromOpenCost(metric)
+	}
+	return true
+}
+
 // reservedExporterLabels are the identity labels this agent stamps;
 // an exporter emitting its own value for one of these must not be
 // able to spoof another cluster/tenant's series (mirrors the W3a
@@ -152,6 +171,9 @@ scan:
 			if strings.HasPrefix(metric, prefix) {
 				continue scan
 			}
+		}
+		if !keepFromExporter(e.name, metric) {
+			continue
 		}
 
 		sampleLabels := make(map[string]string, len(labels)+4)

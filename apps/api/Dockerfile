@@ -24,12 +24,14 @@ ENV GOWORK=off
 
 # Copy module manifests first so `go mod download` is cacheable.
 COPY packages/proto/go.mod packages/proto/go.sum ./packages/proto/
+COPY packages/shared/go.mod ./packages/shared/
 COPY apps/api/go.mod apps/api/go.sum ./apps/api/
 
 RUN cd apps/api && go mod download
 
 # Copy sources (only what apps/api needs — proto + api itself).
 COPY packages/proto/ ./packages/proto/
+COPY packages/shared/ ./packages/shared/
 COPY apps/api/ ./apps/api/
 
 # Version stamp — release.yml's build-api passes `--build-arg VERSION=<semver>`

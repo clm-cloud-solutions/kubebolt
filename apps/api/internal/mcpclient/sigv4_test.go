@@ -104,8 +104,47 @@ func TestSigV4SignerErrors(t *testing.T) {
 	failing := aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
 		return aws.Credentials{}, errors.New("no identity")
 	})
-	if err := NewSigV4Signer(failing, AWSMCPService, "us-east-1").Sign(t.Context(), req, nil); err == nil || !strings.Contains(err.Error(), "no identity") {
+	if err := NewSigV4Signer(failing, AWSMCPService, "us-east-1").Sign(t.Context(), req, nil); err == nil || !strings.Contains(err.Error(), "no identity") || !errors.Is(err, ErrCredentials) {
 		t.Errorf("err = %v", err)
+	}
+}
+
+// Found live: a role STS would not let KubeBolt assume reached the chat's
+// card as the SDK's own text. The signer says it could not get credentials,
+// and keeps the SDK's operation and code reachable by their methods, which
+// is how the gateway names them (credentialsDetail) without importing it.
+func TestSigV4SignerRefusedRoleIsACredentialsError(t *testing.T) {
+	sts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/xml")
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, `<ErrorResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+  <Error><Type>Sender</Type><Code>AccessDenied</Code><Message>User: arn:aws:iam::123456789012:user/kb is not authorized to perform: sts:AssumeRole on resource: arn:aws:iam::123456789012:role/missing</Message></Error>
+  <RequestId>r-2</RequestId>
+</ErrorResponse>`)
+	}))
+	defer sts.Close()
+	base := aws.Config{Region: "us-east-1", Credentials: &countingCreds{}, BaseEndpoint: aws.String(sts.URL), HTTPClient: sts.Client()}
+	creds, err := AssumeRoleCredentials(base, "arn:aws:iam::123456789012:role/missing", "", "", "kubebolt-kobi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, "https://x/mcp", nil)
+	err = NewSigV4Signer(creds, AWSMCPService, "us-east-1").Sign(t.Context(), req, nil)
+	if !errors.Is(err, ErrCredentials) {
+		t.Fatalf("err = %v, want ErrCredentials", err)
+	}
+	var (
+		code interface{ ErrorCode() string }
+		op   interface {
+			Service() string
+			Operation() string
+		}
+	)
+	if !errors.As(err, &code) || code.ErrorCode() != "AccessDenied" {
+		t.Errorf("no AccessDenied code in %v", err)
+	}
+	if !errors.As(err, &op) || op.Service() != "STS" || op.Operation() != "AssumeRole" {
+		t.Errorf("no STS AssumeRole operation in %v", err)
 	}
 }
 

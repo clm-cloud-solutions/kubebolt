@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { api } from '@/services/api'
 import { useAuth } from '@/contexts/AuthContext'
 import { agentDown, parseClusterDisplayName } from '@/utils/cluster'
+import { AgentUpdateTag } from '@/components/fleet/AgentUpdate'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { ResourceTypeIcon } from '@/utils/resourceIcons'
 import { useFleetRollup, type FleetClusterRollup } from '@/hooks/useFleetRollup'
@@ -268,6 +269,7 @@ function ClusterCard({
                 .filter(Boolean)
                 .join(' · ')}
             </span>
+            <AgentUpdateTag update={cluster.agentUpdate} />
           </div>
         </div>
         {/* SALUD, del mismo store que el Overview (/insights/summary). Un
@@ -642,8 +644,9 @@ export function FleetPage() {
                     >
                       <td className="px-3 py-2.5">
                         <div className="text-xs text-kb-text-primary">{parseClusterDisplayName(c)}</div>
-                        <div className="text-[10px] font-mono text-kb-text-tertiary">
-                          {c.mode || 'full'}
+                        <div className="flex items-center gap-1.5 text-[10px] font-mono text-kb-text-tertiary">
+                          <span>{c.mode || 'full'}</span>
+                          <AgentUpdateTag update={c.agentUpdate} />
                         </div>
                       </td>
 

@@ -44,7 +44,8 @@ func clusterListForKobi(clusters []cluster.ClusterInfo) string {
 }
 
 // AnnotateClusterList adds AgentOfflineNote to each agent-proxy row that
-// reports "connected" while its agent is gone. The two fields disagree by
+// reports "connected" while its agent is gone, and AgentUpdateNote to each row
+// whose agent is behind the newest release. The two fields disagree by
 // design (status is the connector, agentConnected the channel); the note says
 // which one a read depends on. A list with nothing to note comes back as it is.
 func AnnotateClusterList(text string) string {
@@ -57,6 +58,15 @@ func AnnotateClusterList(text string) string {
 		live, _ := r["agentConnected"].(bool)
 		if r["source"] == "agent-proxy" && r["mode"] != "metrics-only" && r["status"] == "connected" && !live {
 			r["agentNote"] = AgentOfflineNote
+			noted = true
+		}
+		// An agent behind the newest release: say what to do with agentUpdate.
+		if u, ok := r["agentUpdate"].(map[string]any); ok && u["level"] != "current" {
+			note := AgentUpdateNote
+			if before, _ := u["before"].(string); before != "" {
+				note += " " + AgentVersionUnknownNote
+			}
+			r["agentUpdateNote"] = note
 			noted = true
 		}
 	}

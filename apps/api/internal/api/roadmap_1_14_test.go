@@ -55,6 +55,47 @@ func TestHandleListActions_EndToEnd(t *testing.T) {
 	}
 }
 
+// TestHandleListActions_ClassFillsThePage is the regression test for a class
+// filter applied to the page after the limit: ?class=mutation&limit=1 behind
+// three cloud calls came back empty, and ?class=access&limit=5 showed two calls
+// out of a page the settings saves had filled.
+func TestHandleListActions_ClassFillsThePage(t *testing.T) {
+	store := audit.NewMemoryStore()
+	now := time.Now()
+	_ = store.Append(&audit.Record{ID: "m", Timestamp: now.Add(-time.Hour), Source: "ui", Action: "restart_workload", Result: "success"})
+	for i, id := range []string{"a1", "a2", "a3"} {
+		_ = store.Append(&audit.Record{ID: id, Timestamp: now.Add(time.Duration(i-3) * time.Minute), Class: audit.ClassAccess, Source: "copilot", Action: "mcp_tool_call", Result: "success"})
+	}
+	SetAuditStore(store, func(context.Context) string { return "" })
+	t.Cleanup(func() { SetAuditStore(nil, nil) })
+
+	list := func(query string) []audit.Record {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		(&handlers{}).handleListActions(rec, httptest.NewRequest(http.MethodGet, "/admin/actions?"+query, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d", query, rec.Code)
+		}
+		var body struct {
+			Items []audit.Record `json:"items"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("%s: decode: %v", query, err)
+		}
+		return body.Items
+	}
+
+	if got := list("class=mutation&limit=1"); len(got) != 1 || got[0].ID != "m" || got[0].Class != audit.ClassMutation {
+		t.Fatalf("class=mutation&limit=1 = %+v, want the mutation, its class filled in", got)
+	}
+	if got := list("class=access&limit=2"); len(got) != 2 || got[0].ID != "a3" || got[1].ID != "a2" {
+		t.Fatalf("class=access&limit=2 = %+v", got)
+	}
+	if got := list("class=all&limit=2"); len(got) != 2 || got[0].ID != "a3" {
+		t.Fatalf("class=all&limit=2 = %+v", got)
+	}
+}
+
 // TestHandleListActions_NoStore returns an empty list (not an error) when no
 // store is wired — the auth-disabled / no-BoltDB path.
 func TestHandleListActions_NoStore(t *testing.T) {

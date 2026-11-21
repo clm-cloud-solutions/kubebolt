@@ -463,8 +463,9 @@ func newAzureDef() *ConnectorDef {
 			"Apply Advisor recommendations or fetch remediation scripts",
 			"Read a subscription other than the one set here",
 		},
-		Guide:  azureGuide,
-		Binder: azureBinder{},
+		Guide:      azureGuide,
+		Binder:     azureBinder{},
+		BlockEntry: azureBlockEntry,
 	}
 }
 

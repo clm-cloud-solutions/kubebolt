@@ -48,6 +48,25 @@ export function serializeMessages(messages: CopilotMessage[]) {
     }))
 }
 
+/**
+ * CopilotRefusal is a question the server declined, for a limit it sets.
+ * Neither kind is a fault:
+ * - 'busy': as many questions are running as the server allows at once, and
+ *   none freed while the question waited in line (the stream's "queued"
+ *   event, then an "error" of kind busy; a 429 says the same).
+ * - 'credits' (402): the AI credits for the period are spent; someone has
+ *   to act or wait for them to come back.
+ */
+export class CopilotRefusal extends Error {
+  constructor(
+    public readonly kind: 'busy' | 'credits',
+    message: string,
+  ) {
+    super(message)
+    this.name = 'CopilotRefusal'
+  }
+}
+
 // isAbort reports whether an error is a user-initiated cancel (cancelMessage →
 // AbortController.abort()). That is NOT a connection failure — the caller
 // renders it as "Stopped by you" — so it must propagate untouched.
@@ -127,11 +146,19 @@ export async function* sendCopilotChat(
     // The chat panel renders a thrown error's message verbatim, so prefer the
     // backend's structured { error } body (e.g. 503 "no cluster selected —
     // choose a cluster to continue") over the raw "chat failed (status): {...}".
-    let parsed: { error?: string } | null = null
+    let parsed: { error?: string; limitType?: string } | null = null
     try {
       parsed = JSON.parse(text)
     } catch {
       parsed = null
+    }
+    // Questions in flight at the server's limit, refused before the stream.
+    // Not an error.
+    if (res.status === 429 && parsed?.limitType === 'concurrent_turns') {
+      throw new CopilotRefusal(
+        'busy',
+        parsed.error || 'Kobi is already answering as many questions as it allows at once.',
+      )
     }
     if (parsed?.error) {
       throw new Error(parsed.error)

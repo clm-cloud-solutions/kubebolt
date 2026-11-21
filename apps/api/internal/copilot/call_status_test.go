@@ -20,6 +20,16 @@ func TestCallStatus(t *testing.T) {
 		{"refused by the connector's allowlist",
 			ToolResult{IsError: true, NotSent: true, Content: "Refused: the operation s3.PutObject is not read-only.\n" + notSentNote},
 			false, ToolResultNotSent, "Refused: the operation s3.PutObject is not read-only"},
+		{"a binding's own refusal, as the gateway marks it for the model",
+			ToolResult{IsError: true, NotSent: true, Content: "[KubeBolt] Refused: TerminateInstances is not a read operation; this connector only reads."},
+			false, ToolResultNotSent, "Refused: TerminateInstances is not a read operation; this connector only reads"},
+		{"held back at the organization's pace, which the gateway names",
+			ToolResult{IsError: true, RateLimited: true, Reason: "cloud call limit: 120/min, 30 at once",
+				Content: "Rate limited: this organization's cloud calls are held to 120 a minute, at most 30 at once. Wait a few seconds before the next call, or continue without it."},
+			false, ToolResultRateLimited, "cloud call limit: 120/min, 30 at once"},
+		{"held back, with no pace named",
+			ToolResult{IsError: true, RateLimited: true, Content: "Rate limited."},
+			false, ToolResultRateLimited, "cloud call limit reached"},
 		{"the agent is not connected",
 			ToolResult{IsError: true, Content: `{"error":"` + AgentOfflineError + `","agentConnected":false}`},
 			false, ToolResultAgentOffline, ""},
@@ -50,5 +60,31 @@ func TestErrorReasonIsBounded(t *testing.T) {
 	got := errorReason(`{"error":"` + strings.Repeat("x", 400) + `"}`)
 	if n := len([]rune(got)); n != reasonMax || !strings.HasSuffix(got, "…") {
 		t.Errorf("reason has %d runes: %q", n, got)
+	}
+}
+
+// Found live: a burst of refused calls counted as `error` in the tool metrics
+// and fired the platform's «connector failing» alert. A call that reached
+// nothing counts under its own result; everything else keeps its class.
+func TestMetricToolResult(t *testing.T) {
+	refused := ToolResult{Content: "Refused: ec2.describeinstances is blocked on this KubeBolt installation by its administrators.", IsError: true, NotSent: true}
+	limited := ToolResult{Content: "Rate limited: this organization's cloud calls are held to 120 a minute, at most 30 at once. Wait a few seconds before the next call, or continue without it.", IsError: true, RateLimited: true}
+	failed := ToolResult{Content: `{"error":"the connection was reset"}`, IsError: true}
+	budget := MCPBudgetExhaustedResult(ToolCall{ID: "t1", Name: "mcp__aws__call"})
+	for _, c := range []struct {
+		name   string
+		r      ToolResult
+		budget bool
+		want   string
+	}{
+		{"refused before the provider", refused, false, ToolResultNotSent},
+		{"past the turn's budget", budget, true, ToolResultNotSent},
+		{"held back by the rate limit", limited, false, ToolResultRateLimited},
+		{"sent and failed", failed, false, ToolResultError},
+		{"answered", ToolResult{Content: `{"items":[1]}`}, false, ToolResultOK},
+	} {
+		if got := MetricToolResult(c.r, ClassifyToolResult(c.r), c.budget); got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
 	}
 }
