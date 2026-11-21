@@ -326,6 +326,8 @@ func (e *Executor) runQueryMetrics(ctx context.Context, args map[string]interfac
 	out["series"] = rows
 	if len(rows) == 0 {
 		out["note"] = "no series matched in this cluster. An empty result is NOT a zero value: the metric may not be shipped here — get_coverage lists the active sources."
+	} else if note := republishedFamilyNote(promQL); note != "" {
+		out["note"] = note
 	}
 	return out, nil
 }
