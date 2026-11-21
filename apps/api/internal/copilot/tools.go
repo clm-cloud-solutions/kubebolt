@@ -467,7 +467,7 @@ func ToolDefinitions() []ToolDefinition {
 		},
 		{
 			Name:        "list_clusters",
-			Description: "List all available kubeconfig contexts (clusters)",
+			Description: "List clusters; is the KubeBolt agent out of date?",
 			InputSchema: emptyObject(),
 		},
 		{

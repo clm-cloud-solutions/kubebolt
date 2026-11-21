@@ -46,14 +46,47 @@ const (
 	LevelRecommended = "recommended"
 )
 
+// unreportedVersion is what every agent before reportsVersionSince sends in
+// its Hello, whatever its release: until 2026-10-12 the version was a
+// constant in the agent (commit 7bac2c36). An agent saying 1.0.0 is
+// therefore some release before reportsVersionSince, and nothing more is
+// known from here: the installed chart (the Helm release) has the exact one.
+const (
+	unreportedVersion   = "1.0.0"
+	reportsVersionSince = "1.4.4"
+)
+
+// The Helm release the install wizard creates.
+const (
+	AgentChart     = "oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent"
+	AgentRelease   = "kubebolt-agent"
+	AgentNamespace = "kubebolt-system"
+)
+
+// UpgradeCommand is the Helm command that moves the agent to a release,
+// keeping the person's settings and taking the new chart's defaults
+// (--reset-then-reuse-values, Helm 3.14 or later).
+func UpgradeCommand(version string) string {
+	return "helm upgrade " + AgentRelease + " " + AgentChart + " \\\n" +
+		"  --namespace " + AgentNamespace + " --version " + version + " --reset-then-reuse-values"
+}
+
 // Status is a cluster's agent version against the newest release.
 type Status struct {
-	// Version is the oldest version among the cluster's live agents.
-	Version string `json:"version"`
-	Latest  string `json:"latest"`
-	Level   string `json:"level"`
+	// Version is the oldest version among the cluster's live agents. Empty
+	// when that agent does not report its own: Before then says what is
+	// known.
+	Version string `json:"version,omitempty"`
+	// Before is set when Version is unknown: the agent is a release older
+	// than this one (agents before 1.4.4 all report 1.0.0).
+	Before string `json:"before,omitempty"`
+	Latest string `json:"latest"`
+	Level  string `json:"level"`
 	// Reasons apply when Level is recommended: what this version gets wrong.
 	Reasons []string `json:"reasons,omitempty"`
+	// Upgrade is the Helm command to the latest release, when Level is not
+	// current. KubeBolt never runs it: the person who owns the release does.
+	Upgrade string `json:"upgrade,omitempty"`
 }
 
 // Evaluate judges a cluster by the versions its live agents declared. nil
@@ -74,6 +107,9 @@ func Evaluate(versions []string) *Status {
 		return nil
 	}
 	st := &Status{Version: strings.TrimPrefix(oldest, "v"), Latest: Latest, Level: LevelCurrent}
+	if oldest == canonical(unreportedVersion) {
+		st.Version, st.Before = "", reportsVersionSince
+	}
 	if semver.Compare(oldest, canonical(Latest)) < 0 {
 		st.Level = LevelAvailable
 	}
@@ -83,7 +119,19 @@ func Evaluate(versions []string) *Status {
 			st.Reasons = append(st.Reasons, a.Reason)
 		}
 	}
+	if st.Level != LevelCurrent {
+		st.Upgrade = UpgradeCommand(Latest)
+	}
 	return st
+}
+
+// Label names the agent's version for a person: "1.4.8", or "before 1.4.4"
+// when it does not report its own.
+func (s *Status) Label() string {
+	if s.Version == "" && s.Before != "" {
+		return "before " + s.Before
+	}
+	return s.Version
 }
 
 // canonical returns a version as semver wants it ("v1.4.9"), or "" when it is

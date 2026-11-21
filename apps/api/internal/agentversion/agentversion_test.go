@@ -88,3 +88,31 @@ func TestLatestMatchesTheAgentChart(t *testing.T) {
 		t.Errorf("agentversion.Latest = %s, the agent chart's appVersion is %s: bump Latest with the agent release", Latest, m[1])
 	}
 }
+
+// Agents before 1.4.4 all report 1.0.0 (a constant in the agent until
+// 2026-10-12): the version is unknown, not 1.0.0, and the label says what is
+// known. Seen live: a 1.3.1 agent shown as «Agent 1.0.0».
+func TestEvaluate_UnreportedVersion(t *testing.T) {
+	got := Evaluate([]string{"1.0.0", Latest})
+	if got == nil || got.Version != "" || got.Before != "1.4.4" || got.Level != LevelRecommended || len(got.Reasons) != len(Advisories) {
+		t.Fatalf("Evaluate(1.0.0) = %+v, want an unknown version before 1.4.4, recommended with every reason", got)
+	}
+	if got.Label() != "before 1.4.4" {
+		t.Errorf("Label() = %q, want %q", got.Label(), "before 1.4.4")
+	}
+	if st := Evaluate([]string{"1.4.8"}); st.Label() != "1.4.8" || st.Before != "" {
+		t.Errorf("a reported version labels as itself: %+v", st)
+	}
+}
+
+// The command to run comes with every status but «current».
+func TestEvaluate_UpgradeCommand(t *testing.T) {
+	if st := Evaluate([]string{Latest}); st.Upgrade != "" {
+		t.Errorf("current agent carries an upgrade command: %q", st.Upgrade)
+	}
+	st := Evaluate([]string{"1.3.1"})
+	want := "helm upgrade kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \\\n  --namespace kubebolt-system --version " + Latest + " --reset-then-reuse-values"
+	if st.Upgrade != want {
+		t.Errorf("Upgrade = %q, want %q", st.Upgrade, want)
+	}
+}

@@ -8,14 +8,15 @@ import type { AgentUpdate } from '@/types/kubernetes'
 // behind the cluster's oldest live agent is, why that matters when it does,
 // and the command to run.
 
-export const AGENT_CHART = 'oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent'
+// agentVersionLabel names the version: "1.4.8", or "before 1.4.4" for an agent
+// that does not report its own (every agent before 1.4.4 sends 1.0.0).
+export function agentVersionLabel(u: AgentUpdate): string {
+  return u.version || (u.before ? `before ${u.before}` : '')
+}
 
-// The release name and namespace the install wizard uses (utils/agentInstall.ts).
-export function agentUpgradeCommand(latest: string): string {
-  return [
-    `helm upgrade kubebolt-agent ${AGENT_CHART} \\`,
-    `  --namespace kubebolt-system --version ${latest} --reset-then-reuse-values`,
-  ].join('\n')
+// The same in a chip, where space is short: "<1.4.4".
+function agentVersionShort(u: AgentUpdate): string {
+  return u.version || (u.before ? `<${u.before}` : '')
 }
 
 export function agentReleaseNotesUrl(latest: string): string {
@@ -37,14 +38,14 @@ export function AgentUpdateBadge({ update, onOpen }: { update?: AgentUpdate; onO
       type="button"
       onClick={onOpen}
       title={recommended ? 'This agent version has problems a newer release fixes' : `Agent ${update.latest} is available`}
-      className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-mono transition-colors ${
+      className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-mono whitespace-nowrap transition-colors ${
         recommended
           ? 'bg-kobi-st-warn-dim text-kobi-st-warn hover:opacity-80'
           : 'bg-kb-elevated text-kb-text-secondary hover:text-kb-text-primary'
       }`}
     >
       <ArrowUpCircle className="w-2.5 h-2.5" aria-hidden="true" />
-      Agent {update.version} · {recommended ? 'update recommended' : 'update available'}
+      Agent {agentVersionShort(update)} · {recommended ? 'update recommended' : 'update available'}
     </button>
   )
 }
@@ -56,11 +57,11 @@ export function AgentUpdateTag({ update }: { update?: AgentUpdate }) {
   if (!agentUpdateRecommended(update) || !update) return null
   return (
     <span
-      title={`Agent ${update.version} has problems ${update.latest} fixes. Clusters shows why and the Helm command.`}
-      className="inline-flex items-center gap-1 shrink-0 px-1.5 py-0.5 rounded text-[9px] font-mono bg-kobi-st-warn-dim text-kobi-st-warn"
+      title={`Agent ${agentVersionLabel(update)} has problems ${update.latest} fixes. Clusters shows why and the Helm command.`}
+      className="inline-flex items-center gap-1 shrink-0 whitespace-nowrap px-1.5 py-0.5 rounded text-[9px] font-mono bg-kobi-st-warn-dim text-kobi-st-warn"
     >
       <ArrowUpCircle className="w-2.5 h-2.5" aria-hidden="true" />
-      Agent {update.version}
+      Agent {agentVersionShort(update)}
     </span>
   )
 }
@@ -69,8 +70,11 @@ export function AgentUpdateTag({ update }: { update?: AgentUpdate }) {
 // command, and what to change when the agent was installed differently.
 export function AgentUpdateModal({ clusterName, update, onClose }: { clusterName: string; update: AgentUpdate; onClose: () => void }) {
   const [copied, setCopied] = useState(false)
-  const command = agentUpgradeCommand(update.latest)
+  // The command comes from the server (agentversion.UpgradeCommand), the same
+  // Kobi gives.
+  const command = update.upgrade ?? ''
   const recommended = update.level === 'recommended'
+  const label = agentVersionLabel(update)
 
   async function copy() {
     if (await copyText(command)) {
@@ -83,14 +87,23 @@ export function AgentUpdateModal({ clusterName, update, onClose }: { clusterName
     <Modal
       badge="Agent"
       badgeClass={recommended ? 'text-kobi-st-warn bg-kobi-st-warn-dim' : undefined}
-      title={`${clusterName}: agent ${update.version} → ${update.latest}`}
+      title={clusterName}
       onClose={onClose}
       size="md"
     >
       <div className="px-5 py-4 flex flex-col gap-4 text-xs text-kb-text-secondary">
+        <p className="font-mono text-[12px] text-kb-text-primary">
+          Agent {label} → {update.latest}
+        </p>
+        {update.before && (
+          <p>
+            This agent does not report its own version: every agent before {update.before} sends 1.0.0. Applications
+            shows the installed chart (the Helm release kubebolt-agent).
+          </p>
+        )}
         {recommended ? (
           <div>
-            <p className="text-kb-text-primary">Agent {update.version} has problems that newer releases fix:</p>
+            <p className="text-kb-text-primary">Agent {label} has problems that newer releases fix:</p>
             <ul className="mt-2 flex flex-col gap-1.5 list-disc pl-4">
               {(update.reasons ?? []).map((r) => (
                 <li key={r}>{r}</li>
@@ -99,7 +112,7 @@ export function AgentUpdateModal({ clusterName, update, onClose }: { clusterName
           </div>
         ) : (
           <p className="text-kb-text-primary">
-            Agent {update.latest} is available. Nothing in {update.version} needs fixing now: upgrade when it suits you.
+            Agent {update.latest} is available. Nothing in {label} needs fixing now: upgrade when it suits you.
           </p>
         )}
 

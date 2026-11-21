@@ -26,7 +26,7 @@ import { FirstClusterWizard } from '@/components/onboarding/FirstClusterWizard'
 import { useCopilot } from '@/contexts/CopilotContext'
 import { useClusterLabel } from '@/hooks/useClusterLabel'
 import { useOpenInCluster } from '@/hooks/useOpenInCluster'
-import { agentUpdateRecommended } from '@/components/fleet/AgentUpdate'
+import { agentUpdateRecommended, agentVersionLabel } from '@/components/fleet/AgentUpdate'
 import type { ConversationSummary } from '@/services/copilot/types'
 
 // HomePage — the plan-aware landing (design/kubebolt-home-{free,team,…}.html).
@@ -673,7 +673,7 @@ export function HomePage() {
         sev: 'warn',
         source: 'cluster',
         text: `${name}'s agent is out of date`,
-        hint: `${c.agentUpdate.version} has problems ${c.agentUpdate.latest} fixes`,
+        hint: `${agentVersionLabel(c.agentUpdate)} has problems ${c.agentUpdate.latest} fixes`,
         where: name,
         to: `/clusters?agent=${encodeURIComponent(c.clusterId ?? '')}`,
       })

@@ -360,11 +360,16 @@ export interface ClusterInfo {
 
 // AgentUpdate — 'recommended' when the version has problems a newer release
 // fixes (the reasons say which), 'available' when a newer one merely exists.
+// `version` is absent for an agent that does not report its own (before 1.4.4
+// every agent sends 1.0.0): `before` then says what is known. `upgrade` is the
+// Helm command, built by the server.
 export interface AgentUpdate {
-  version: string
+  version?: string
+  before?: string
   latest: string
   level: 'current' | 'available' | 'recommended'
   reasons?: string[]
+  upgrade?: string
 }
 
 // API params
