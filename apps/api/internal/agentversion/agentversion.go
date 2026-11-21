@@ -17,7 +17,7 @@ import (
 // Latest is the newest agent release (the agent chart's appVersion, tag
 // agent-v<Latest>). Bump it with every agent release:
 // TestLatestMatchesTheAgentChart fails until it matches the chart.
-const Latest = "1.4.9"
+const Latest = "1.4.10"
 
 // Advisory is a reason to upgrade now: what an agent older than Below gets
 // wrong, in words for the person who runs it.
