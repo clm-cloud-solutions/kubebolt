@@ -93,6 +93,20 @@ with itself. Called from the top of templates/daemonset.yaml so
 {{- if and $scrapeOn $promReadOn -}}
 {{- fail "scrape.enabled=true and agent.promRead.enabled=true are mutually exclusive — pick one sample source per agent. Mode A (scrape sidecar) and Mode C (read from customer Prom) cannot both be on; the agent would double-emit the same metric families." -}}
 {{- end -}}
+{{- /* One source of OpenCost's cost, the same rule for cost (finding #101):
+     promRead.cost reads it from the customer's Prometheus, the exporter
+     reads OpenCost itself; with both, every cost family is stored twice and
+     every cost total doubles, silently (seen on kind-kubebolt-dev:
+     $1,485/mo shown for $743/mo). */ -}}
+{{- $promReadCostOn := and $promReadOn .Values.agent.promRead.cost .Values.agent.promRead.cost.enabled -}}
+{{- $exporters := dict -}}
+{{- if and .Values.collectors .Values.collectors.exporters -}}
+{{- $exporters = .Values.collectors.exporters -}}
+{{- end -}}
+{{- $openCostExporterOn := or (and .Values.opencost .Values.opencost.enabled) (index $exporters "opencost") -}}
+{{- if and $promReadCostOn $openCostExporterOn -}}
+{{- fail "agent.promRead.cost.enabled=true and the agent's OpenCost exporter (opencost.enabled or collectors.exporters.opencost) are mutually exclusive — pick one source of cost. Both on would store every cost family twice and double every cost total. promRead.cost reads OpenCost from your Prometheus; the exporter reads OpenCost directly." -}}
+{{- end -}}
 {{- if $promReadOn -}}
 {{- if not .Values.agent.promRead.url -}}
 {{- fail "agent.promRead.enabled=true requires agent.promRead.url" -}}

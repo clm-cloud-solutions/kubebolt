@@ -75,7 +75,7 @@ func NewGRPCIngestMetrics(reg prometheus.Registerer) *GRPCIngestMetrics {
 		}, []string{"tenant_id"}),
 		droppedSeries: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "kubebolt_agent_grpc_dropped_series_total",
-			Help: "Total series dropped at the gRPC ingest door, per tenant and reason (reserved: a name only KubeBolt writes).",
+			Help: "Total series dropped at the gRPC ingest door, per tenant and reason (reserved: a name only KubeBolt writes; opencost_unread: an OpenCost family nothing reads).",
 		}, []string{"tenant_id", "reason"}),
 	}
 	reg.MustRegister(m.streamsTotal, m.samplesReceived, m.droppedSeries)
@@ -110,6 +110,18 @@ func (m *GRPCIngestMetrics) RecordSamplesReceived(tenantID string, samples int) 
 		tenantID = AnonymousTenant
 	}
 	m.samplesReceived.WithLabelValues(tenantID).Add(float64(samples))
+}
+
+// RecordDroppedOpenCostUnread counts the samples dropped because OpenCost
+// published them and nothing in KubeBolt reads them (finding #101).
+func (m *GRPCIngestMetrics) RecordDroppedOpenCostUnread(tenantID string, n int) {
+	if m == nil || n <= 0 {
+		return
+	}
+	if tenantID == "" {
+		tenantID = AnonymousTenant
+	}
+	m.droppedSeries.WithLabelValues(tenantID, "opencost_unread").Add(float64(n))
 }
 
 // RecordDroppedReserved counts samples dropped for carrying a name only

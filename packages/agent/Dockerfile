@@ -19,12 +19,14 @@ ENV GOOS=linux
 
 # Copy module manifests first so `go mod download` can be cached.
 COPY packages/proto/go.mod packages/proto/go.sum ./packages/proto/
+COPY packages/shared/go.mod ./packages/shared/
 COPY packages/agent/go.mod packages/agent/go.sum ./packages/agent/
 
 RUN cd packages/agent && go mod download
 
 # Copy sources.
 COPY packages/proto/ ./packages/proto/
+COPY packages/shared/ ./packages/shared/
 COPY packages/agent/ ./packages/agent/
 
 # Build. -s -w strip symbols for a smaller binary. Ends up ~15MB for amd64.

@@ -332,3 +332,67 @@ func TestConvert_LabelsAreNotAliased(t *testing.T) {
 		t.Errorf("Labels aliased across samples: sample[1].instance = %q", samples[1].Labels["instance"])
 	}
 }
+
+// Finding #101: a Prometheus that scrapes OpenCost without honor_labels
+// renames OpenCost's namespace/pod/container/instance to exported_* and puts
+// the OpenCost pod's own there. Seen on kind-kubebolt-dev: every container's
+// allocation under namespace="opencost". Cost families get theirs back; the
+// cluster and tenant stamps still win.
+func TestConvert_CostFamiliesGetTheirExportedLabelsBack(t *testing.T) {
+	resp := newQueryResp(
+		map[string]string{
+			"__name__":            "container_cpu_allocation",
+			"job":                 "opencost",
+			"service":             "opencost",
+			"endpoint":            "http",
+			"namespace":           "opencost",
+			"pod":                 "opencost-757865ffbf-qpswc",
+			"container":           "opencost",
+			"instance":            "10.244.1.96:9003",
+			"exported_namespace":  "kube-system",
+			"exported_pod":        "kube-apiserver-kubebolt-dev-control-plane",
+			"exported_container":  "kube-apiserver",
+			"exported_instance":   "kubebolt-dev-control-plane",
+			"exported_cluster_id": "someone-else",
+			"node":                "kubebolt-dev-control-plane",
+		},
+		[][]interface{}{{float64(1700000000), "0.25"}},
+	)
+	samples, err := Convert(resp, "c1", "kind-kubebolt-dev", "t1", nil)
+	if err != nil || len(samples) != 1 {
+		t.Fatalf("Convert = %d samples, %v", len(samples), err)
+	}
+	got := samples[0].Labels
+	want := map[string]string{
+		"namespace":  "kube-system",
+		"pod":        "kube-apiserver-kubebolt-dev-control-plane",
+		"container":  "kube-apiserver",
+		"instance":   "kubebolt-dev-control-plane",
+		"node":       "kubebolt-dev-control-plane",
+		"job":        "opencost",
+		"cluster_id": "c1",
+		"tenant_id":  "t1",
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("label %s = %q, want %q", k, got[k], v)
+		}
+	}
+	for k := range got {
+		if len(k) > 9 && k[:9] == "exported_" {
+			t.Errorf("label %s left on a cost family", k)
+		}
+	}
+}
+
+// Only the cost families: any other series keeps its labels as scraped.
+func TestConvert_OtherFamiliesKeepExportedLabels(t *testing.T) {
+	resp := newQueryResp(
+		map[string]string{"__name__": "kube_pod_info", "namespace": "monitoring", "exported_namespace": "shop"},
+		[][]interface{}{{float64(1700000000), "1"}},
+	)
+	samples, _ := Convert(resp, "", "", "", nil)
+	if len(samples) != 1 || samples[0].Labels["namespace"] != "monitoring" || samples[0].Labels["exported_namespace"] != "shop" {
+		t.Fatalf("kube_pod_info labels = %v, want them unchanged", samples[0].Labels)
+	}
+}

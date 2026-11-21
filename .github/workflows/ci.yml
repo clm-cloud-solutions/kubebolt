@@ -21,6 +21,13 @@ jobs:
         run: cd apps/api && go vet ./...
       - name: Test
         run: cd apps/api && go test ./... -race -count=1
+      # packages/shared and packages/agent are their own modules (linked with
+      # `replace`): `go test ./...` from apps/api reaches neither. The agent's
+      # tests ran nowhere before; the OpenCost exporter filter (#101) is one.
+      - name: Test (packages/shared)
+        run: cd packages/shared && go test ./... -race -count=1
+      - name: Test (packages/agent)
+        run: cd packages/agent && go test ./... -race -count=1
   frontend:
     runs-on: ubuntu-latest
     steps:

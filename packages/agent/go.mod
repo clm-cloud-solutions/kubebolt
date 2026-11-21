@@ -18,6 +18,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.32.7
 	github.com/cilium/cilium v1.19.5
 	github.com/kubebolt/kubebolt/packages/proto v0.0.0
+	github.com/kubebolt/kubebolt/packages/shared v0.0.0
 	golang.org/x/oauth2 v0.36.0
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
@@ -93,3 +94,5 @@ require (
 )
 
 replace github.com/kubebolt/kubebolt/packages/proto => ../proto
+
+replace github.com/kubebolt/kubebolt/packages/shared => ../shared
