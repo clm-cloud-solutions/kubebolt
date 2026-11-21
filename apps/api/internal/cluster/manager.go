@@ -1266,7 +1266,7 @@ func (m *Manager) ListClusters(_ context.Context) []ClusterInfo {
 			Source:         source,
 			ClusterID:      clusterID,
 			AgentConnected: agentConnected,
-			AgentUpdate:    m.agentUpdateOf(clusterID),
+			AgentUpdate:    m.agentUpdateOf(clusterID, ctxName, isActive),
 			LastSeen:       lastSeen,
 			Mode:           mode,
 
@@ -1282,12 +1282,18 @@ func (m *Manager) ListClusters(_ context.Context) []ClusterInfo {
 }
 
 // agentUpdateOf judges the cluster's live agents' versions against the newest
-// release; nil without a live agent that declared one.
-func (m *Manager) agentUpdateOf(clusterID string) *agentversion.Status {
+// release; nil without a live agent that declared one. The command names the
+// cluster's own release and namespace when its live cache here can tell them
+// (agent_install.go); otherwise the defaults. m.mu held (read).
+func (m *Manager) agentUpdateOf(clusterID, ctxName string, isActive bool) *agentversion.Status {
 	if clusterID == "" || m.agentRegistry == nil {
 		return nil
 	}
-	return agentversion.Evaluate(m.agentRegistry.AgentVersions(clusterID))
+	st := agentversion.Evaluate(m.agentRegistry.AgentVersions(clusterID))
+	if st != nil && st.Level != agentversion.LevelCurrent {
+		st.ForInstall(m.agentInstallLocked(ctxName, isActive))
+	}
+	return st
 }
 
 // SwitchCluster switches the active cluster to the given context name.

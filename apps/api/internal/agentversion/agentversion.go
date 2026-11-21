@@ -65,10 +65,48 @@ const (
 
 // UpgradeCommand is the Helm command that moves the agent to a release,
 // keeping the person's settings and taking the new chart's defaults
-// (--reset-then-reuse-values, Helm 3.14 or later).
+// (--reset-then-reuse-values, Helm 3.14 or later). It names the release the
+// install wizard creates; UpgradeCommandFor names the one a cluster has.
 func UpgradeCommand(version string) string {
-	return "helm upgrade " + AgentRelease + " " + AgentChart + " \\\n" +
-		"  --namespace " + AgentNamespace + " --version " + version + " --reset-then-reuse-values"
+	return UpgradeCommandFor(version, Install{})
+}
+
+// Install is how the agent was installed in its cluster, read from the
+// cluster itself: the release its DaemonSet (or promread Deployment) was
+// created by (`app.kubernetes.io/instance`) and its namespace. Seen live on
+// 2026-11-21: Production AKS's release is kb-agent-promread, yagan's
+// kubebolt-agent-ee in namespace kubebolt-agent — the wizard's default names
+// fit neither, and the command could not be pasted as it was.
+type Install struct {
+	Release   string
+	Namespace string
+	// TwoCostSources: promRead.cost and the agent's OpenCost exporter are both
+	// on. The chart refuses that from 1.4.10 (every cost family was stored
+	// twice), so the command turns promRead.cost off; the exporter keeps
+	// reading OpenCost directly.
+	TwoCostSources bool
+}
+
+// costSourcesRuleSince is the agent release whose chart refuses two sources
+// of cost.
+const costSourcesRuleSince = "1.4.10"
+
+// UpgradeCommandFor is UpgradeCommand for the release and namespace a
+// cluster's agent was installed with; an empty field keeps the default.
+func UpgradeCommandFor(version string, in Install) string {
+	release, namespace := AgentRelease, AgentNamespace
+	if in.Release != "" {
+		release = in.Release
+	}
+	if in.Namespace != "" {
+		namespace = in.Namespace
+	}
+	cmd := "helm upgrade " + release + " " + AgentChart + " \\\n" +
+		"  --namespace " + namespace + " --version " + version + " --reset-then-reuse-values"
+	if in.TwoCostSources && semver.Compare(canonical(version), canonical(costSourcesRuleSince)) >= 0 {
+		cmd += " \\\n  --set agent.promRead.cost.enabled=false"
+	}
+	return cmd
 }
 
 // Status is a cluster's agent version against the newest release.
@@ -87,6 +125,27 @@ type Status struct {
 	// Upgrade is the Helm command to the latest release, when Level is not
 	// current. KubeBolt never runs it: the person who owns the release does.
 	Upgrade string `json:"upgrade,omitempty"`
+	// Release and Namespace are the agent's own, read from the cluster, when
+	// it could be read (ForInstall); empty, Upgrade names the defaults.
+	Release   string `json:"release,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+	// TurnsOffPromReadCost: the install reads OpenCost twice and Upgrade
+	// turns promRead.cost off, as the new chart requires.
+	TurnsOffPromReadCost bool `json:"turnsOffPromReadCost,omitempty"`
+}
+
+// ForInstall fits the status to how the agent was installed: the command
+// names its release and namespace, and turns promRead.cost off when the
+// install has two sources of cost. A nil install or a current agent leaves it
+// as it is.
+func (s *Status) ForInstall(in *Install) *Status {
+	if s == nil || in == nil || s.Level == LevelCurrent {
+		return s
+	}
+	s.Release, s.Namespace = in.Release, in.Namespace
+	s.Upgrade = UpgradeCommandFor(s.Latest, *in)
+	s.TurnsOffPromReadCost = strings.Contains(s.Upgrade, "agent.promRead.cost.enabled=false")
+	return s
 }
 
 // Evaluate judges a cluster by the versions its live agents declared. nil

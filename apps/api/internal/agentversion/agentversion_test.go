@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"golang.org/x/mod/semver"
@@ -114,5 +115,42 @@ func TestEvaluate_UpgradeCommand(t *testing.T) {
 	want := "helm upgrade kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \\\n  --namespace kubebolt-system --version " + Latest + " --reset-then-reuse-values"
 	if st.Upgrade != want {
 		t.Errorf("Upgrade = %q, want %q", st.Upgrade, want)
+	}
+}
+
+// The command names the release and namespace the cluster's agent was
+// installed with — seen live, Production AKS's kb-agent-promread and yagan's
+// kubebolt-agent-ee in kubebolt-agent — and turns promRead.cost off when the
+// install has two sources of cost, which the chart refuses from 1.4.10.
+func TestUpgradeCommandFor_TheClustersOwnRelease(t *testing.T) {
+	got := UpgradeCommandFor("1.4.10", Install{Release: "kubebolt-agent-ee", Namespace: "kubebolt-agent", TwoCostSources: true})
+	want := "helm upgrade kubebolt-agent-ee " + AgentChart + " \\\n" +
+		"  --namespace kubebolt-agent --version 1.4.10 --reset-then-reuse-values \\\n" +
+		"  --set agent.promRead.cost.enabled=false"
+	if got != want {
+		t.Errorf("UpgradeCommandFor = %q, want %q", got, want)
+	}
+	// Before 1.4.10 the chart allows both: nothing to turn off.
+	if got := UpgradeCommandFor("1.4.9", Install{Release: "r", TwoCostSources: true}); strings.Contains(got, "promRead") {
+		t.Errorf("a target before 1.4.10 must not touch promRead.cost: %q", got)
+	}
+	// An empty field keeps the wizard's default.
+	if got := UpgradeCommandFor("1.4.10", Install{Release: "kb-agent-promread"}); !strings.Contains(got, "upgrade kb-agent-promread ") || !strings.Contains(got, "--namespace "+AgentNamespace+" ") {
+		t.Errorf("release only: %q", got)
+	}
+}
+
+func TestStatus_ForInstall(t *testing.T) {
+	st := Evaluate([]string{"1.3.1"}).ForInstall(&Install{Release: "kubebolt-agent-ee", Namespace: "kubebolt-agent", TwoCostSources: true})
+	if st.Release != "kubebolt-agent-ee" || st.Namespace != "kubebolt-agent" || !st.TurnsOffPromReadCost ||
+		!strings.Contains(st.Upgrade, "helm upgrade kubebolt-agent-ee ") {
+		t.Fatalf("ForInstall = %+v", st)
+	}
+	// A current agent needs no command; nil changes nothing.
+	if cur := Evaluate([]string{Latest}).ForInstall(&Install{Release: "x"}); cur.Upgrade != "" || cur.Release != "" {
+		t.Errorf("current agent got %+v", cur)
+	}
+	if st := Evaluate([]string{"1.3.1"}).ForInstall(nil); st.Release != "" || !strings.Contains(st.Upgrade, "upgrade "+AgentRelease+" ") {
+		t.Errorf("nil install changed the status: %+v", st)
 	}
 }

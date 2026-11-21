@@ -7,8 +7,12 @@ package copilot
 const AgentUpdateNote = "Its agent is out of date (agentUpdate). KubeBolt never upgrades the agent: give the person the " +
 	"agentUpdate.upgrade command to run against that cluster, and the reasons when the level is \"recommended\". " +
 	"It runs against kubectl's current context: tell them to check it is that cluster (kubectl config current-context) " +
-	"or add --kube-context. Installed with another release name or namespace: they change kubebolt-agent and " +
-	"kubebolt-system. With ArgoCD or Flux: they set the chart version to agentUpdate.latest instead."
+	"or add --kube-context. When agentUpdate.release is set, the command already names that cluster's Helm release " +
+	"and namespace, read from the cluster; otherwise it names the defaults, and an install with another release name " +
+	"or namespace changes kubebolt-agent and kubebolt-system. When agentUpdate.turnsOffPromReadCost, say why the " +
+	"command turns promRead.cost off: the install reads OpenCost twice (promRead.cost and the exporter), which the " +
+	"chart refuses from 1.4.10, and cost keeps arriving through the exporter. With ArgoCD or Flux: they set the chart " +
+	"version to agentUpdate.latest instead."
 
 // AgentVersionUnknownNote is added when the agent does not report its own
 // version (agentUpdate.before): agents before 1.4.4 all send 1.0.0.

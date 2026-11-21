@@ -101,7 +101,7 @@ export function AgentUpdateModal({ clusterName, update, onClose }: { clusterName
         {update.before && (
           <p>
             This agent does not report its own version: every agent before {update.before} sends 1.0.0. Applications
-            shows the installed chart (the Helm release kubebolt-agent).
+            shows the installed chart (the Helm release {update.release ?? 'kubebolt-agent'}).
           </p>
         )}
         {recommended ? (
@@ -138,9 +138,20 @@ export function AgentUpdateModal({ clusterName, update, onClose }: { clusterName
             <li className="text-kb-text-primary">
               It runs against kubectl&apos;s current context: check it is this cluster (<code className="font-mono">kubectl config current-context</code>) or add <code className="font-mono">--kube-context &lt;name&gt;</code>.
             </li>
-            <li>Installed with another release name or namespace? Change <code className="font-mono text-kb-text-primary">kubebolt-agent</code> and <code className="font-mono text-kb-text-primary">kubebolt-system</code>.</li>
+            {update.turnsOffPromReadCost && (
+              <li className="text-kb-text-primary">
+                This install reads OpenCost twice: <code className="font-mono">promRead.cost</code> and the exporter. The chart refuses that from 1.4.10, so the command turns <code className="font-mono">promRead.cost</code> off; cost keeps arriving through the exporter.
+              </li>
+            )}
+            {update.release ? (
+              <li>
+                It names this cluster&apos;s own release, <code className="font-mono text-kb-text-primary">{update.release}</code> in <code className="font-mono text-kb-text-primary">{update.namespace}</code>, read from the cluster.
+              </li>
+            ) : (
+              <li>Installed with another release name or namespace? Change <code className="font-mono text-kb-text-primary">kubebolt-agent</code> and <code className="font-mono text-kb-text-primary">kubebolt-system</code>.</li>
+            )}
             <li>
-              <code className="font-mono text-kb-text-primary">--reset-then-reuse-values</code> keeps your settings and takes the new chart&apos;s defaults (Helm 3.14 or later; on older Helm use <code className="font-mono text-kb-text-primary">--reuse-values</code>). If it was installed with a full copy of the chart&apos;s values file, those old defaults count as settings and stay: <code className="font-mono text-kb-text-primary">helm get values kubebolt-agent -n kubebolt-system</code> shows what it keeps.
+              <code className="font-mono text-kb-text-primary">--reset-then-reuse-values</code> keeps your settings and takes the new chart&apos;s defaults (Helm 3.14 or later; on older Helm use <code className="font-mono text-kb-text-primary">--reuse-values</code>). If it was installed with a full copy of the chart&apos;s values file, those old defaults count as settings and stay: <code className="font-mono text-kb-text-primary">helm get values {update.release ?? 'kubebolt-agent'} -n {update.namespace ?? 'kubebolt-system'}</code> shows what it keeps.
             </li>
             <li>With ArgoCD or Flux, set the chart version to {update.latest} in the Application or HelmRelease instead.</li>
           </ul>
