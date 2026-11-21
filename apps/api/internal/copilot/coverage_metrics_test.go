@@ -164,3 +164,32 @@ func TestRightSizing_ReadableUnitsAndInsufficientHistory(t *testing.T) {
 		t.Errorf("payload = %v", payload)
 	}
 }
+
+// Finding #102: a sum over a family OpenCost republishes counts each object
+// twice where the cluster also sends kube-state-metrics. The caution rides the
+// result, so it costs nothing on turns that never read these families.
+func TestQueryMetrics_CautionsWhenARepublishedFamilyIsReadTwice(t *testing.T) {
+	src := &stubMetrics{series: []MetricSeries{{Labels: map[string]string{}, Points: []MetricSample{{T: time.Now(), V: 0.4}}}}}
+	e := NewExecutor(nil).WithMetricsQuery(src)
+
+	_, payload := runTool(t, e, "query_metrics", `{"query":"sum(kube_pod_container_resource_requests{namespace=\"kube-system\",resource=\"cpu\"})"}`)
+	note := fmt.Sprint(payload["note"])
+	if !strings.Contains(note, `source="opencost"`) || !strings.Contains(note, "max by (namespace, pod, container)") {
+		t.Errorf("a plain sum of requests carries no caution: %q", note)
+	}
+	_, payload = runTool(t, e, "query_metrics", `{"query":"sum(kube_node_status_allocatable{resource=\"memory\"})"}`)
+	if !strings.Contains(fmt.Sprint(payload["note"]), "max by (node)") {
+		t.Errorf("allocatable: %v", payload["note"])
+	}
+
+	for _, q := range []string{
+		`sum(max by (namespace, pod, container) (kube_pod_container_resource_requests{resource=\"cpu\"}))`,
+		`sum by (source, job) (kube_pod_container_resource_requests)`,
+		`sum(kube_pod_container_status_restarts_total)`,
+	} {
+		_, payload = runTool(t, e, "query_metrics", `{"query":"`+q+`"}`)
+		if payload["note"] != nil {
+			t.Errorf("%s: cautioned although it reads each object once or is not republished: %v", q, payload["note"])
+		}
+	}
+}

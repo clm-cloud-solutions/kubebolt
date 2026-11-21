@@ -543,6 +543,17 @@ func (b *promBuilder) buildNetwork(direction MetricKind) string {
 //
 // KSM exports both shapes; missing KSM degrades gracefully (the executor's
 // attachRequestsLimits handles the empty path and omits the chip).
+//
+// Each series is read once (finding #102). The requests, allocatable and
+// capacity can reach the store from two sources on the same cluster:
+// kube-state-metrics (through promread or remote_write) and the OpenCost the
+// agent chart bundles, which republishes them for its cost model with
+// `source="opencost"`. The values agree, the labels differ, so a plain sum
+// counted a request twice and halved the usage against it. `max by` the
+// series' identity keeps one copy. The sources agree; if they ever do not, the
+// larger one wins, which errs toward a smaller utilization figure, not a
+// larger one. Dropping `source="opencost"` instead would empty the demo, where
+// OpenCost is the only source.
 func (b *promBuilder) buildRequestsLimits(resource string, mode string /* "requests" | "limits" */) string {
 	if b.isNode() {
 		// allocatable = "request" denominator; capacity = "limit" denominator.
@@ -555,7 +566,7 @@ func (b *promBuilder) buildRequestsLimits(resource string, mode string /* "reque
 			metricName = "kube_node_status_capacity"
 		}
 		return fmt.Sprintf(
-			`sum(%s{%s,node=%q,resource=%q})`,
+			`sum(max by (node) (%s{%s,node=%q,resource=%q}))`,
 			metricName, b.scope(), b.name, resource,
 		)
 	}
@@ -564,7 +575,7 @@ func (b *promBuilder) buildRequestsLimits(resource string, mode string /* "reque
 		metricName = "kube_pod_container_resource_limits"
 	}
 	return fmt.Sprintf(
-		`sum(%s{%s,namespace=%q,%s,resource=%q})`,
+		`sum(max by (namespace, pod, container) (%s{%s,namespace=%q,%s,resource=%q}))`,
 		metricName, b.scope(), b.namespace, b.podSelector(), resource,
 	)
 }

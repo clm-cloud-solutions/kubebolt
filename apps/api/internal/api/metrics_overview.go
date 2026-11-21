@@ -33,6 +33,9 @@ func (h *handlers) buildMetricsOnlyOverview(ctx context.Context, uid string) mod
 		return models.ResourceCount{Total: t, Ready: t}
 	}
 
+	// PVCs are counted once per claim, like allocatable below: OpenCost republishes
+	// kube_persistentvolumeclaim_info too (finding #102), and promread widened to all
+	// of KSM would otherwise count every claim twice.
 	ov := models.ClusterOverview{
 		ClusterUID:           uid,
 		Nodes:                rc("count(kube_node_info)"),
@@ -46,7 +49,7 @@ func (h *handlers) buildMetricsOnlyOverview(ctx context.Context, uid string) mod
 		ConfigMaps:           rc("count(kube_configmap_info)"),
 		Secrets:              rc("count(kube_secret_info)"),
 		Ingresses:            rc("count(kube_ingress_info)"),
-		PVCs:                 rc("count(kube_persistentvolumeclaim_info)"),
+		PVCs:                 rc("count(max by (namespace, persistentvolumeclaim) (kube_persistentvolumeclaim_info))"),
 		PVs:                  rc("count(kube_persistentvolume_info)"),
 		HPAs:                 rc("count(kube_horizontalpodautoscaler_info)"),
 		ServiceAccounts:      rc("count(kube_serviceaccount_info)"),
@@ -67,14 +70,18 @@ func (h *handlers) buildMetricsOnlyOverview(ctx context.Context, uid string) mod
 	// CPU / Memory — best-effort cluster usage vs allocatable. Usage from the cadvisor
 	// series the agent ships; allocatable from KSM. CPU in millicores, memory in bytes,
 	// matching the connector-backed overview's units.
+	//
+	// Allocatable is read once per node (finding #102): the OpenCost the agent chart
+	// bundles republishes it with `source="opencost"`, and on a cluster that also
+	// sends KSM a plain sum doubled it and halved the usage percentage.
 	cpuUsed := fq(`sum(rate(container_cpu_usage_seconds_total[5m]))`) * 1000
-	cpuAlloc := fq(`sum(kube_node_status_allocatable{resource="cpu"})`) * 1000
+	cpuAlloc := fq(`sum(max by (node) (kube_node_status_allocatable{resource="cpu"}))`) * 1000
 	ov.CPU = models.ResourceUsage{Used: int64(cpuUsed), Allocatable: int64(cpuAlloc)}
 	if cpuAlloc > 0 {
 		ov.CPU.PercentUsed = cpuUsed / cpuAlloc * 100
 	}
 	memUsed := fq(`sum(container_memory_working_set_bytes)`)
-	memAlloc := fq(`sum(kube_node_status_allocatable{resource="memory"})`)
+	memAlloc := fq(`sum(max by (node) (kube_node_status_allocatable{resource="memory"}))`)
 	ov.Memory = models.ResourceUsage{Used: int64(memUsed), Allocatable: int64(memAlloc)}
 	if memAlloc > 0 {
 		ov.Memory.PercentUsed = memUsed / memAlloc * 100
