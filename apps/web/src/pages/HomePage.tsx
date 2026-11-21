@@ -26,6 +26,7 @@ import { FirstClusterWizard } from '@/components/onboarding/FirstClusterWizard'
 import { useCopilot } from '@/contexts/CopilotContext'
 import { useClusterLabel } from '@/hooks/useClusterLabel'
 import { useOpenInCluster } from '@/hooks/useOpenInCluster'
+import { agentUpdateRecommended, agentVersionLabel } from '@/components/fleet/AgentUpdate'
 import type { ConversationSummary } from '@/services/copilot/types'
 
 // HomePage — the plan-aware landing (design/kubebolt-home-{free,team,…}.html).
@@ -662,6 +663,19 @@ export function HomePage() {
         hint: 'the agent is up but no samples are arriving',
         where: name,
         to: '/fleet',
+      })
+    }
+    // An agent behind a fix: only «recommended» asks something of the reader;
+    // a newer release that fixes nothing here stays a chip on Clusters and
+    // Fleet. The link opens the reasons and the Helm command.
+    if (c.agentUpdate && agentUpdateRecommended(c.agentUpdate)) {
+      attention_items.push({
+        sev: 'warn',
+        source: 'cluster',
+        text: `${name}'s agent is out of date`,
+        hint: `${agentVersionLabel(c.agentUpdate)} has problems ${c.agentUpdate.latest} fixes`,
+        where: name,
+        to: `/clusters?agent=${encodeURIComponent(c.clusterId ?? '')}`,
       })
     }
   }

@@ -14,6 +14,7 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
+	"github.com/kubebolt/kubebolt/apps/api/internal/agentversion"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/insights"
 	"github.com/kubebolt/kubebolt/apps/api/internal/metrics"
@@ -972,6 +973,13 @@ type ClusterInfo struct {
 	CloudProvider     string `json:"cloudProvider,omitempty"`
 	Region            string `json:"region,omitempty"`
 	KubernetesVersion string `json:"kubernetesVersion,omitempty"`
+
+	// AgentUpdate says whether the cluster's live agents run the newest
+	// release and, when one is behind a fix, why it should be upgraded
+	// (agentversion). Absent without a live agent, or when none declared a
+	// release version. KubeBolt never upgrades an agent: the UI gives the
+	// reason and the Helm command.
+	AgentUpdate *agentversion.Status `json:"agentUpdate,omitempty"`
 }
 
 // Pool bounds (A.3d). A parked runtime keeps live informers, so the pool is
@@ -1258,6 +1266,7 @@ func (m *Manager) ListClusters(_ context.Context) []ClusterInfo {
 			Source:         source,
 			ClusterID:      clusterID,
 			AgentConnected: agentConnected,
+			AgentUpdate:    m.agentUpdateOf(clusterID),
 			LastSeen:       lastSeen,
 			Mode:           mode,
 
@@ -1270,6 +1279,15 @@ func (m *Manager) ListClusters(_ context.Context) []ClusterInfo {
 		return clusters[i].Context < clusters[j].Context
 	})
 	return clusters
+}
+
+// agentUpdateOf judges the cluster's live agents' versions against the newest
+// release; nil without a live agent that declared one.
+func (m *Manager) agentUpdateOf(clusterID string) *agentversion.Status {
+	if clusterID == "" || m.agentRegistry == nil {
+		return nil
+	}
+	return agentversion.Evaluate(m.agentRegistry.AgentVersions(clusterID))
 }
 
 // SwitchCluster switches the active cluster to the given context name.
