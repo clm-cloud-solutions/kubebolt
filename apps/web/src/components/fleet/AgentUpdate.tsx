@@ -38,14 +38,17 @@ export function AgentUpdateBadge({ update, onOpen }: { update?: AgentUpdate; onO
       type="button"
       onClick={onOpen}
       title={recommended ? 'This agent version has problems a newer release fixes' : `Agent ${update.latest} is available`}
-      className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-mono whitespace-nowrap transition-colors ${
+      className={`flex items-center gap-1 max-w-full min-w-0 px-1.5 py-0.5 rounded text-[9px] font-mono whitespace-nowrap transition-colors ${
         recommended
           ? 'bg-kobi-st-warn-dim text-kobi-st-warn hover:opacity-80'
           : 'bg-kb-elevated text-kb-text-secondary hover:text-kb-text-primary'
       }`}
     >
-      <ArrowUpCircle className="w-2.5 h-2.5" aria-hidden="true" />
-      Agent {agentVersionShort(update)} · {recommended ? 'update recommended' : 'update available'}
+      <ArrowUpCircle className="w-2.5 h-2.5 shrink-0" aria-hidden="true" />
+      {/* Truncates inside a narrow card instead of running past its edge. */}
+      <span className="truncate">
+        Agent {agentVersionShort(update)} · {recommended ? 'update recommended' : 'update available'}
+      </span>
     </button>
   )
 }

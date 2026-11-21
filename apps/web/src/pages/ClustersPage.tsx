@@ -188,7 +188,7 @@ function ClusterCard({
             }`} />
           </div>
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1.5 flex-wrap">
+            <div className="flex items-center gap-1.5 flex-wrap min-w-0">
               <span className="text-sm font-semibold text-kb-text-primary truncate">{displayName}</span>
               <SourceBadge source={cluster.source} />
               {isAgentProxy && <LivenessBadge connected={cluster.agentConnected} lastSeen={cluster.lastSeen} />}
@@ -283,7 +283,8 @@ function ClusterCard({
 
       {/* Management actions (admin only) */}
       {canManage && (
-        <div className="flex items-center gap-2 pt-3 border-t border-kb-border">
+        // Wraps when the card is narrow (the Kobi panel open beside it).
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 pt-3 border-t border-kb-border">
           <button
             onClick={() => onRename(cluster)}
             className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-mono text-kb-text-secondary hover:bg-kb-elevated hover:text-kb-text-primary transition-colors"
@@ -597,7 +598,10 @@ export function ClustersPage() {
         <AddClusterButton canManage={canManage} label="Add cluster" />
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+      {/* Columns from the width the page actually has, not the viewport's: with
+          the Kobi panel open a wide screen still left three cards too narrow
+          for their badges and actions. */}
+      <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(min(22rem,100%),1fr))]">
         {sorted.map((cluster) => (
           <ClusterCard
             key={cluster.context}
