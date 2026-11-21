@@ -24,8 +24,9 @@ import './kobi-face.css'
  *   the lids in place (kobi-face.css, the guidelines' «The lids»). The color
  *   stays green; only the dot carries the state's color.
  *
- * Only two places show the live state: the floating head and the panel
- * header. Everywhere else the face is still, or Watching.
+ * Two places show the live state: the floating head and the panel header;
+ * the chat's live line repeats the header's, from the same source.
+ * Everywhere else the face is still, or Watching.
  */
 
 export type KobiFaceState =

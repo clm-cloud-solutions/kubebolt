@@ -290,3 +290,50 @@ export function liveInvestigation(messages: CopilotMessage[]): LiveInvestigation
   }
   return { startedAt: messages[start].timestamp, reads, byCloud: [...clouds.entries()], cloudsNow: now }
 }
+
+// LiveSteps is the question in flight seen as Cloudflare's chat shows it: its
+// steps fold under one «Working · N steps» row, and one line says what Kobi
+// is doing now.
+export interface LiveSteps {
+  // The messages the row folds: each round that called tools (its phrase
+  // and its cards) and the turns that carried their results. Never a
+  // proposal's turn, whose card waits for a person, nor the answer being
+  // written, which is text and no tools.
+  stepIds: string[]
+  // Calls made so far, proposals left out: a guide is a step too.
+  steps: number
+  // The phrase of the latest round that called tools — «Checking the pods
+  // and the logs.» — what the live line says while its calls run.
+  phrase?: string
+}
+
+// liveSteps folds the question in flight; undefined before its first call.
+export function liveSteps(messages: CopilotMessage[]): LiveSteps | undefined {
+  let start = -1
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (isQuestion(messages[i])) {
+      start = i
+      break
+    }
+  }
+  if (start < 0) return undefined
+  const stepIds: string[] = []
+  let steps = 0
+  let phrase: string | undefined
+  for (const m of messages.slice(start + 1)) {
+    if (m.kind || m.role === 'system') continue
+    const calls = (m.toolCalls ?? []).filter((c) => !isProposal(c))
+    if (m.role === 'assistant' && calls.length > 0) {
+      stepIds.push(m.id)
+      steps += calls.length
+      if (m.content?.trim()) phrase = m.content.trim()
+      continue
+    }
+    const results = m.toolResults ?? []
+    if (m.role === 'user' && !m.content && results.length > 0 && !results.some(isProposalResult)) {
+      stepIds.push(m.id)
+    }
+  }
+  if (steps === 0) return undefined
+  return { stepIds, steps, phrase }
+}
