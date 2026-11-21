@@ -6,6 +6,89 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.7.0] — 2026-11-21
+
+An out-of-date agent says so, a cloud operation can be stopped without a
+release, and OpenCost's cost arrives whole and once. Drop-in, no migration;
+the agent moves to 1.4.10, whose chart refuses two sources of cost and whose
+default limits rise to 256Mi / 500m. Full note:
+[docs/releases/v2.7.0.md](docs/releases/v2.7.0.md).
+
+### Added
+
+- **KubeBolt says when a cluster's agent is out of date, why, and how to
+  upgrade it.** A cluster is judged by its oldest live agent: current,
+  *update available*, or *update recommended* when a newer release fixes
+  something it gets wrong (today, below 1.4.9: pod network stored twice below
+  1.4.8, Hubble flow keys never forgotten below 1.4.9). Clusters shows a chip
+  that opens the reasons and the `helm upgrade … --reset-then-reuse-values`
+  command, built by the server, with what to check first (kubectl's current
+  context, another release name or namespace, a release installed with a full
+  copy of the values file, ArgoCD or Flux). Fleet tags the cluster, Home lists
+  it under *Needs your attention*, and `GET /clusters` carries `agentUpdate`.
+  Kobi's `list_clusters` says it and gives the same command; it never upgrades
+  the agent. Agents before 1.4.4, which all report `1.0.0`, show as *before
+  1.4.4*.
+- **Administration › AI › Blocked operations stops a cloud connector
+  operation without a release.** One list per connector: AWS
+  `service.operation`, the Azure command, the GCP tool; `x.*` blocks a prefix
+  and `*` pauses the connector. It applies from the next call; a blocked call
+  is never sent and is audited with result `blocked`. An entry that blocks
+  nothing is refused with a 400. When the list cannot be read, every
+  connector call is refused. `GET`/`PUT /admin/settings/blocked-operations`,
+  admin, audited with the settings subtree.
+- **An alert when Kobi keeps asking for what it may not do.**
+  `kubebolt_kobi_mcp_refusals_total{tenant_id, consumer, connector, reason}`
+  counts what the gateway refuses before the provider (`tool_not_allowed`,
+  `input_refused`), and `KobiKeepsAskingForWhatItMayNotDo` (group
+  `kubebolt-kobi`) fires at 5 or more in an hour on one connector. The series
+  start at 0, so the first burst alerts too.
+- **Each row of Home's *Needs your attention* says where it comes from**: a
+  labelled icon, *Cluster* or *Security*, in a column of its own.
+
+### Changed
+
+- **A cloud call the per-minute budget held back reads as a limit, not a
+  failure.** It is `rate_limited`: amber, with a clock, *Not read — cloud call
+  limit: 120/min, 30 at once*, counted among the reads that could not be made
+  and stored with the conversation. Kobi is told both numbers. The connector
+  budget is keyed per consumer; in this edition only Kobi uses it, so its 120
+  a minute is unchanged.
+- **Refused and held-back connector calls are not errors.** They count as
+  `not_sent` and `rate_limited` in `kubebolt_kobi_copilot_tool_results_total`,
+  so the AI Health charts no longer show them as failing tools.
+- **OpenCost series nothing reads are dropped at the agent door.** What
+  arrives with `source="opencost"` and is neither a cost family nor `kube_*`
+  is dropped, whatever the agent's version, and counted as
+  `kubebolt_agent_grpc_dropped_series_total{reason="opencost_unread"}`. The
+  13 cost families live in one list (`packages/shared/costmetrics`) for the
+  API and the agent.
+
+### Fixed
+
+- **The action history's class filter fills its page.** `GET
+  /admin/actions?class=…` read the newest `limit` records and then dropped
+  the other class, so `?class=mutation` behind a busy hour of terminals and
+  cloud calls came back empty. The stores now apply the class before the
+  limit (`audit.Store.ListOrgClass`); a record written before records carried
+  a class reads as a mutation.
+- **A role STS will not let KubeBolt assume** reads *STS AssumeRole refused
+  KubeBolt (AccessDenied)* on Kobi's card instead of the AWS SDK's text, which
+  stays in the log; the call counts as `unauthorized`. Card reasons drop the
+  `[KubeBolt]` mark meant for the model.
+- **The access trail names a connector call's operation** when the call
+  reached the provider and failed, and when it was held back or blocked.
+- **Kobi's AWS investigation procedure** comes with the first call that
+  reaches the cloud, not with one that was refused or held back.
+- **Cluster cards take their columns from the width the page has.** Next to
+  Kobi's panel they ran past their edge.
+- **Agent 1.4.10**: OpenCost's cost arrives whole and once (promread asks for
+  every cost family and gives them OpenCost's own `exported_*` labels back;
+  scrape mode keeps them; the exporter forwards only them and `kube_*`), the
+  chart refuses `agent.promRead.cost.enabled` together with the OpenCost
+  exporter, default limits 256Mi / 500m, a relayed body capped at a quarter
+  of the memory limit, and Go 1.26.11. See the agent's changelog.
+
 ## [2.6.7] — 2026-11-19
 
 A slow agent tunnel connects, and the terminal and the audit trail say what
