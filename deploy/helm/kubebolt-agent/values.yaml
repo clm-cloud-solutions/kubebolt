@@ -286,8 +286,9 @@ agent:
     enabled: false
 
     # Cost opt-in (OpenCost). When true, the agent APPENDS the OpenCost
-    # metric families (node_*_hourly_cost, container_*_allocation,
-    # pv_hourly_cost) to `matchers` below — it does NOT replace them, so
+    # cost families KubeBolt reads (node prices, container allocations,
+    # volumes, spot, load balancers and egress: packages/shared/costmetrics)
+    # to `matchers` below — it does NOT replace them, so
     # the core KubeBolt metrics always stay. Requires an OpenCost scraped
     # by this Prometheus. Off by default (cost only exists when the
     # customer runs OpenCost). See D4 in the integrations plan.
@@ -496,10 +497,14 @@ scrape:
   # so this is a cardinality guardrail — keep it in lockstep with the metric &
   # label registry (docs/kubebolt-metric-label-registry.md). Operators may append
   # rules; removing the keep-rule re-opens uncontrolled cardinality.
+  # The names after `process_.*` are the OpenCost cost families with no core
+  # prefix (packages/shared/costmetrics, finding #101): without them scrape
+  # mode dropped the volume, spot, load-balancer and egress costs.
+  # TestScrapeKeepRegexKeepsTheCostFamilies checks this line against that list.
   metricRelabelConfigs:
     - source_labels: [__name__]
       action: keep
-      regex: 'kube_.*|node_.*|container_.*|kubelet_.*|pod_flow_.*|pod_dns_.*|hubble_.*|kubebolt_.*|up|process_.*'
+      regex: 'kube_.*|node_.*|container_.*|kubelet_.*|pod_flow_.*|pod_dns_.*|hubble_.*|kubebolt_.*|up|process_.*|pv_hourly_cost|pod_pvc_allocation|kubecost_node_is_spot|kubecost_load_balancer_cost|kubecost_network_internet_egress_cost|kubecost_network_nat_gateway_egress_cost|kubecost_network_region_egress_cost|kubecost_network_zone_egress_cost'
     # Drop high-cardinality labels KubeBolt does NOT query (verified against the
     # label registry). Do NOT add pod_uid / uid here — they are used for joins.
     - action: labeldrop

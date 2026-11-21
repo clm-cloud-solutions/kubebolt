@@ -133,3 +133,53 @@ func TestScrapeLoop_PushesToRing(t *testing.T) {
 		t.Fatalf("ring has %d samples, want 1 from the immediate first scrape", got)
 	}
 }
+
+// openCostNoise is what OpenCost publishes beside its cost families: label
+// joins, its own server metrics and GPU allocations on a node without one.
+const openCostNoise = `# HELP deployment_match_labels deployment match labels
+deployment_match_labels{deployment="web",namespace="shop",label_app="web"} 1
+pod_info{pod="web-1",namespace="shop"} 1
+kubecost_http_requests_total{path="/metrics"} 42
+container_gpu_allocation{container="web",node="n1",pod="web-1"} 0
+pod_pvc_allocation{pod="db-0",persistentvolumeclaim="data"} 1
+kubecost_node_is_spot{node="n1"} 0
+kube_node_status_allocatable{node="n1",resource="cpu",unit="core"} 3.9
+`
+
+// Finding #101: the OpenCost exporter ships only what KubeBolt reads (the cost
+// families and the kube_* compatibility families); any other exporter ships
+// everything but runtime metrics.
+func TestExporterCollect_OpenCostKeepsOnlyWhatKubeBoltReads(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(openCostNoise))
+	}))
+	defer srv.Close()
+
+	names := func(name string) map[string]bool {
+		e := NewExporter(ExporterTarget{Name: name, URL: srv.URL}, "uid-1", "", "", nil)
+		samples, err := e.Collect(context.Background())
+		if err != nil {
+			t.Fatalf("collect: %v", err)
+		}
+		out := map[string]bool{}
+		for _, s := range samples {
+			out[s.MetricName] = true
+		}
+		return out
+	}
+
+	oc := names("opencost")
+	for _, keep := range []string{"pod_pvc_allocation", "kubecost_node_is_spot", "kube_node_status_allocatable"} {
+		if !oc[keep] {
+			t.Errorf("opencost: %s dropped, want it shipped", keep)
+		}
+	}
+	for _, drop := range []string{"deployment_match_labels", "pod_info", "kubecost_http_requests_total", "container_gpu_allocation"} {
+		if oc[drop] {
+			t.Errorf("opencost: %s shipped, nothing in KubeBolt reads it", drop)
+		}
+	}
+	if other := names("postgres"); len(other) != 7 {
+		t.Errorf("another exporter shipped %d families, want all 7", len(other))
+	}
+}

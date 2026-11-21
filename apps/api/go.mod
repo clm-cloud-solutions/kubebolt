@@ -17,6 +17,8 @@ toolchain go1.26.11
 
 replace github.com/kubebolt/kubebolt/packages/proto => ../../packages/proto
 
+replace github.com/kubebolt/kubebolt/packages/shared => ../../packages/shared
+
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.1
 	github.com/aws/aws-sdk-go-v2/config v1.32.7
@@ -30,6 +32,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/kubebolt/kubebolt/packages/proto v0.0.0
+	github.com/kubebolt/kubebolt/packages/shared v0.0.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/prometheus/common v0.66.1

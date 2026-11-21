@@ -50,8 +50,8 @@ jobs:
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') && !contains(github.ref_name, '-alpha') }}
 
       # The Dockerfile expects the repo root as build context so it can
-      # pick up both packages/agent and packages/proto (the agent module
-      # uses a replace directive into ../proto).
+      # pick up packages/agent, packages/proto and packages/shared (the agent module
+      # uses replace directives into ../proto and ../shared).
       - uses: docker/build-push-action@v5
         id: build
         with:

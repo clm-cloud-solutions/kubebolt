@@ -566,6 +566,8 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 					slog.String("tenant_id", tenantIDLabel), slog.String("agent_id", agentID),
 					slog.Int("samples", dropReservedN))
 			}
+			accepted, dropOpenCostN := dropOpenCostUnread(accepted)
+			s.metrics.RecordDroppedOpenCostUnread(tenantIDLabel, dropOpenCostN)
 			// Meter accepted samples per authenticated tenant, like the
 			// remote_write path (prom_write.go). See meterSamples.
 			s.meterSamples(ctx, tenantIDLabel, len(accepted))
