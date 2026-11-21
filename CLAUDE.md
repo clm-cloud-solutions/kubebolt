@@ -164,7 +164,7 @@ Key packages under `internal/`:
 | `GET /resources/:type` | List resources with pagination, filtering, metrics |
 | `GET /resources/:type/:ns/:name` | Resource detail with metrics injection |
 | `GET /resources/:type/:ns/:name/yaml` | Raw YAML via dynamic client (secrets redacted, managedFields stripped) |
-| `PUT /resources/:type/:ns/:name/yaml` | Apply edited YAML via dynamic client Update(); what the viewer hid comes back from the live object first (`cluster/yaml_roundtrip.go`), 400 on a REDACTED with nothing behind it or a renamed object |
+| `PUT /resources/:type/:ns/:name/yaml` | Apply edited YAML via dynamic client Update(); what the viewer hid comes back from the live object first (`cluster/yaml_roundtrip.go`), 400 on a REDACTED with nothing behind it or a renamed object; 409 on an EndpointSlice a controller rewrites (`cluster/endpointslice_managed.go`), whose mirrored source Endpoints is editable as type `coreendpoints` |
 | `GET /resources/:type/:ns/:name/describe` | kubectl describe output via k8s.io/kubectl |
 | `POST /resources/:type/:ns/:name/restart` | Rollout restart (Deployments, StatefulSets, DaemonSets) |
 | `POST /resources/:type/:ns/:name/scale` | Scale replicas (Deployments, StatefulSets) |

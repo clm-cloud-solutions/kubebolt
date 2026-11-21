@@ -4,6 +4,7 @@ import { EditorView, lineNumbers } from '@codemirror/view'
 import { yaml } from '@codemirror/lang-yaml'
 import { YamlViewer } from '@/components/shared/YamlViewer'
 import { oneDark } from '@codemirror/theme-one-dark'
+import { managedSliceOf } from '@/utils/managedSlice'
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { canonicalListRoute } from '@/utils/routes'
 import { buildCpuRefs, buildMemRefs, formatMemoryShort } from '@/utils/metricRefs'
@@ -1889,9 +1890,24 @@ function YAMLEditor({ value, onChange }: { value: string; onChange: (v: string) 
   return <div ref={editorRef} className="rounded-lg overflow-hidden border border-kb-border" />
 }
 
-function YAMLTab({ type, namespace, name, canEdit }: { type: string; namespace: string; name: string; canEdit: boolean }) {
+function YAMLTab({
+  type,
+  namespace,
+  name,
+  canEdit,
+  title = 'YAML Configuration',
+}: {
+  type: string
+  namespace: string
+  name: string
+  canEdit: boolean
+  title?: string
+}) {
   const { data: yaml, isLoading, error, refetch } = useResourceYAML(type, namespace, name)
   const [editing, setEditing] = useState(false)
+  // A mirrored EndpointSlice is edited through the Endpoints it copies: the
+  // tab opens that object in its place (debt-20).
+  const [sourceOpen, setSourceOpen] = useState(false)
   const [editValue, setEditValue] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -1903,6 +1919,32 @@ function YAMLTab({ type, namespace, name, canEdit }: { type: string; namespace: 
 
   if (isLoading) return <LoadingSpinner />
   if (error) return <ErrorState message={error.message} />
+
+  // A slice a controller rewrites: an edit would be undone within seconds, so
+  // the tab says where the edit goes and does not offer one here.
+  const managed = type === 'endpoints' ? managedSliceOf(yaml ?? '') : null
+  if (managed?.source === 'endpoints' && managed.service && sourceOpen) {
+    return (
+      <div className="space-y-2">
+        <button
+          onClick={() => {
+            setSourceOpen(false)
+            refetch()
+          }}
+          className="text-[11px] font-mono text-kb-text-secondary hover:text-kb-accent transition-colors"
+        >
+          ← Back to the EndpointSlice {name}
+        </button>
+        <YAMLTab
+          type="coreendpoints"
+          namespace={namespace}
+          name={managed.service}
+          canEdit={canEdit}
+          title={`Endpoints ${managed.service} · the source this slice mirrors`}
+        />
+      </div>
+    )
+  }
 
   const lines = (yaml ?? '').split('\n')
   // On apply the server puts back every value that still reads REDACTED
@@ -1945,7 +1987,7 @@ function YAMLTab({ type, namespace, name, canEdit }: { type: string; namespace: 
   }
 
   return (
-    <Section title="YAML Configuration" className="relative">
+    <Section title={title} className="relative">
       <div className="absolute top-4 right-5 flex gap-2">
         {editing ? (
           <>
@@ -1992,8 +2034,8 @@ function YAMLTab({ type, namespace, name, canEdit }: { type: string; namespace: 
             </button>
             <button
               onClick={startEdit}
-              disabled={!canEdit}
-              title={!canEdit ? 'Editor role required' : undefined}
+              disabled={!canEdit || managed !== null}
+              title={!canEdit ? 'Editor role required' : managed ? 'Kubernetes rewrites this EndpointSlice: see the note below' : undefined}
               className="px-3 py-1.5 text-[10px] font-mono bg-kb-elevated text-kb-text-secondary rounded hover:bg-kb-card-hover transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-kb-elevated"
             >
               Edit
@@ -2001,6 +2043,42 @@ function YAMLTab({ type, namespace, name, canEdit }: { type: string; namespace: 
           </>
         )}
       </div>
+
+      {managed && (
+        <div className="mb-2 px-3 py-2 rounded bg-status-info-dim border border-status-info/20 text-xs text-status-info flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          {managed.source === 'endpoints' ? (
+            <>
+              <span>
+                This EndpointSlice is a copy of the Endpoints {managed.service || 'of its Service'}: Kubernetes copies it
+                back within seconds, so an edit here would be undone. Edit the Endpoints instead.
+              </span>
+              {managed.service && (
+                <button
+                  onClick={() => setSourceOpen(true)}
+                  className="px-2.5 py-1 text-[10px] font-mono rounded bg-kb-elevated text-kb-text-secondary hover:text-kb-accent transition-colors"
+                >
+                  Open Endpoints {managed.service}
+                </button>
+              )}
+            </>
+          ) : (
+            <>
+              <span>
+                Kubernetes rebuilds this EndpointSlice from the selector of Service {managed.service || '(unnamed)'} within
+                seconds, so an edit here would be undone. Change the Service's selector or its Pods instead.
+              </span>
+              {managed.service && (
+                <Link
+                  to={`/services/${namespace}/${managed.service}`}
+                  className="px-2.5 py-1 text-[10px] font-mono rounded bg-kb-elevated text-kb-text-secondary hover:text-kb-accent transition-colors"
+                >
+                  Open Service {managed.service}
+                </Link>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {saveError && (
         <div className="mb-2 px-3 py-2 rounded bg-status-error-dim border border-status-error/20 text-xs text-status-error font-mono whitespace-pre-wrap break-words">

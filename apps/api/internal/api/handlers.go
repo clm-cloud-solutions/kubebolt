@@ -739,6 +739,11 @@ func (h *handlers) putResourceYAML(w http.ResponseWriter, r *http.Request) {
 			respondEditRefused(w, refused)
 			return
 		}
+		var managed *cluster.ManagedSliceError
+		if errors.As(err, &managed) {
+			respondManagedSlice(w, managed)
+			return
+		}
 		respondError(w, applyYAMLStatus(err), err.Error())
 		return
 	}
@@ -763,6 +768,16 @@ func respondEditRefused(w http.ResponseWriter, refused *cluster.EditRefusedError
 		body["binaryValues"] = refused.BinaryValues
 	}
 	respondJSON(w, http.StatusBadRequest, body)
+}
+
+// respondManagedSlice answers an edit to an EndpointSlice a controller
+// rewrites (debt-20): 409, with what to edit instead so the editor can point
+// there — the Service, or the Endpoints the slice mirrors.
+func respondManagedSlice(w http.ResponseWriter, managed *cluster.ManagedSliceError) {
+	respondJSON(w, http.StatusConflict, map[string]any{
+		"error":        managed.Error(),
+		"managedSlice": map[string]string{"source": managed.Source, "service": managed.Service},
+	})
 }
 
 // applyYAMLStatus answers an apply that failed with the API server's own code
