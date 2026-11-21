@@ -26,4 +26,9 @@ describe('managedSliceOf', () => {
     expect(managedSliceOf(slice('    kubernetes.io/service-name: shop-db'))).toBeNull()
     expect(managedSliceOf(slice('    endpointslice.kubernetes.io/managed-by: my-operator'))).toBeNull()
   })
+
+  it('reads the label key letter by letter, a dot is only a dot', () => {
+    const y = slice('    endpointslice-kubernetes-io/managed-by: endpointslicemirroring-controller.k8s.io')
+    expect(managedSliceOf(y)).toBeNull()
+  })
 })

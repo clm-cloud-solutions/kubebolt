@@ -15,10 +15,17 @@ export interface ManagedSlice {
 const MANAGED_BY = 'endpointslice.kubernetes.io/managed-by'
 const SERVICE_NAME = 'kubernetes.io/service-name'
 
+// The value of an indented `key: value` line, compared as text: a label key
+// is full of dots, and a pattern built from it would read each as any character.
 function label(yaml: string, key: string): string | undefined {
-  const escaped = key.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')
-  const m = yaml.match(new RegExp(`^\\s+${escaped}:\\s*["']?([^"'\\s]+)["']?\\s*$`, 'm'))
-  return m?.[1]
+  for (const line of yaml.split('\n')) {
+    if (!/^\s/.test(line)) continue
+    const text = line.trim()
+    if (!text.startsWith(`${key}:`)) continue
+    const value = text.slice(key.length + 1).trim().replace(/^["']|["']$/g, '')
+    return value || undefined
+  }
+  return undefined
 }
 
 export function managedSliceOf(yaml: string): ManagedSlice | null {
