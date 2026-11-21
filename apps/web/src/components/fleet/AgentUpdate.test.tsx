@@ -51,6 +51,8 @@ describe('AgentUpdate', () => {
     expect(screen.getByText('It stores each pod network twice.')).toBeTruthy()
     expect(screen.getByText('It never forgets a flow key.')).toBeTruthy()
     expect(screen.getByText(/KubeBolt never upgrades the agent itself/)).toBeTruthy()
+    // Seen live: kubectl pointed at another cluster.
+    expect(screen.getByText(/runs against kubectl's current context/)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(command))
     expect(await screen.findByText('Copied')).toBeTruthy()

@@ -6,8 +6,9 @@ package copilot
 // carried agentUpdate, but nothing said what to do with it.
 const AgentUpdateNote = "Its agent is out of date (agentUpdate). KubeBolt never upgrades the agent: give the person the " +
 	"agentUpdate.upgrade command to run against that cluster, and the reasons when the level is \"recommended\". " +
-	"Installed with another release name or namespace: they change kubebolt-agent and kubebolt-system. With ArgoCD " +
-	"or Flux: they set the chart version to agentUpdate.latest instead."
+	"It runs against kubectl's current context: tell them to check it is that cluster (kubectl config current-context) " +
+	"or add --kube-context. Installed with another release name or namespace: they change kubebolt-agent and " +
+	"kubebolt-system. With ArgoCD or Flux: they set the chart version to agentUpdate.latest instead."
 
 // AgentVersionUnknownNote is added when the agent does not report its own
 // version (agentUpdate.before): agents before 1.4.4 all send 1.0.0.

@@ -133,9 +133,14 @@ export function AgentUpdateModal({ clusterName, update, onClose }: { clusterName
             </button>
           </div>
           <ul className="mt-2 flex flex-col gap-1 text-[11px]">
+            {/* Seen live: the context was another cluster's, and the command
+                pasted as is would have upgraded the wrong one. */}
+            <li className="text-kb-text-primary">
+              It runs against kubectl&apos;s current context: check it is this cluster (<code className="font-mono">kubectl config current-context</code>) or add <code className="font-mono">--kube-context &lt;name&gt;</code>.
+            </li>
             <li>Installed with another release name or namespace? Change <code className="font-mono text-kb-text-primary">kubebolt-agent</code> and <code className="font-mono text-kb-text-primary">kubebolt-system</code>.</li>
             <li>
-              <code className="font-mono text-kb-text-primary">--reset-then-reuse-values</code> keeps your settings and takes the new chart&apos;s defaults (Helm 3.14 or later; on older Helm use <code className="font-mono text-kb-text-primary">--reuse-values</code>).
+              <code className="font-mono text-kb-text-primary">--reset-then-reuse-values</code> keeps your settings and takes the new chart&apos;s defaults (Helm 3.14 or later; on older Helm use <code className="font-mono text-kb-text-primary">--reuse-values</code>). If it was installed with a full copy of the chart&apos;s values file, those old defaults count as settings and stay: <code className="font-mono text-kb-text-primary">helm get values kubebolt-agent -n kubebolt-system</code> shows what it keeps.
             </li>
             <li>With ArgoCD or Flux, set the chart version to {update.latest} in the Application or HelmRelease instead.</li>
           </ul>
