@@ -50,9 +50,16 @@ describe('InvestigationSummary', () => {
 
   it('says how long it took and what it read', () => {
     render(<InvestigationSummary run={run} open={false} onToggle={() => {}} />)
-    for (const text of ['Investigation', '1:12', '5 reads', '3 in AWS', '· 1 guide', '· 2 could not be read', 'Show steps']) {
+    for (const text of ['1:12', '5 reads', '3 in AWS', '· 1 guide', '· 2 could not be read', 'Show steps']) {
       expect(screen.getByText(text)).toBeInTheDocument()
     }
+  })
+
+  it('is the live row in the past tense: one line, no card', () => {
+    render(<InvestigationSummary run={run} open={false} onToggle={() => {}} />)
+    const row = screen.getByRole('button', { name: /Show steps/ })
+    expect(row).toHaveTextContent(/^Investigated for 1:12·5 reads/)
+    expect(row.className).not.toMatch(/border|rounded-lg|bg-kobi-card/)
   })
 
   it('opens and closes the steps', async () => {
