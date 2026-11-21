@@ -5,9 +5,10 @@ import type { KobiFaceState } from '@/components/kobi'
 import { toolTitle } from './toolTitles'
 import { useActionActivity, type ActionActivity } from './actionActivity'
 
-// Kobi's live state, for the two places that show it: the floating head and
-// the panel header. Everywhere else the face is still, or Watching (brand
-// guidelines, «Where the face lives in the product»).
+// Kobi's live state, for the two places that show it — the floating head and
+// the panel header — and the chat's live line, which repeats the header's.
+// Everywhere else the face is still, or Watching (brand guidelines, «Where
+// the face lives in the product»).
 
 export interface KobiPresence {
   state: KobiFaceState
