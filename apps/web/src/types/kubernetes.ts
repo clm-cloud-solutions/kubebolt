@@ -353,6 +353,18 @@ export interface ClusterInfo {
   // and the admin assign/move action.
   ownerTeamId?: string
   mode?: 'metrics-only' | 'reader' | 'operator'
+  // How far the cluster's oldest live agent is behind the newest release.
+  // Absent without a live agent or a declared release version.
+  agentUpdate?: AgentUpdate
+}
+
+// AgentUpdate — 'recommended' when the version has problems a newer release
+// fixes (the reasons say which), 'available' when a newer one merely exists.
+export interface AgentUpdate {
+  version: string
+  latest: string
+  level: 'current' | 'available' | 'recommended'
+  reasons?: string[]
 }
 
 // API params

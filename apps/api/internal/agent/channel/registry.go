@@ -527,6 +527,21 @@ func (r *AgentRegistry) HasProxyCapableAgent(tenantID, clusterID string) bool {
 	return false
 }
 
+// AgentVersions returns the versions the cluster's live agents declared in
+// their Hello, one per agent, empty ones left out. Feeds the «agent out of
+// date» notice (agentversion.Evaluate).
+func (r *AgentRegistry) AgentVersions(clusterID string) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []string
+	for id := range r.agents[clusterID] {
+		if v := r.helloMeta[clusterID][id].AgentVersion; v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 // CountByCluster returns the number of agents connected for the given
 // cluster_id. 0 when no bucket exists.
 func (r *AgentRegistry) CountByCluster(clusterID string) int {

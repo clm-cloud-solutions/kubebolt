@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -343,5 +344,28 @@ func TestAgentRegistry_LostSince_StaleUnregister(t *testing.T) {
 	r.Unregister(old)
 	if _, lost := r.LostSince("c1"); lost {
 		t.Error("a stale Unregister removed nothing: the agent is still connected")
+	}
+}
+
+// The «agent out of date» notice reads the versions the cluster's live agents
+// declared, and an agent that left takes its version with it.
+func TestAgentRegistry_AgentVersions(t *testing.T) {
+	r := NewAgentRegistry()
+	r.SetHelloMeta("c1", "a-1", HelloMeta{AgentVersion: "1.4.9"})
+	r.Register(NewAgent("c1", "a-1", "node-1", nil, nil, nil))
+	r.SetHelloMeta("c1", "a-2", HelloMeta{AgentVersion: "1.3.1"})
+	old := NewAgent("c1", "a-2", "node-2", nil, nil, nil)
+	r.Register(old)
+	r.SetHelloMeta("c1", "a-3", HelloMeta{}) // declared no version
+	r.Register(NewAgent("c1", "a-3", "node-3", nil, nil, nil))
+
+	got := r.AgentVersions("c1")
+	sort.Strings(got)
+	if len(got) != 2 || got[0] != "1.3.1" || got[1] != "1.4.9" {
+		t.Fatalf("AgentVersions = %v, want [1.3.1 1.4.9]", got)
+	}
+	r.Unregister(old)
+	if got := r.AgentVersions("c1"); len(got) != 1 || got[0] != "1.4.9" {
+		t.Errorf("after a-2 left: AgentVersions = %v, want [1.4.9]", got)
 	}
 }

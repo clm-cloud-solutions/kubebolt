@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { Server, Check, ArrowRightLeft, Shield, Activity, Box, Layers, HardDrive, AlertTriangle, Pencil, Trash2, Upload, Eye, Wrench } from 'lucide-react'
 import { ResourceTypeIcon } from '@/utils/resourceIcons'
@@ -8,6 +8,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { useSwitchCluster } from '@/hooks/useSwitchCluster'
 import { Modal } from '@/components/shared/Modal'
 import { AddClusterButton } from '@/components/admin/AddClusterButton'
+import { AgentUpdateBadge, AgentUpdateModal } from '@/components/fleet/AgentUpdate'
 import { parseClusterDisplayName } from '@/utils/cluster'
 import type { ClusterInfo, ClusterOverview, ClusterHealth } from '@/types/kubernetes'
 
@@ -138,6 +139,7 @@ interface ClusterCardProps {
   onSwitch: (context: string) => void
   onRename: (cluster: ClusterInfo) => void
   onDelete: (cluster: ClusterInfo) => void
+  onShowAgentUpdate: (cluster: ClusterInfo) => void
   isSwitching: boolean
   canManage: boolean
 }
@@ -149,6 +151,7 @@ function ClusterCard({
   onSwitch,
   onRename,
   onDelete,
+  onShowAgentUpdate,
   isSwitching,
   canManage,
 }: ClusterCardProps) {
@@ -190,6 +193,7 @@ function ClusterCard({
               <SourceBadge source={cluster.source} />
               {isAgentProxy && <LivenessBadge connected={cluster.agentConnected} lastSeen={cluster.lastSeen} />}
               {isAgentProxy && <ConnectionModeBadge mode={cluster.mode} />}
+              <AgentUpdateBadge update={cluster.agentUpdate} onOpen={() => onShowAgentUpdate(cluster)} />
             </div>
             <div className="text-[10px] font-mono text-kb-text-tertiary truncate" title={cluster.context}>{cluster.context}</div>
           </div>
@@ -503,7 +507,10 @@ export function ClustersPage() {
   // always offer both and let the operator pick.
   const [renaming, setRenaming] = useState<ClusterInfo | null>(null)
   const [deleting, setDeleting] = useState<ClusterInfo | null>(null)
-
+  // The agent-update dialog. `?agent=<clusterId>` opens it on arrival: Home's
+  // «agent out of date» row links here with it.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [agentUpdateFor, setAgentUpdateFor] = useState<ClusterInfo | null>(null)
 
   const { data: clusters } = useQuery({
     queryKey: ['clusters'],
@@ -555,6 +562,16 @@ export function ClustersPage() {
     },
   })
 
+  const agentParam = searchParams.get('agent')
+  useEffect(() => {
+    if (!agentParam || !clusters) return
+    const c = clusters.find((x) => x.clusterId === agentParam)
+    if (c?.agentUpdate && c.agentUpdate.level !== 'current') setAgentUpdateFor(c)
+    const next = new URLSearchParams(searchParams)
+    next.delete('agent')
+    setSearchParams(next, { replace: true })
+  }, [agentParam, clusters, searchParams, setSearchParams])
+
   const sorted = [...(clusters || [])].sort((a, b) => {
     if (a.active) return -1
     if (b.active) return 1
@@ -590,6 +607,7 @@ export function ClustersPage() {
             onSwitch={(ctx) => switchMutation.mutate(ctx)}
             onRename={setRenaming}
             onDelete={setDeleting}
+            onShowAgentUpdate={setAgentUpdateFor}
             isSwitching={switchMutation.isPending}
             canManage={canManage}
           />
@@ -598,6 +616,13 @@ export function ClustersPage() {
 
       {renaming && <RenameClusterModal cluster={renaming} onClose={() => setRenaming(null)} />}
       {deleting && <DeleteClusterModal cluster={deleting} onClose={() => setDeleting(null)} />}
+      {agentUpdateFor?.agentUpdate && (
+        <AgentUpdateModal
+          clusterName={parseClusterDisplayName(agentUpdateFor)}
+          update={agentUpdateFor.agentUpdate}
+          onClose={() => setAgentUpdateFor(null)}
+        />
+      )}
     </div>
   )
 }
