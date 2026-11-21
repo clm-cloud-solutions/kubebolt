@@ -1,7 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import {
   X,
-  Send,
   Square,
   Trash2,
   Loader2,
@@ -11,7 +10,6 @@ import {
   PanelRightOpen,
   Copy,
   Check,
-  User,
   Scissors,
   Sparkles,
   History,
@@ -20,14 +18,18 @@ import {
   Clock,
   Hourglass,
   ArrowRight,
+  ChevronDown,
   ShieldCheck,
+  User,
 } from 'lucide-react'
 import { ConversationList } from './ConversationList'
 import { useCopilot } from '@/contexts/CopilotContext'
 import { useClusterOverview } from '@/hooks/useClusterOverview'
 import { useInsights } from '@/hooks/useInsights'
 import { generateCopilotSuggestions } from '@/utils/copilotSuggestions'
-import { KobiFace } from '@/components/kobi'
+import { KobiFace, KobiStateDot, type KobiFaceState } from '@/components/kobi'
+import { useQuery } from '@tanstack/react-query'
+import { api } from '@/services/api'
 import { PRESENCE_LABEL, useKobiPresence } from './useKobiPresence'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ActionProposalCard } from './ActionProposalCard'
@@ -54,6 +56,7 @@ import {
   investigationRuns,
   isGuide,
   liveInvestigation,
+  liveSteps,
   turnEndings,
 } from './investigationRun'
 import { CloudBoundary, GuideLine, InvestigationStrip, InvestigationSummary, TurnFailure } from './InvestigationMarks'
@@ -212,10 +215,33 @@ export function CopilotPanel() {
   const [showHistory, setShowHistory] = useState(false)
   // The stale banner names the cluster, not its context id (agent:<uid>).
   const clusterLabel = useClusterLabel()
+  // The header and the greeting name the cluster Kobi is watching: the same
+  // list (and cache) as the cluster switcher.
+  const { data: clusterList } = useQuery({ queryKey: ['clusters'], queryFn: api.listClusters, staleTime: 5 * 60_000 })
+  const activeCluster = clusterList?.find((c) => c.active)
+  const activeClusterName = activeCluster?.displayName || activeCluster?.name || ''
   // Finished investigations fold their steps under a summary; these are the
   // ones the operator opened (by the answer's id).
   const [openRuns, setOpenRuns] = useState<Set<string>>(() => new Set())
+  // The question in flight folds its steps under «Working · N steps», as
+  // Cloudflare's chat does; opened here, closed again by the next question.
+  const [liveOpen, setLiveOpen] = useState(false)
+  useEffect(() => {
+    if (!isLoading) setLiveOpen(false)
+  }, [isLoading])
   const messagesContainerRef = useRef<HTMLDivElement>(null)
+  // Something is scrolled under the header: only then the text fades there.
+  const [scrolledUnder, setScrolledUnder] = useState(false)
+  // The person is typing: the input's orbiting bevel pauses until a moment
+  // after the last keystroke.
+  const [typing, setTyping] = useState(false)
+  const typingTimer = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(typingTimer.current), [])
+  const noteTyping = () => {
+    setTyping(true)
+    window.clearTimeout(typingTimer.current)
+    typingTimer.current = window.setTimeout(() => setTyping(false), 1200)
+  }
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
@@ -376,7 +402,7 @@ export function CopilotPanel() {
   return (
     <div
       style={containerStyle}
-      className={`relative bg-kobi-bg border border-kobi-border z-[300] flex flex-col ${
+      className={`relative kobi-panel border border-kobi-border z-[300] flex flex-col ${
         isDocked ? 'border-l shadow-2xl' : 'kobi-floating-shadow'
       }`}
     >
@@ -423,34 +449,55 @@ export function CopilotPanel() {
         </>
       )}
 
-      {/* Header */}
-      <div className="px-4 py-3 border-b border-kobi-border flex items-center justify-between shrink-0">
-        <div className="flex items-center gap-2 min-w-0">
-          {/* Kobi's face at 32 px with the live state, no tile: the shell is
-              its own container. Line 2 says the state in words while Kobi
-              works, and the model while it watches. */}
-          <KobiFace size={32} state={presence.state} />
+      {/* Header and the conversation's title, one block over the
+          conversation: its shadow falls on the messages, not between the
+          two. Floating, it takes the panel's inner radius (12 px − the 1 px
+          border): the panel cannot clip it (overflow would cut the resize
+          handles, which sit just outside the edge) and its background would
+          paint square corners over the rounded ones. */}
+      <div className={`kobi-header shrink-0 ${isDocked ? '' : 'rounded-t-[11px]'}`}>
+      <div className="pl-4 pr-3 py-3.5 flex items-center justify-between">
+        <div className="flex items-center gap-3 min-w-0">
+          {/* Kobi's face at 36 px with the live state, no tile: the shell is
+              its own container. Line 2 says, in words, what Kobi is watching
+              or doing; the model is in its tooltip, and named only once the
+              conversation moved to the escalation model. */}
+          <KobiFace size={36} state={presence.state} />
           <div className="flex flex-col min-w-0">
-            <span className="font-display text-[15px] font-semibold tracking-tight text-kobi-text leading-tight truncate">
+            <span className="font-display text-[18px] font-semibold tracking-tight text-kobi-text leading-tight truncate">
               Kobi
             </span>
+            {/* The lines are min-w-0, not truncate: overflow would clip the
+                dot's halo; the text inside truncates on its own. */}
             {presence.label === PRESENCE_LABEL.watching ? (
               <span
-                className="text-[10px] font-mono text-kobi-text-tertiary uppercase tracking-[0.08em] truncate"
-                title={[config.model, escalatedModel].filter(Boolean).join(' → ')}
+                className="flex items-center gap-1.5 min-w-0 text-[12.5px] text-kobi-text-secondary mt-0.5"
+                title={[config.provider, [config.model, escalatedModel].filter(Boolean).join(' → ')].filter(Boolean).join(' · ')}
               >
-                {config.provider} · {modelLabel(config.model)}
-                {/* Once the conversation left the cluster it runs on the
-                    escalation model: the header says which. */}
-                {escalatedModel && <span className="text-kobi-text-secondary"> → {modelLabel(escalatedModel)}</span>}
+                <KobiStateDot state="watching" halo className="shrink-0" />
+                <span className="truncate">
+                  AI SRE
+                  {activeClusterName && (
+                    <>
+                      {' · watching '}
+                      <span className="font-medium text-kobi-text">{activeClusterName}</span>
+                    </>
+                  )}
+                  {/* Once the conversation left the cluster it runs on the
+                      escalation model: the header says which. */}
+                  {escalatedModel && <span className="text-kobi-text-tertiary"> · on {modelLabel(escalatedModel)}</span>}
+                </span>
               </span>
             ) : (
               <span
-                className="text-[10px] font-mono text-kobi-text-secondary uppercase tracking-[0.08em] truncate"
+                className="flex items-center gap-1.5 min-w-0 text-[12.5px] text-kobi-text mt-0.5"
                 title={presence.detail ? `${presence.label} · ${presence.detail}` : presence.label}
               >
-                {presence.label}
-                {presence.detail && <span className="text-kobi-text-tertiary normal-case tracking-normal"> · {presence.detail}</span>}
+                <KobiStateDot state={presence.state} halo className="shrink-0" />
+                <span className="truncate">
+                  {presence.label}
+                  {presence.detail && <span className="text-kobi-text-tertiary"> · {presence.detail}</span>}
+                </span>
               </span>
             )}
           </div>
@@ -517,11 +564,12 @@ export function CopilotPanel() {
 
       {/* Active conversation title */}
       {conversationTitle && messages.length > 0 && (
-        <div className="px-4 py-1.5 border-b border-kobi-border flex items-center gap-1.5 shrink-0">
+        <div className="px-4 pb-2 -mt-1 flex items-center gap-1.5">
           <Sparkles className="w-3 h-3 text-kobi-text-tertiary shrink-0" />
           <span className="text-xs text-kobi-text-secondary truncate">{conversationTitle}</span>
         </div>
       )}
+      </div>
 
       {/* Stale-resume banner — shown when a conversation older than the
           threshold is resumed, so the operator knows the cluster state the
@@ -547,9 +595,16 @@ export function CopilotPanel() {
       {/* Conversation history drawer — overlays the message area */}
       {showHistory && <ConversationList onClose={() => setShowHistory(false)} />}
 
-      {/* Messages */}
-      <div ref={messagesContainerRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
-        {messages.length === 0 && <EmptyState />}
+      {/* Messages — the dot grid just under the header, fading out above
+          the input, and under the header once something is scrolled there
+          (at the top, the first message reads whole). */}
+      <div className="relative flex-1 min-h-0 flex flex-col kobi-dots">
+      <div
+        ref={messagesContainerRef}
+        onScroll={(e) => setScrolledUnder(e.currentTarget.scrollTop > 4)}
+        className={`kobi-scroll-fade relative flex-1 overflow-y-auto px-4 pt-6 pb-9 space-y-4 ${scrolledUnder ? 'is-scrolled' : ''}`}
+      >
+        {messages.length === 0 && <EmptyState clusterName={activeClusterName} />}
 
         {(() => {
           // Server-side flag (KUBEBOLT_AI_SHOW_TOOL_CALLS, default true).
@@ -586,6 +641,13 @@ export function CopilotPanel() {
           const boundaries = cloudBoundaries(messages)
           const runs = investigationRuns(messages)
           const endings = turnEndings(messages)
+          // The question in flight: its steps fold under «Investigating · N steps»
+          // until it ends, when the finished run's summary takes over.
+          const live = isLoading ? liveSteps(messages) : undefined
+          const liveFolded = new Set(live && !liveOpen ? live.stepIds : [])
+          const lastMessage = messages[messages.length - 1]
+          const answering =
+            lastMessage?.role === 'assistant' && !!lastMessage.content && (lastMessage.toolCalls?.length ?? 0) === 0
           const summaryBefore = new Map<string, string>()
           const folded = new Set<string>()
           // A finished investigation shows its charts right above the answer
@@ -618,7 +680,7 @@ export function CopilotPanel() {
             })
 
           const renderMessage = (m: CopilotMessage) => {
-            if (folded.has(m.id)) return null
+            if (folded.has(m.id) || liveFolded.has(m.id)) return null
             // User turns whose tool results include proposals → interactive
             // ActionProposalCard (the LLM never executes; the operator clicks
             // Execute). This path is independent of showToolCalls.
@@ -704,7 +766,17 @@ export function CopilotPanel() {
                     ((m.toolCalls?.length ?? 0) > 0 && !m.turnId ? (
                       <RoundPhrase message={m} />
                     ) : (
-                      <MessageBubble message={m} />
+                      <MessageBubble
+                        message={m}
+                        // 👍/👎 — only on a finished turn's final answer,
+                        // which the server stamps with the turn id; needs
+                        // the persisted conversation the rating belongs to.
+                        actions={
+                          m.turnId && conversationId ? (
+                            <AnswerFeedback conversationId={conversationId} turnId={m.turnId} />
+                          ) : undefined
+                        }
+                      />
                     ))}
                   {visibleCalls.length > 0 && (
                     <ToolCardLane>
@@ -764,15 +836,6 @@ export function CopilotPanel() {
                       </div>
                     </div>
                   )}
-                  {/* 👍/👎 — only on a finished turn's final answer, which the
-                      server stamps with the turn id; needs the persisted
-                      conversation the rating belongs to. */}
-                  {m.turnId && conversationId && (
-                    <div className="flex justify-start gap-2 max-w-[95%] min-w-0 -mt-1">
-                      <div className="w-6 shrink-0" aria-hidden />
-                      <AnswerFeedback conversationId={conversationId} turnId={m.turnId} />
-                    </div>
-                  )}
                 </div>
               )
             }
@@ -790,6 +853,19 @@ export function CopilotPanel() {
           }
 
           return order.map((m) => {
+            if (live && m.id === live.stepIds[0]) {
+              return (
+                <Fragment key={m.id}>
+                  <WorkingRow
+                    steps={live.steps}
+                    done={answering}
+                    open={liveOpen}
+                    onToggle={() => setLiveOpen((o) => !o)}
+                  />
+                  {renderMessage(m)}
+                </Fragment>
+              )
+            }
             const answerId = summaryBefore.get(m.id)
             if (!answerId) return renderMessage(m)
             return (
@@ -847,7 +923,10 @@ export function CopilotPanel() {
           </div>
         )}
 
-        <div ref={messagesEndRef} />
+        {/* No margin: space-y-4 gave it 16 px, so the empty state (h-full)
+            overflowed, opened scrolled and faded its first line. */}
+        <div ref={messagesEndRef} className="!mt-0" />
+      </div>
       </div>
 
       {/* Input */}
@@ -856,23 +935,23 @@ export function CopilotPanel() {
         {isLoading && (
           <InvestigationStrip live={liveInvestigation(messages)} onStop={cancelMessage} wait={turnWait} />
         )}
-        <div className="flex gap-2 items-end">
-          {/* AI bezel — gradient border that rotates around the box
-              (accent → blue → violet → back), paired with a slow
-              hue-cycling outer glow. Both effects share the same
-              palette as the Ask Copilot button so the affordance
-              reads as "this is the AI surface" wherever it appears. */}
-          <div className="kb-ai-bezel flex-1 bg-kobi-card">
+        <div className="flex gap-2 items-stretch">
+          {/* A quiet field with a lit segment orbiting its edge, as on the
+              site; it pauses while you type. */}
+          <div className="kobi-input flex-1" data-typing={typing ? '' : undefined}>
             <textarea
               ref={inputRef}
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => {
+                setInput(e.target.value)
+                noteTyping()
+              }}
               onKeyDown={handleKeyDown}
-              placeholder="Ask about your cluster..."
+              placeholder={activeClusterName ? `Ask about ${activeClusterName}…` : 'Ask about your cluster…'}
               rows={1}
               disabled={isLoading}
-              className="relative z-[1] w-full px-3 py-2 rounded-lg bg-transparent border-0 text-sm text-kobi-text placeholder:text-kobi-text-tertiary focus:outline-none resize-none max-h-32 overflow-y-auto overflow-x-hidden disabled:opacity-50"
-              style={{ minHeight: '36px' }}
+              className="relative z-[1] block w-full px-3.5 py-2.5 rounded-[13px] bg-transparent border-0 text-[14px] text-kobi-text placeholder:text-kobi-text-tertiary focus:outline-none resize-none max-h-32 overflow-y-auto overflow-x-hidden disabled:opacity-50"
+              style={{ minHeight: '42px' }}
             />
           </div>
           {/* Stop lives in the strip above while a question runs. */}
@@ -880,18 +959,20 @@ export function CopilotPanel() {
             onClick={handleSend}
             disabled={isLoading || !input.trim()}
             aria-label="Send"
-            className="w-9 h-9 rounded-lg bg-kobi-accent-fill hover:bg-kobi-accent-fill/90 text-kobi-ink disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center transition-colors shrink-0"
+            className="w-[44px] min-h-[44px] rounded-[13px] border border-kobi-border-accent bg-kobi-accent/10 hover:bg-kobi-accent/20 text-kobi-accent disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center transition-colors shrink-0"
           >
-            <Send className="w-4 h-4" />
+            <ArrowRight className="w-4 h-4" />
           </button>
         </div>
-        <div className="text-[10.5px] font-mono text-kobi-text-tertiary mt-1.5 text-center leading-relaxed">
-          AI can make mistakes. Verify important information before acting on it.
-          <br />
-          ⌘+Enter to send · ⌘J to toggle
+        {/* One centered axis for the whole footer: the usage lines under it
+            are centered, and a line split left/right read as two columns. */}
+        <div className="flex flex-wrap items-baseline justify-center gap-x-1.5 mt-2 text-center text-[11px] text-kobi-text-tertiary">
+          <span>Kobi can make mistakes. Check before you act.</span>
+          <span className="font-mono text-[10px]">· ⌘↵ send · ⌘J</span>
+        </div>
+        <div className="flex flex-wrap justify-center gap-x-3 mt-0.5 text-[10.5px] font-mono text-kobi-text-tertiary leading-relaxed empty:hidden">
           {sessionUsage && (
             <>
-              <br />
               <span
                 className="text-kobi-text-secondary"
                 title={formatUsageTooltip(sessionUsage)}
@@ -906,7 +987,6 @@ export function CopilotPanel() {
           )}
           {contextLineVisible && (
             <>
-              <br />
               <span
                 className={`${contextPct >= 80 ? 'text-kobi-st-warn' : 'text-kobi-text-secondary'}`}
                 title={`Session: ${formatTokens(contextTokens)}${
@@ -934,7 +1014,7 @@ export function CopilotPanel() {
 
 // ─── Empty state with smart suggestions ─────────────────────────
 
-function EmptyState() {
+function EmptyState({ clusterName }: { clusterName: string }) {
   const { sendMessage } = useCopilot()
   const { data: overview } = useClusterOverview()
   const { data: insightsResp } = useInsights()
@@ -943,32 +1023,49 @@ function EmptyState() {
     () => generateCopilotSuggestions(overview, insightsResp?.items),
     [overview, insightsResp?.items],
   )
+  const [first, ...rest] = suggestions
 
   return (
-    <div className="flex flex-col items-center justify-center h-full text-center px-4 py-8">
-      {/* Hero — Kobi's face, Watching. The empty state is a pause point;
-          the blink and the dot's pulse say presence without performing
-          enthusiasm. */}
-      <div className="mb-4">
-        <KobiFace size={64} state="watching" />
+    <div className="flex flex-col justify-between h-full gap-6">
+      {/* Kobi opens the conversation in its own voice, as a message — the
+          face beside it, Watching and still. */}
+      <div className="flex justify-start gap-2.5 max-w-[95%]">
+        <KobiFace size={26} still className="mt-0.5 shrink-0" />
+        <p className="text-[15px] leading-relaxed text-kobi-text">
+          I&apos;m Kobi, KubeBolt&apos;s AI SRE. I can read everything in{' '}
+          {clusterName ? <span className="font-semibold">{clusterName}</span> : 'your cluster'} — pods, logs,
+          events, metrics — and look beyond it when your setup allows: your other clusters, and the cloud
+          accounts your organization connected. I explain what I find and never change anything without your
+          go-ahead.
+        </p>
       </div>
-      <h3 className="font-display text-base font-semibold tracking-tight text-kobi-text mb-1">Kobi</h3>
-      <p className="text-sm text-kobi-text-secondary mb-4 max-w-xs">
-        Ask about your cluster, troubleshoot an issue, or learn about Kubernetes.
-      </p>
-      {/* Suggestion chips are the panel's most valuable surface — they get
-          card treatment and a readable size instead of tertiary 12px. */}
-      <div className="space-y-1.5 w-full max-w-md">
-        {suggestions.map((text) => (
+      {/* Suggestions sit by the input, as on the site: the first one leads,
+          the rest follow as quieter rows. */}
+      {first && (
+        <div className="border-t border-kobi-border pt-3">
+          <div className="text-[10.5px] font-mono uppercase tracking-[0.16em] text-kobi-accent mb-1">
+            For this cluster
+          </div>
           <button
-            key={text}
-            onClick={() => sendMessage(text)}
-            className="w-full text-left px-3 py-2 rounded-lg bg-kobi-card hover:bg-kobi-elevated border border-kobi-border hover:border-kobi-border-accent text-[13px] text-kobi-text-secondary hover:text-kobi-text transition-colors"
+            type="button"
+            onClick={() => sendMessage(first)}
+            className="w-full text-left py-2 text-[14.5px] text-kobi-text hover:text-kobi-accent border-b border-kobi-border transition-colors"
           >
-            {text}
+            {first}
           </button>
-        ))}
-      </div>
+          {rest.map((text) => (
+            <button
+              type="button"
+              key={text}
+              onClick={() => sendMessage(text)}
+              className="w-full flex items-baseline gap-2.5 text-left py-2.5 text-[14px] text-kobi-text-secondary hover:text-kobi-text border-b border-kobi-border last:border-b-0 transition-colors"
+            >
+              <span aria-hidden className="font-mono text-kobi-accent">↳</span>
+              {text}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -989,8 +1086,9 @@ function RoundPhrase({ message }: { message: CopilotMessage }) {
   )
 }
 
-function MessageBubble({ message }: { message: CopilotMessage }) {
+function MessageBubble({ message, actions }: { message: CopilotMessage; actions?: React.ReactNode }) {
   const [copied, setCopied] = useState(false)
+  const { user } = useAuth()
 
   if (message.kind === 'compact-notice' && message.compactMeta) {
     return <CompactNoticeBubble meta={message.compactMeta} />
@@ -1001,87 +1099,69 @@ function MessageBubble({ message }: { message: CopilotMessage }) {
   }
 
   if (message.role === 'user') {
+    // Your turn: the bubble, and your initial beside it as Kobi's face is
+    // beside its answers. A conversation is personal (its owner is the
+    // record's userId), so every prompt in it is the signed-in person's.
+    const who = user?.name || user?.username
     return (
-      <div className="flex justify-end gap-2">
-        {/* User bubble — soft accent tint so the two voices are
-            distinguishable at a glance (they were two near-identical
-            grays in dark mode). bubble-user is the tint flattened to an
-            opaque color so the tail diamond composes without a seam. */}
-        <div className="relative max-w-[85%] px-3.5 py-2.5 rounded-xl rounded-tr-md bg-kobi-bubble-user border border-kobi-accent/20 text-sm text-kobi-text whitespace-pre-wrap break-words">
+      <div className="flex justify-end items-start gap-2">
+        <div className="kobi-bubble-user max-w-[85%] px-3.5 py-2.5 rounded-[14px] rounded-tr-[4px] text-[14px] leading-relaxed text-kobi-text whitespace-pre-wrap break-words">
           {message.content}
-          {/* WhatsApp-style tail toward the avatar: rotated square, borders
-              only on the two protruding faces; the inner half covers the
-              bubble's own border segment so the outline reads continuous. */}
-          <span
-            aria-hidden
-            className="absolute -right-[5px] top-2 w-2.5 h-2.5 rotate-45 rounded-[1px] bg-kobi-bubble-user border-t border-r border-kobi-accent/20"
-          />
         </div>
-        <div className="w-6 h-6 rounded-full bg-kobi-elevated flex items-center justify-center shrink-0 mt-0.5">
-          <User className="w-3.5 h-3.5 text-kobi-text-secondary" />
-        </div>
+        <span
+          title={who ? `${who} (you)` : 'You'}
+          aria-hidden
+          className="mt-0.5 w-6 h-6 shrink-0 rounded-full bg-kobi-accent/15 text-kobi-accent flex items-center justify-center text-[11px] font-mono font-bold uppercase"
+        >
+          {who ? who.trim()[0] : <User className="w-3.5 h-3.5" />}
+        </span>
       </div>
     )
   }
 
   function handleCopyMessage() {
-    navigator.clipboard.writeText(message.content).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    })
+    navigator.clipboard.writeText(message.content).then(
+      () => {
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1500)
+      },
+      () => {},
+    )
   }
 
-  // assistant — render markdown with a copy action.
-  //
-  // The Copy button is absolute-positioned in the top-right of the bubble
-  // (rather than a sibling row below) so it doesn't reserve ~18px of
-  // vertical space when hidden. Without this, every assistant message had
-  // a phantom gap below it that became very visible once tool cards started
-  // rendering immediately after the bubble.
+  // assistant — the answer reads as text beside Kobi's face, without a card
+  // (the site's chat), using the lane's whole width up to a 72ch measure;
+  // its actions (copy, and the rating on a turn's final answer) sit in one
+  // quiet row under it rather than over the text's right edge.
   return (
-    <div className="flex justify-start gap-2 group max-w-[95%] min-w-0">
+    <div className="flex justify-start gap-2 min-w-0">
       {/* Kobi's avatar: the face at 24 px, Watching and still. It never
           shows the live state — only the header and the floating head do. */}
-      <KobiFace size={24} still className="mt-0.5" />
-      {/* relative: hosts the tail. The tail can't live inside the bubble —
-          its overflow-hidden (copy button / code blocks) would clip it. */}
-      <div className="relative flex flex-col items-start min-w-0 flex-1">
-        {/* Assistant bubble — card-v3 treatment: slightly ELEVATED over the
-            panel bg (the old bg-kb-bg sat darker than the panel and sank),
-            thin green-tinted bevel border, and a ~65ch measure so long RCA
-            answers don't stretch into fatiguing 120-char lines on wide
-            docked panels. */}
-        <div className="relative px-3.5 py-2.5 rounded-xl rounded-tl-md bg-kobi-card border border-kobi-border-accent shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] text-[15px] text-kobi-text break-words min-w-0 max-w-[min(65ch,100%)] overflow-hidden">
+      <KobiFace size={24} still className="mt-0.5 shrink-0" />
+      <div className="flex flex-col items-start gap-1 min-w-0 flex-1">
+        <div className="text-[15px] text-kobi-text break-words min-w-0 w-full max-w-[72ch]">
           {message.content ? (
             <MarkdownRenderer content={message.content} />
           ) : (
             <span className="text-kobi-text-tertiary italic">...</span>
           )}
-          {message.content && (
-            <button
-              onClick={handleCopyMessage}
-              title={copied ? 'Copied!' : 'Copy message'}
-              className="absolute top-1.5 right-1.5 flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono text-kobi-text-tertiary bg-kobi-elevated/95 hover:text-kobi-accent hover:bg-kobi-elevated opacity-0 group-hover:opacity-100 transition-all"
-            >
-              {copied ? (
-                <>
-                  <Check className="w-3 h-3" />
-                  Copied
-                </>
-              ) : (
-                <>
-                  <Copy className="w-3 h-3" />
-                  Copy
-                </>
-              )}
-            </button>
-          )}
         </div>
-        {/* Kobi-side tail — same diamond as the user bubble, card bg. */}
-        <span
-          aria-hidden
-          className="absolute -left-[5px] top-2 w-2.5 h-2.5 rotate-45 rounded-[1px] bg-kobi-card border-b border-l border-kobi-border-accent"
-        />
+        {message.content && (
+          <div className="flex items-start gap-0.5 -ml-1 min-w-0 w-full">
+            <button
+              type="button"
+              onClick={handleCopyMessage}
+              title={copied ? 'Copied' : 'Copy answer'}
+              aria-label={copied ? 'Copied' : 'Copy answer'}
+              className={`p-1 rounded transition-colors hover:bg-kobi-elevated ${
+                copied ? 'text-kobi-accent' : 'text-kobi-text-tertiary hover:text-kobi-text-secondary'
+              }`}
+            >
+              {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+            </button>
+            {actions}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -1162,6 +1242,8 @@ const MODEL_LONG_WAIT_MS = 60000
 
 function StreamStatusHint() {
   const { isLoading, lastActivityAt, messages, turnWait } = useCopilot()
+  // The face here is the header's: one source, so the two never disagree.
+  const face = useKobiPresence().state
   const [, setTick] = useState(0)
   useEffect(() => {
     if (!isLoading) return
@@ -1180,52 +1262,76 @@ function StreamStatusHint() {
     // for how long (since the last of them came back).
     const last = messages[messages.length - 1]
     const read = last?.role === 'user' ? (last.toolResults?.length ?? 0) : 0
-    if (read === 0) return <ThinkingIndicator />
-    return <ThinkingIndicator label={`Analyzing ${read} result${read === 1 ? '' : 's'}`} elapsedMs={idleMs} />
+    if (read === 0) return <LiveLine face={face} label="Thinking" />
+    return <LiveLine face={face} label={`Analyzing ${read} result${read === 1 ? '' : 's'}`} elapsedMs={idleMs} />
   }
-  if (phase === 'tools') return null
+  // A round's calls running: the line says what the round set out to check
+  // («Checking the pods and the logs»); its cards are folded under «Working».
+  if (phase === 'tools') {
+    const phrase = liveSteps(messages)?.phrase
+    return <LiveLine face={face} label={phrase ? phrase.replace(/[.…:\s]+$/, '') : 'Reading'} elapsedMs={idleMs} />
+  }
   // Mid-stream and still flowing — the text is the signal, no extra chrome.
   if (phase === 'idle' && idleMs < IDLE_HINT_MS) return null
 
   const longWait = idleMs >= LONG_WAIT_MS
+  return <LiveLine face={face} quiet label={longWait ? 'Taking longer than usual' : 'Waiting for the response'} />
+}
+
+// LiveLine — what Kobi is doing now, in one line: its face acting the state
+// and the words shimmering, as Cloudflare's chat says «Building response…».
+// The words are the round's own, so the line says what is being read. The
+// face is the header's live state (useKobiPresence), never one of its own;
+// quiet only greys the words while nothing arrives.
+function LiveLine({
+  face,
+  label,
+  elapsedMs,
+  quiet,
+}: {
+  face: KobiFaceState
+  label: string
+  elapsedMs?: number
+  quiet?: boolean
+}) {
   return (
-    <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-kobi-bg border border-kobi-border w-fit text-[11px] text-kobi-text-tertiary">
-      <Loader2 className="w-3 h-3 animate-spin shrink-0" />
-      <span className="font-mono">
-        {longWait ? 'Taking longer than usual…' : 'Waiting for response…'}
+    <div role="status" className="flex items-center gap-2.5 min-w-0 max-w-[95%]">
+      <KobiFace size={24} state={face} className="shrink-0" />
+      <span className={`truncate text-[14px] italic ${quiet ? 'text-kobi-text-tertiary' : 'kb-ai-shimmer-text'}`}>
+        {label}…
       </span>
+      {elapsedMs !== undefined && elapsedMs >= 3000 && (
+        <span className="shrink-0 text-[11px] font-mono tabular-nums text-kobi-text-tertiary">{formatClock(elapsedMs)}</span>
+      )}
     </div>
   )
 }
 
-// ThinkingIndicator — three staggered dots + a shimmering label,
-// shown while the assistant has emitted no content yet (between
-// the user submit and the first token / tool call). The single-
-// spinner version it replaces read as "loading something" rather
-// than "actively reasoning"; the dots + color flow communicate
-// activity without overpromising progress.
-function ThinkingIndicator({ label = 'Thinking', elapsedMs }: { label?: string; elapsedMs?: number }) {
+// WorkingRow — the question in flight's steps folded into one row, as
+// Cloudflare's chat shows «Working - 1 step ⌄», in Kobi's own verb (the
+// state the header says): «Investigating · 3 steps», «Investigated» once the
+// answer is being written; when the turn ends, InvestigationSummary takes
+// the same place in the same voice. Opened, the cards show as they always did.
+function WorkingRow({ steps, done, open, onToggle }: { steps: number; done: boolean; open: boolean; onToggle: () => void }) {
   return (
-    <div className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-kobi-bg border border-kobi-border w-fit">
-      <div className="flex items-center gap-1">
-        <span
-          className="w-1.5 h-1.5 rounded-full bg-kobi-accent animate-kb-ai-thinking-dot"
-          style={{ animationDelay: '0s' }}
-        />
-        <span
-          className="w-1.5 h-1.5 rounded-full bg-kobi-accent animate-kb-ai-thinking-dot"
-          style={{ animationDelay: '0.18s' }}
-        />
-        <span
-          className="w-1.5 h-1.5 rounded-full bg-kobi-accent animate-kb-ai-thinking-dot"
-          style={{ animationDelay: '0.36s' }}
-        />
-      </div>
-      <span className="kb-ai-shimmer-text text-[11px] font-mono">{label}</span>
-      {elapsedMs !== undefined && (
-        <span className="text-[11px] font-mono tabular-nums text-kobi-text-tertiary">{formatClock(elapsedMs)}</span>
-      )}
-    </div>
+    <ToolCardLane>
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="kobi-run-chip w-fit text-[13px] text-kobi-text-secondary"
+      >
+        <span className="flex items-center gap-1.5 font-medium text-kobi-text">
+          <KobiStateDot state="investigating" halo className="shrink-0" />
+          {done ? 'Investigated' : 'Investigating'}
+        </span>
+        <span aria-hidden>·</span>
+        <span>
+          {steps} {steps === 1 ? 'step' : 'steps'}
+        </span>
+        <ChevronDown className={`w-4 h-4 shrink-0 text-kobi-text-tertiary transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+    </ToolCardLane>
   )
 }
 

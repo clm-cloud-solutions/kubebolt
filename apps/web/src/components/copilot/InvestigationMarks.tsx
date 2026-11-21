@@ -1,6 +1,6 @@
 import { useContext, useEffect, useState } from 'react'
 import { QueryClientContext } from '@tanstack/react-query'
-import { AlertCircle, BookOpen, ChevronDown, Clock, ListChecks, Loader2, Square } from 'lucide-react'
+import { AlertCircle, BookOpen, ChevronDown, Clock, Hourglass, ListChecks, Loader2, Square } from 'lucide-react'
 import { KobiStateDot } from '@/components/kobi'
 import { CloudProviderIcon } from '@/components/shared/CloudProviderIcon'
 import { MCP_CONNECTORS_KEY } from '@/components/admin/mcp/ConnectorBits'
@@ -73,51 +73,62 @@ export function InvestigationSummary({
   open: boolean
   onToggle: () => void
 }) {
+  // The live row («Investigating · 3 steps») in the past tense, in its place
+  // and in the same chip, so the thread does not jump when Kobi finishes.
+  // The tally is what the live row lacks; color is kept for the check, what
+  // needs attention (paused at the limit, reads that failed) and the clouds'.
   const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
   return (
-    <div
-      className="rounded-lg bg-kobi-card border border-kobi-border text-[10px] font-mono"
-      style={{ borderColor: 'color-mix(in srgb, var(--kobi-accent) 35%, var(--kobi-border))' }}
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={open}
+      title={open ? 'Hide steps' : 'Show steps'}
+      className="kobi-run-chip text-[13px] text-kobi-text-secondary"
     >
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={open}
-        className="w-full flex items-center gap-2 px-3 py-1.5 text-kobi-text-tertiary hover:bg-kobi-elevated transition-colors rounded-lg"
-      >
-        <ListChecks className="w-3 h-3 text-kobi-accent shrink-0" />
-        <span className="font-medium text-kobi-text">Investigation</span>
-        {run.elapsedMs !== undefined && <span className="tabular-nums">{formatClock(run.elapsedMs)}</span>}
-        <span className="ml-auto flex items-center gap-1 shrink-0">
-          {open ? 'Hide steps' : 'Show steps'}
-          <ChevronDown className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`} />
-        </span>
-      </button>
-      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 px-3 pb-1.5 text-kobi-text-tertiary">
-        {run.pausedAtLimit !== undefined && (
-          <span className="text-kobi-st-warn">
-            Paused at the step limit{run.pausedAtLimit > 0 ? ` · ${run.pausedAtLimit} steps` : ''} ·
+      {run.pausedAtLimit !== undefined ? (
+        <>
+          <Hourglass className="w-3.5 h-3.5 shrink-0 text-kobi-st-warn" aria-hidden />
+          <span className="font-medium text-kobi-st-warn">
+            Paused at the step limit{run.pausedAtLimit > 0 ? ` · ${run.pausedAtLimit} steps` : ''}
           </span>
-        )}
-        <span>{plural(run.reads, 'read', 'reads')}</span>
-        {run.byCloud.map(([id, n]) => {
-          const cloud = CLOUD_TOKENS[id]
-          return (
-            <span key={id} className="flex items-center gap-1">
-              <span aria-hidden>·</span>
-              <CloudProviderIcon provider={id} className="w-3 h-3" />
-              <span style={cloud ? { color: `var(${cloud.text})` } : undefined}>
-                {n} in {connectorShortName(id)}
-              </span>
+        </>
+      ) : (
+        <span className="flex items-center gap-1.5 font-medium text-kobi-text">
+          <ListChecks className="w-3.5 h-3.5 shrink-0 text-kobi-accent" aria-hidden />
+          Investigated
+          {run.elapsedMs !== undefined && (
+            <>
+              {' for '}
+              <span className="tabular-nums">{formatClock(run.elapsedMs)}</span>
+            </>
+          )}
+        </span>
+      )}
+      <span aria-hidden>·</span>
+      <span>{plural(run.reads, 'read', 'reads')}</span>
+      {run.byCloud.map(([id, n]) => {
+        const cloud = CLOUD_TOKENS[id]
+        return (
+          <span key={id} className="flex items-center gap-1">
+            <span aria-hidden>·</span>
+            <CloudProviderIcon provider={id} className="w-3.5 h-3.5" />
+            <span style={cloud ? { color: `var(${cloud.text})` } : undefined}>
+              {n} in {connectorShortName(id)}
             </span>
-          )
-        })}
-        {run.guides > 0 && <span>· {plural(run.guides, 'guide', 'guides')}</span>}
-        {run.charts > 0 && <span>· {plural(run.charts, 'chart', 'charts')}</span>}
-        {run.proposals > 0 && <span>· {plural(run.proposals, 'proposal', 'proposals')}</span>}
-        {run.unread > 0 && <span className="text-kobi-st-warn">· {run.unread} could not be read</span>}
-      </div>
-    </div>
+          </span>
+        )
+      })}
+      {run.guides > 0 && <span>· {plural(run.guides, 'guide', 'guides')}</span>}
+      {run.charts > 0 && <span>· {plural(run.charts, 'chart', 'charts')}</span>}
+      {run.proposals > 0 && <span>· {plural(run.proposals, 'proposal', 'proposals')}</span>}
+      {run.unread > 0 && <span className="text-kobi-st-warn">· {run.unread} could not be read</span>}
+      <ChevronDown
+        className={`w-4 h-4 shrink-0 text-kobi-text-tertiary transition-transform ${open ? 'rotate-180' : ''}`}
+        aria-hidden
+      />
+      <span className="sr-only">{open ? 'Hide steps' : 'Show steps'}</span>
+    </button>
   )
 }
 
