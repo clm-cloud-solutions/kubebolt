@@ -6,6 +6,38 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.7.1] — 2026-11-22
+
+Kobi reads a request once, an Endpoints edit Kubernetes would undo is
+refused, and shutdown drains first. Drop-in, no migration; the agent stays on
+1.4.10. Full note: [docs/releases/v2.7.1.md](docs/releases/v2.7.1.md).
+
+### Fixed
+
+- **Kobi reads requests, limits and allocatable once** when both
+  kube-state-metrics and the bundled OpenCost publish them; a sum doubled
+  them, and Kobi compared usage against twice the request. A metrics-only
+  overview reads allocatable and volume claims once.
+- **An EndpointSlice a Kubernetes controller writes is refused on save** with a
+  409 that names where to edit: the Service, or the core `Endpoints` a mirrored
+  slice copies, now editable as `coreendpoints`.
+- **The agent upgrade command names the agent's own release and namespace**,
+  and the cost source to drop when both OpenCost paths are on.
+- **Drains are keyed by org, cluster and node**: same-named nodes in two
+  clusters no longer refuse each other's drains, and re-attach and cancel find
+  only the caller's own. Stopping a port-forward requires its org, and with
+  auth disabled the port-forward list is no longer empty.
+- **Shutdown drains HTTP first** (`KUBEBOLT_SHUTDOWN_TIMEOUT`, 20 s), records
+  the close of open terminals and port-forwards, and only then lets the agents
+  go.
+
+### Changed
+
+- **Kobi's panel takes the look of kubebolt.io's chat**, and its face follows
+  what Kobi does.
+- **Metric names have a class** (core, custom, unknown) in a shared catalog,
+  by exact name. Nothing gates or counts by it in this edition.
+
 ## [2.7.0] — 2026-11-21
 
 An out-of-date agent says so, a cloud operation can be stopped without a
