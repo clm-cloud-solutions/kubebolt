@@ -125,7 +125,7 @@ func (h *handlers) handleDrain(w http.ResponseWriter, r *http.Request) {
 	// Acquire a fresh session. If one is already in-flight for this
 	// node, we don't want a second drain firing on the same target —
 	// kick the operator to GET to re-attach to the running one.
-	session, drainCtx, fresh := h.drainManager.Start(auth.ContextTenantID(r), name, params)
+	session, drainCtx, fresh := h.drainManager.Start(auth.ContextTenantID(r), h.manager.ActiveContextFor(r.Context()), name, params)
 	if !fresh {
 		respondError(w, http.StatusConflict, fmt.Sprintf("a drain is already in progress on node %q; GET this URL to attach", name))
 		return
@@ -352,7 +352,7 @@ func (h *handlers) handleDrainSession(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, fmt.Sprintf("cannot get drain status for %s", resourceType))
 		return
 	}
-	session, ok := h.drainManager.Get(name)
+	session, ok := h.drainManager.Get(auth.ContextTenantID(r), h.manager.ActiveContextFor(r.Context()), name)
 	if !ok || session.isFinished() {
 		respondError(w, http.StatusNotFound, "no active drain session for this node")
 		return
@@ -373,7 +373,7 @@ func (h *handlers) handleDrainCancel(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, fmt.Sprintf("cannot cancel drain for %s", resourceType))
 		return
 	}
-	if !h.drainManager.Cancel(name) {
+	if !h.drainManager.Cancel(auth.ContextTenantID(r), h.manager.ActiveContextFor(r.Context()), name) {
 		respondError(w, http.StatusNotFound, "no active drain session for this node")
 		return
 	}
