@@ -58,7 +58,7 @@ func routeGroup(method, pattern string) string {
 		return false
 	}
 	switch {
-	case p == "/health" || pattern == "/metrics":
+	case p == "/health" || p == "/health/db" || pattern == "/metrics":
 		return "health"
 	case p == "/ws":
 		return "ws"

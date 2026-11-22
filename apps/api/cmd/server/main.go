@@ -1002,6 +1002,8 @@ func main() {
 	// routes, no cloud tools. Closed after the HTTP server drains, below.
 	mcpGateway := newMCPGateway(mcpCatalog, settingsRuntime)
 
+	// /health/db's ping: the edition's database, for an external monitor.
+	api.SetDatabaseCheck(databaseCheck())
 	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, copilotConversations, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, ingestTokenStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promNameFilter, promWriteMetrics, usageStore, findingsStore, eventStore, settingsRuntime, bootEnv, agentRegistry, updateCheckSvc, insightPolicySvc, episodeReader, mcpGateway, mcpCatalog)
 
 	// Spec #09 V2 Item 5b — push the backend's own Prometheus
