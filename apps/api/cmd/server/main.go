@@ -276,6 +276,9 @@ func main() {
 	authCfg := config.LoadAuthConfig()
 
 	var authHandlers *auth.Handlers
+	// refreshTokens is the auth store's refresh-token side, hoisted for the
+	// retention pass. Nil when auth is off.
+	var refreshTokens refreshTokenPruner
 	var tenantHandlers *auth.TenantHandlers
 	var agentAuthBundle *agent.AuthenticatorBundle
 	var copilotUsage copilot.SessionStore
@@ -373,6 +376,7 @@ func main() {
 		// the Enterprise build can back them with Postgres (KUBEBOLT_DB_DSN). In
 		// OSS it IS the bolt store. Settings/DB ops below stay on `store`.
 		authStore := newAuthStore(store)
+		refreshTokens = authStore // hoist for the retention pass's expired-session prune
 		// EE seam: global install settings (jwt_secret + UI config) go through
 		// this SettingStore so a multi-replica Cloud deployment shares one table.
 		settingStore := newSettingStore(store)
@@ -1417,6 +1421,7 @@ func main() {
 		conversations: copilotConversations,
 		feedback:      copilotFeedback,
 		episodes:      episodePruner,
+		refreshTokens: refreshTokens,
 	}
 	// Orphan sweep wiring (in-vivo 2026-09-15): the KEEP set is the manager's
 	// registered identifiers plus every cluster the durable agent registry
