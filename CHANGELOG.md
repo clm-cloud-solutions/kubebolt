@@ -6,6 +6,28 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.7.2] — 2026-11-22
+
+A store that does not answer is not a bad credential, and insights survive an
+unreadable store. Drop-in, no migration; the agent stays on 1.4.10. Full
+note: [docs/releases/v2.7.2.md](docs/releases/v2.7.2.md).
+
+### Fixed
+
+- **A token store that does not answer is a 503, not a rejected credential.**
+  API keys, `remote_write` (which Prometheus drops on 401, and which permissive
+  mode filed under the default tenant), Falco's ingest and the agents' gRPC
+  channel now answer 503 with `Retry-After` (`Unavailable` on gRPC).
+- **Insights survive an unreadable store.** A failed read no longer opens a
+  second episode and notifies again, rewrites an episode's history, or leaves
+  the rule policies on factory defaults until a policy changes.
+- **Expired refresh tokens are pruned** by the hourly retention pass.
+
+### Added
+
+- **`GET /health/db`** for an external monitor: whether the API reaches its
+  database (here, always ok; the stores are in process).
+
 ## [2.7.1] — 2026-11-22
 
 Kobi reads a request once, an Endpoints edit Kubernetes would undo is
