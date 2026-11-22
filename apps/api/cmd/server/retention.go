@@ -51,6 +51,12 @@ type orgPruner interface {
 	PruneOrg(orgID string, before time.Time) (int, error)
 }
 
+// refreshTokenPruner removes lapsed sign-in sessions. Refresh tokens are
+// keyed by user, not org, so this runs once per pass.
+type refreshTokenPruner interface {
+	PruneExpiredRefreshTokens(ctx context.Context, before time.Time) (int, error)
+}
+
 type orgEventPruner interface {
 	PruneEventsOrg(orgID string, before time.Time) (int, error)
 }
@@ -98,6 +104,10 @@ type retentionDeps struct {
 	// problem, not garbage — so the cutoff here bounds history, never
 	// detection. Nil when the lifecycle store is not wired.
 	episodes orgPruner
+	// refreshTokens drops refresh tokens past their expiry. Every sign-in
+	// writes one and only logout or a password change removed them, so a
+	// session that simply lapsed stayed forever. Nil when auth is off.
+	refreshTokens refreshTokenPruner
 }
 
 // envHorizon reads a Go duration from env, falling back to def when unset,
@@ -208,6 +218,17 @@ func runRetentionPass(d retentionDeps, now time.Time) {
 		failed++
 		slog.Warn(msg, args...)
 	}
+	// Not per org, and before the org listing so a listing failure does not
+	// skip it.
+	refreshPruned := 0
+	if d.refreshTokens != nil {
+		n, err := d.refreshTokens.PruneExpiredRefreshTokens(context.Background(), now)
+		if err != nil {
+			warn("retention: refresh tokens prune failed", slog.String("error", err.Error()))
+		} else {
+			refreshPruned = n
+		}
+	}
 	orgs, err := d.tenants.ListTenants()
 	if err != nil {
 		warn("retention: cannot list orgs", slog.String("error", err.Error()))
@@ -293,6 +314,7 @@ func runRetentionPass(d retentionDeps, now time.Time) {
 		slog.Int("audit_records_pruned", totalAudit),
 		slog.Int("conversations_pruned", totalConversations),
 		slog.Int("copilot_feedback_pruned", totalFeedback),
+		slog.Int("expired_refresh_tokens_pruned", refreshPruned),
 	)
 	if failed == 0 {
 		run.OK()
