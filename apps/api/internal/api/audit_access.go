@@ -143,11 +143,14 @@ func auditAccessSession(actor accessActor, action, targetType, namespace, name s
 	audit.Emit(actor.record(action+"_open", targetType, namespace, name, openParams))
 
 	var once sync.Once
-	return func(reason string, extra map[string]any) {
+	end := func(reason string, extra map[string]any) {
 		once.Do(func() {
+			openAccess.forget(sessionID)
 			emitClose(actor, action, targetType, namespace, name, params, extra, sessionID, openedAt, reason)
 		})
 	}
+	openAccess.track(sessionID, end)
+	return end
 }
 
 // auditAccessSessionPending is auditAccessSession for a session that can fail
@@ -185,6 +188,7 @@ func auditAccessSessionPending(actor accessActor, action, targetType, namespace,
 		started = true
 		openedAt = time.Now()
 		audit.Emit(actor.record(action+"_open", targetType, namespace, name, openParams))
+		openAccess.track(sessionID, end)
 	}
 	end = func(reason string, extra map[string]any) {
 		mu.Lock()
@@ -194,6 +198,7 @@ func auditAccessSessionPending(actor accessActor, action, targetType, namespace,
 		}
 		ended = true
 		if started {
+			openAccess.forget(sessionID)
 			emitClose(actor, action, targetType, namespace, name, params, extra, sessionID, openedAt, reason)
 			return
 		}
@@ -210,6 +215,47 @@ func auditAccessSessionPending(actor accessActor, action, targetType, namespace,
 		audit.Emit(rec)
 	}
 	return start, end
+}
+
+// openAccess holds the closer of every access session this process has
+// recorded as open and not yet as closed.
+var openAccess = &accessRegistry{open: map[string]func(string, map[string]any){}}
+
+type accessRegistry struct {
+	mu   sync.Mutex
+	open map[string]func(reason string, extra map[string]any)
+}
+
+func (r *accessRegistry) track(id string, end func(string, map[string]any)) {
+	r.mu.Lock()
+	r.open[id] = end
+	r.mu.Unlock()
+}
+
+func (r *accessRegistry) forget(id string) {
+	r.mu.Lock()
+	delete(r.open, id)
+	r.mu.Unlock()
+}
+
+// CloseOpenAccessSessions records the close of every access session still open
+// — terminals and port-forwards — with reason, and returns how many it closed.
+// main calls it on shutdown, after the HTTP server has drained: both are
+// hijacked or background connections that server.Shutdown does not wait for, so
+// the process took them down with it and left an open with no close, which the
+// trail reads as a session that died abnormally. Closers are idempotent, so a
+// session whose own goroutine closes it a moment later is recorded once.
+func CloseOpenAccessSessions(reason string) int {
+	openAccess.mu.Lock()
+	closers := make([]func(string, map[string]any), 0, len(openAccess.open))
+	for _, end := range openAccess.open {
+		closers = append(closers, end)
+	}
+	openAccess.mu.Unlock()
+	for _, end := range closers {
+		end(reason, nil)
+	}
+	return len(closers)
 }
 
 func emitClose(actor accessActor, action, targetType, namespace, name string,
