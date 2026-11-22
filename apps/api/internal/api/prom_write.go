@@ -259,6 +259,15 @@ func (h *handlers) authenticatePromWrite(w http.ResponseWriter, r *http.Request)
 			lookErr = auth.ErrTenantDisabled
 		}
 	}
+	if lookErr != nil && !auth.IsCredentialRejection(lookErr) {
+		// The stores did not answer. Never 401 here — Prometheus drops what a
+		// 401 refuses and retries a 5xx — and never the permissive fallback,
+		// which would file the samples under the default org.
+		slog.Warn("remote_write: ingest token check failed: store unavailable", slog.String("error", lookErr.Error()))
+		w.Header().Set("Retry-After", "5")
+		respondError(w, http.StatusServiceUnavailable, "ingest token check unavailable, retry")
+		return nil, false
+	}
 	if lookErr != nil {
 		if mode == promWriteAuthPermissive {
 			logPromWriteFallback("bad-bearer", r.RemoteAddr, lookErr.Error())

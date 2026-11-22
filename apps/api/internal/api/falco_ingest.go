@@ -46,11 +46,16 @@ func (h *handlers) handleFalcoIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tok, err := h.ingestTokens.Lookup(r.Context(), strings.TrimSpace(authz[len(prefix):]))
-	if err != nil {
-		respondError(w, http.StatusUnauthorized, "invalid ingest token")
+	var tenant *auth.Tenant
+	if err == nil {
+		tenant, err = h.tenantsStore.GetTenant(tok.TenantID)
+	}
+	if err != nil && !auth.IsCredentialRejection(err) {
+		// The stores did not answer; the token may be fine. A 5xx is retried.
+		w.Header().Set("Retry-After", "5")
+		respondError(w, http.StatusServiceUnavailable, "ingest token check unavailable, retry")
 		return
 	}
-	tenant, err := h.tenantsStore.GetTenant(tok.TenantID)
 	if err != nil || tenant.Disabled {
 		respondError(w, http.StatusUnauthorized, "invalid ingest token")
 		return
