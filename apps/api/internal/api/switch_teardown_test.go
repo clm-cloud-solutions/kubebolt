@@ -46,15 +46,15 @@ func TestPortForwardListForOrg_ScopesToOrg(t *testing.T) {
 
 func TestDrainCancelAllForOrg_ScopesToOrg(t *testing.T) {
 	m := newDrainSessionManager()
-	_, ctxA, freshA := m.Start("org-a", "node-a", nil)
-	_, ctxB, freshB := m.Start("org-b", "node-b", nil)
+	_, ctxA, freshA := m.Start("org-a", "c1", "node-a", nil)
+	_, ctxB, freshB := m.Start("org-b", "c1", "node-b", nil)
 	if !freshA || !freshB {
 		t.Fatal("setup: both drains should have started fresh")
 	}
 
 	m.CancelAllForOrg("org-b")
 
-	if _, ok := m.Get("node-a"); !ok {
+	if _, ok := m.Get("org-a", "c1", "node-a"); !ok {
 		t.Error("CancelAllForOrg cancelled a drain belonging to another org")
 	}
 	select {
@@ -63,7 +63,7 @@ func TestDrainCancelAllForOrg_ScopesToOrg(t *testing.T) {
 	default:
 	}
 
-	if _, ok := m.Get("node-b"); ok {
+	if _, ok := m.Get("org-b", "c1", "node-b"); ok {
 		t.Error("CancelAllForOrg left the target org's own drain running")
 	}
 	select {

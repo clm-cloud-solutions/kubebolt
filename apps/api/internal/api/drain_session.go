@@ -18,11 +18,13 @@ import (
 // reader disconnects), and we buffer every emitted event so a
 // reconnecting client gets the full history before the live tail.
 //
-// Single-cluster scoping: the active context already gates which
-// cluster's resources we touch, so we key sessions by node name
-// alone. If the operator switches clusters mid-drain, the manager's
-// CancelAll runs (mirrors PortForwardManager.StopAll); a same-named
-// node in a different cluster gets its own fresh session.
+// Scoping: a session is keyed by (org, cluster, node), and Get and
+// Cancel find it only under the same three. Keyed by node name alone,
+// a caller could re-attach to or cancel a drain it did not start by
+// naming a node, and two clusters with a same-named node (every kind
+// cluster has `kind-control-plane`) refused each other's drains with a
+// 409. A cluster switch still cancels the switching org's drains
+// (CancelAllForOrg).
 
 // drainEvent is one entry on the SSE channel. Name matches the SSE
 // `event:` field; data is JSON-encoded by the writer.
@@ -31,10 +33,17 @@ type drainEvent struct {
 	Data interface{} `json:"data"`
 }
 
+// drainKey names one drain: the org that started it, the cluster (the
+// per-request context, as Manager.ActiveContextFor resolves it) and the node.
+type drainKey struct {
+	org, cluster, node string
+}
+
 // drainSession is the in-memory record of one drain operation.
 type drainSession struct {
 	Node      string
 	OrgID     string // tenant that started the drain; used to scope CancelAllForOrg
+	Cluster   string // context the drain runs in
 	StartedAt time.Time
 	Params    map[string]any
 
@@ -119,54 +128,59 @@ func (s *drainSession) finalize() {
 // (concurrent attempts hit Conflict).
 type drainSessionManager struct {
 	mu       sync.Mutex
-	sessions map[string]*drainSession // key = node name
+	sessions map[drainKey]*drainSession
 }
 
 func newDrainSessionManager() *drainSessionManager {
 	return &drainSessionManager{
-		sessions: make(map[string]*drainSession),
+		sessions: make(map[drainKey]*drainSession),
 	}
 }
 
-// Start creates a session for `node`. Returns (session, true) if
-// the caller acquired ownership of a fresh session, or (existing,
-// false) if a session is already active for that node. The drain
-// context is created here; the goroutine that actually runs drain
-// is the caller's responsibility.
-func (m *drainSessionManager) Start(org, node string, params map[string]any) (*drainSession, context.Context, bool) {
+// Start creates a session for `node` in org's `cluster`. Returns
+// (session, true) if the caller acquired ownership of a fresh session,
+// or (existing, false) if a session is already active for that node
+// there. The drain context is created here; the goroutine that
+// actually runs drain is the caller's responsibility.
+func (m *drainSessionManager) Start(org, cluster, node string, params map[string]any) (*drainSession, context.Context, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if existing, ok := m.sessions[node]; ok && !existing.isFinished() {
+	key := drainKey{org: org, cluster: cluster, node: node}
+	if existing, ok := m.sessions[key]; ok && !existing.isFinished() {
 		return existing, nil, false
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &drainSession{
 		Node:      node,
 		OrgID:     org,
+		Cluster:   cluster,
 		StartedAt: time.Now(),
 		Params:    params,
 		cancel:    cancel,
 	}
-	m.sessions[node] = s
+	m.sessions[key] = s
 	return s, ctx, true
 }
 
-// Get returns the session for the node if any. The bool indicates
-// presence; callers should also check session.isFinished() to
-// distinguish "running" from "completed but still in the cache".
-func (m *drainSessionManager) Get(node string) (*drainSession, bool) {
+// Get returns org's session for the node in cluster, if any. The bool
+// indicates presence; callers should also check session.isFinished()
+// to distinguish "running" from "completed but still in the cache".
+// Another org's drain of a same-named node is not found.
+func (m *drainSessionManager) Get(org, cluster, node string) (*drainSession, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s, ok := m.sessions[node]
+	s, ok := m.sessions[drainKey{org: org, cluster: cluster, node: node}]
 	return s, ok
 }
 
-// Cancel aborts the drain on `node`. Returns true if a running
-// session existed and was signalled, false otherwise.
-func (m *drainSessionManager) Cancel(node string) bool {
+// Cancel aborts org's drain on `node` in cluster. Returns true if a
+// running session existed and was signalled, false otherwise —
+// including when the only drain of that node name belongs to another
+// org or cluster.
+func (m *drainSessionManager) Cancel(org, cluster, node string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s, ok := m.sessions[node]
+	s, ok := m.sessions[drainKey{org: org, cluster: cluster, node: node}]
 	if !ok || s.isFinished() {
 		return false
 	}
@@ -186,7 +200,7 @@ func (m *drainSessionManager) CancelAll() {
 			s.cancel()
 		}
 	}
-	m.sessions = make(map[string]*drainSession)
+	m.sessions = make(map[drainKey]*drainSession)
 }
 
 // CancelAllForOrg aborts only the in-flight drains started by org (called on
@@ -197,14 +211,14 @@ func (m *drainSessionManager) CancelAll() {
 func (m *drainSessionManager) CancelAllForOrg(org string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for node, s := range m.sessions {
-		if s.OrgID != org {
+	for key, s := range m.sessions {
+		if key.org != org {
 			continue
 		}
 		if !s.isFinished() {
 			s.cancel()
 		}
-		delete(m.sessions, node)
+		delete(m.sessions, key)
 	}
 }
 
@@ -216,9 +230,9 @@ func (m *drainSessionManager) Cleanup(keepFor time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cutoff := time.Now().Add(-keepFor)
-	for node, s := range m.sessions {
+	for key, s := range m.sessions {
 		if s.isFinished() && s.StartedAt.Before(cutoff) {
-			delete(m.sessions, node)
+			delete(m.sessions, key)
 		}
 	}
 }

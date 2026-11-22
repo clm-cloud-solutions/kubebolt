@@ -278,12 +278,13 @@ func (m *PortForwardManager) ListForOrg(org string) []*PortForward {
 	return result
 }
 
-// Stop stops a port-forward by ID.
-func (m *PortForwardManager) Stop(id string) bool {
+// Stop stops org's port-forward by ID. A forward another org owns is not
+// found: the DELETE takes the id alone.
+func (m *PortForwardManager) Stop(org, id string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	pf, ok := m.forwards[id]
-	if !ok {
+	if !ok || pf.OrgID != org {
 		return false
 	}
 	close(pf.stopCh)
@@ -383,11 +384,13 @@ func (h *handlers) handleCreatePortForward(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Bind this forward to the caller's org and hand the browser a scoped cookie
-	// so the public /pf/{id}/ proxy can authenticate the (header-less) navigation
-	// and enforce tenant isolation. No-op when auth is disabled.
+	// Bind this forward to the caller's org — the same identity the list, the
+	// stop and a cluster switch read (auth.ContextTenantID) — and hand the
+	// browser a scoped cookie so the public /pf/{id}/ proxy can authenticate the
+	// (header-less) navigation and enforce tenant isolation. The cookie is
+	// skipped when auth is disabled.
+	pf.OrgID = auth.ContextTenantID(r)
 	if h.authHandlers != nil && h.authHandlers.IsEnabled() {
-		pf.OrgID = auth.TenantIDFromContext(r.Context())
 		if tok := h.authHandlers.IssuePortForwardToken(pf.OrgID); tok != "" {
 			http.SetCookie(w, &http.Cookie{
 				Name:     pfCookieName,
@@ -410,7 +413,7 @@ func (h *handlers) handleListPortForwards(w http.ResponseWriter, r *http.Request
 
 func (h *handlers) handleDeletePortForward(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if !h.pfManager.Stop(id) {
+	if !h.pfManager.Stop(auth.ContextTenantID(r), id) {
 		respondError(w, http.StatusNotFound, "port-forward not found")
 		return
 	}
