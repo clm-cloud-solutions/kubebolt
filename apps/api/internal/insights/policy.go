@@ -195,6 +195,11 @@ func ValidatePolicyChange(ruleID string, threshold *float64, severity *string) e
 type PolicySnapshot struct {
 	Thresholds map[string]float64
 	Severities map[string]string
+	// Unavailable says the org's policies could not be read. The engine then
+	// skips the pass rather than evaluate with factory defaults: a default
+	// brings back every rule the org turned off, and each of those would open
+	// an episode and notify.
+	Unavailable bool
 }
 
 // ThresholdFor returns the effective numeric bar for a rule.
