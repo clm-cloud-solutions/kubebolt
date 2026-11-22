@@ -66,7 +66,10 @@ func TestMapAuthError(t *testing.T) {
 		{auth.ErrTokenExpired, codes.Unauthenticated},
 		{auth.ErrTokenNotFound, codes.Unauthenticated},
 		{auth.ErrTLSRequired, codes.Unauthenticated},
-		{errors.New("totally unmapped"), codes.Unauthenticated}, // never leak as Internal
+		{auth.ErrTenantNotFound, codes.Unauthenticated},
+		// Not a verdict on the credential — the token store did not answer:
+		// Unavailable, not "invalid credentials", and never Internal.
+		{errors.New("dial tcp 10.0.0.5:5432: connect: connection refused"), codes.Unavailable},
 	}
 	for _, c := range cases {
 		st, ok := status.FromError(mapAuthError(c.in))
@@ -76,6 +79,9 @@ func TestMapAuthError(t *testing.T) {
 		}
 		if st.Code() != c.code {
 			t.Errorf("%v: code = %s, want %s", c.in, st.Code(), c.code)
+		}
+		if strings.Contains(st.Message(), "10.0.0.5") {
+			t.Errorf("%v: the status leaks the error text: %q", c.in, st.Message())
 		}
 	}
 }
@@ -542,7 +548,7 @@ func TestResolveAgentID(t *testing.T) {
 			t.Errorf("cluster = %s, want local", cluster)
 		}
 		// Stable 16-hex derive from ("", "local", node, role) — NOT a fresh UUID
-		// per connect, which leaked a permanent "connected" ghost record on every
+		// per connect, which leaked a permanent "connected" ghost row on every
 		// reconnect when auth is disabled.
 		want := auth.DeriveAgentID("", "local", "node-a", "metrics")
 		if id != want {
