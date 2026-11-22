@@ -145,8 +145,10 @@ func authenticateMD(ctx context.Context, cfg AuthConfig) (*auth.AgentIdentity, e
 }
 
 // mapAuthError converts the auth package's sentinel errors into gRPC
-// status codes. Unmapped errors collapse to Unauthenticated — never
-// Internal — to avoid leaking implementation details to the agent.
+// status codes. An error that is not a verdict on the credential — the token
+// store did not answer — is Unavailable: the credential may be fine, and an
+// agent (and its operator, reading its log) must not be told it was rejected.
+// Neither code carries the error's text.
 func mapAuthError(err error) error {
 	switch {
 	case errors.Is(err, auth.ErrUnknownMode):
@@ -161,8 +163,10 @@ func mapAuthError(err error) error {
 		errors.Is(err, auth.ErrTokenNotFound),
 		errors.Is(err, auth.ErrTLSRequired):
 		return status.Error(codes.Unauthenticated, "agent auth: invalid credentials")
-	default:
+	case auth.IsCredentialRejection(err):
 		return status.Error(codes.Unauthenticated, "agent auth: invalid credentials")
+	default:
+		return status.Error(codes.Unavailable, "agent auth: credential check unavailable, retry")
 	}
 }
 
@@ -224,4 +228,3 @@ func LogStartupMode(cfg AuthConfig) {
 		)
 	}
 }
-

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -157,19 +158,25 @@ func (c *PolicyCache) SnapshotFor(tenant, cluster string) PolicySnapshot {
 
 	rows, err := c.store.List(context.Background(), tenant)
 	snap := PolicySnapshot{Thresholds: map[string]float64{}, Severities: map[string]string{}}
-	if err == nil {
-		// Two passes so ROW ORDER never decides precedence: global first,
-		// then the cluster's category overrides on top, knob by knob.
-		for _, r := range rows {
-			if r.Category == PolicyCategoryGlobal {
-				foldPolicyRow(&snap, r)
-			}
+	if err != nil {
+		// Unreadable is not "no overrides": defaults would bring back every
+		// rule the org turned off. Cache nothing and let the engine skip the
+		// pass; the next evaluation reads again.
+		log.Printf("insights: rule policies of org %s unreadable, evaluation skipped until they are: %v", tenant, err)
+		snap.Unavailable = true
+		return snap
+	}
+	// Two passes so ROW ORDER never decides precedence: global first,
+	// then the cluster's category overrides on top, knob by knob.
+	for _, r := range rows {
+		if r.Category == PolicyCategoryGlobal {
+			foldPolicyRow(&snap, r)
 		}
-		if env != "" {
-			for _, r := range rows {
-				if r.Category == env {
-					foldPolicyRow(&snap, r)
-				}
+	}
+	if env != "" {
+		for _, r := range rows {
+			if r.Category == env {
+				foldPolicyRow(&snap, r)
 			}
 		}
 	}

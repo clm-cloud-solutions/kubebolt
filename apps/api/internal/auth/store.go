@@ -619,6 +619,11 @@ type RefreshTokenStore interface {
 	GetRefreshToken(ctx context.Context, tokenHash string) (*RefreshToken, error)
 	DeleteRefreshToken(ctx context.Context, tokenHash string) error
 	DeleteUserRefreshTokens(ctx context.Context, userID string) error
+	// PruneExpiredRefreshTokens deletes every refresh token that expired
+	// before `before`, across all users, and returns how many. Nothing else
+	// removed them: logout and password changes delete a user's tokens, but a
+	// session that simply lapsed left its row for good, one per sign-in.
+	PruneExpiredRefreshTokens(ctx context.Context, before time.Time) (int, error)
 }
 
 // Compile-time guarantee the Bolt impl satisfies the seam.
@@ -667,6 +672,33 @@ func (s *Store) DeleteRefreshToken(_ context.Context, tokenHash string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(refreshTokenBucket).Delete([]byte(tokenHash))
 	})
+}
+
+// PruneExpiredRefreshTokens deletes the refresh tokens that expired before
+// `before`. A record that does not decode is left alone.
+func (s *Store) PruneExpiredRefreshTokens(_ context.Context, before time.Time) (int, error) {
+	removed := 0
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(refreshTokenBucket)
+		var expired [][]byte
+		if err := bucket.ForEach(func(k, v []byte) error {
+			var rt RefreshToken
+			if err := json.Unmarshal(v, &rt); err == nil && rt.ExpiresAt.Before(before) {
+				expired = append(expired, append([]byte(nil), k...))
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, k := range expired {
+			if err := bucket.Delete(k); err != nil {
+				return err
+			}
+		}
+		removed = len(expired)
+		return nil
+	})
+	return removed, err
 }
 
 // DeleteUserRefreshTokens removes all refresh tokens for a user.

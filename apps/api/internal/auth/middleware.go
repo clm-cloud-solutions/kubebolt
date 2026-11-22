@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -31,6 +32,13 @@ func (h *Handlers) RequireAuth(next http.Handler) http.Handler {
 		if IsAPIToken(tokenStr) {
 			claims, principal, err := h.validateAPIToken(r, tokenStr)
 			if err != nil {
+				if !IsCredentialRejection(err) {
+					// The token store did not answer: the key may be fine.
+					slog.Warn("api token check failed: token store unavailable", slog.String("error", err.Error()))
+					w.Header().Set("Retry-After", "5")
+					http.Error(w, `{"error":"authentication temporarily unavailable"}`, http.StatusServiceUnavailable)
+					return
+				}
 				http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)
 				return
 			}
