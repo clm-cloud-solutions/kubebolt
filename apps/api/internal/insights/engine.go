@@ -252,6 +252,13 @@ func (e *Engine) Evaluate(state *ClusterState) {
 	// produced resolves through the normal reconcile below — a rule turned
 	// off clears its actives instead of freezing them.
 	snap := snapshotFor(e.tenantID, e.clusterID)
+	if snap.Unavailable {
+		// The org's policies could not be read (its store is unreachable).
+		// Evaluating with defaults would revive the rules it turned off, and
+		// nothing this pass opened or resolved could be recorded anyway: keep
+		// the last evaluation and try again on the next tick.
+		return
+	}
 	state.Policies = &snap
 
 	var produced []models.Insight
@@ -375,7 +382,12 @@ func (e *Engine) Evaluate(state *ClusterState) {
 		} else {
 			// New to this engine instance — consult the store to preserve
 			// FirstSeen and open/reopen an occurrence (restart survival).
-			newIns, freshEpisode := e.admitNew(ins, now)
+			newIns, freshEpisode, ok := e.admitNew(ins, now)
+			if !ok {
+				// The store could not say whether this identity is new;
+				// admit it on a later pass rather than guess.
+				continue
+			}
 			e.insights = append(e.insights, newIns)
 			e.broadcast(websocket.InsightNew, newIns)
 			// Only fire the notification hook for a GENUINELY new episode
@@ -402,7 +414,13 @@ func (e *Engine) Evaluate(state *ClusterState) {
 // reopen-after-resolve) vs a continuation of an episode that was already
 // active in the store (a restart). Callers use the bool to decide whether
 // to fire notification hooks — continuations must NOT re-notify.
-func (e *Engine) admitNew(ins models.Insight, now time.Time) (models.Insight, bool) {
+//
+// ok is false when the store could not be read. A failed read used to count
+// as a brand-new identity: every insight already active opened a second
+// episode, reset its FirstSeen and notified again, which a Postgres restart
+// or switchover was enough to trigger. Now nothing is admitted, written or
+// notified for that insight; the next pass asks again.
+func (e *Engine) admitNew(ins models.Insight, now time.Time) (models.Insight, bool, bool) {
 	occID := uuid.New().String()
 	ins.LastSeen = now
 	ins.Resolved = false
@@ -413,12 +431,16 @@ func (e *Engine) admitNew(ins models.Insight, now time.Time) (models.Insight, bo
 		// (pre-Sprint-0 behavior; restart-dedup needs the store).
 		ins.FirstSeen = now
 		ins.ID = occID
-		return ins, true
+		return ins, true, true
 	}
 
 	freshEpisode := true
 	rec, found, err := e.store.Get(e.tenantID, e.clusterID, ins.Fingerprint)
-	if err != nil || !found || rec == nil {
+	if err != nil {
+		log.Printf("insights: read %s failed, admission deferred: %v", ins.Fingerprint, err)
+		return ins, false, false
+	}
+	if !found || rec == nil {
 		// Brand-new identity.
 		rec = &InsightRecord{
 			Fingerprint: ins.Fingerprint,
@@ -488,7 +510,7 @@ func (e *Engine) admitNew(ins models.Insight, now time.Time) (models.Insight, bo
 	if err := e.store.Upsert(rec); err != nil {
 		log.Printf("insights: persist new %s failed: %v", ins.Fingerprint, err)
 	}
-	return ins, freshEpisode
+	return ins, freshEpisode, true
 }
 
 // stampRecordContent copies the evaluation's CURRENT content onto the record.
@@ -513,7 +535,14 @@ func (e *Engine) persistActive(ins *models.Insight, now time.Time) {
 		return
 	}
 	rec, found, err := e.store.Get(e.tenantID, e.clusterID, ins.Fingerprint)
-	if err != nil || !found || rec == nil {
+	if err != nil {
+		// Unreadable is not missing. Rebuilding here and writing the rebuild
+		// once the store answered again replaced the record's occurrence
+		// history with a single occurrence. Skip; the next pass refreshes it.
+		log.Printf("insights: read %s failed, refresh skipped: %v", ins.Fingerprint, err)
+		return
+	}
+	if !found || rec == nil {
 		// Defensive rebuild — the record should already exist.
 		rec = &InsightRecord{
 			Fingerprint: ins.Fingerprint,
