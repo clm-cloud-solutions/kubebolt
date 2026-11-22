@@ -173,6 +173,8 @@ func NewRouter(
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
+	// The database as an external monitor sees it (health_db.go). Not a probe.
+	r.Get("/health/db", handleHealthDB)
 
 	// Prometheus scrape endpoint (Phase 3 Day 5), text exposition, no auth —
 	// for a self-hosted install that scrapes the API with its own Prometheus.
