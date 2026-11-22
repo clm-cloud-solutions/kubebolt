@@ -260,7 +260,9 @@ const components: Components = {
 
   // Tables — proper rendering with borders
   table: ({ children }) => (
-    <div className="my-2 overflow-x-auto rounded-lg border border-kobi-border">
+    // Solid: Kobi's answer has no card, and the panel's dot grid must not
+    // show through a table.
+    <div className="my-2 overflow-x-auto rounded-lg border border-kobi-border bg-kobi-card">
       {/* min-w-full, not w-full: w-full PINNED the table to the panel width, so
           it could never overflow and the wrapper's overflow-x-auto never had
           anything to scroll — the columns just squeezed instead, down to one

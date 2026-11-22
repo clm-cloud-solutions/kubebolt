@@ -7,6 +7,7 @@ import {
   guideLabel,
   investigationRuns,
   liveInvestigation,
+  liveSteps,
   turnEndings,
 } from './investigationRun'
 import type { CopilotMessage } from '@/services/copilot/types'
@@ -184,5 +185,32 @@ describe('guideLabel', () => {
   it('names the skill, or the Azure command group listed', () => {
     expect(guideLabel(call('g', 'load_skill', { name: 'aws-investigation' }))).toBe('aws-investigation')
     expect(guideLabel(call('g', 'mcp__azure__monitor', { learn: true }))).toBe('Azure monitor commands')
+  })
+})
+
+// The question in flight folds under «Working · N steps» (Cloudflare's chat):
+// each round that called tools and the turns with their results, never a
+// proposal's turn nor the answer being written.
+describe('liveSteps', () => {
+  it('folds every round and its results, and says the latest round', () => {
+    const proposal = JSON.stringify({ kind: 'action_proposal' })
+    const messages = [
+      msg({ id: 'old', role: 'user', content: 'earlier question' }),
+      msg({ id: 'q', role: 'user', content: 'why is checkout failing?' }),
+      msg({ id: 'r1', role: 'assistant', content: 'Checking the pods.', toolCalls: [call('c1', 'get_workload_pods'), call('c2', 'get_events')] }),
+      msg({ id: 't1', role: 'user', toolResults: [res('c1', 'ok'), res('c2', 'ok')] }),
+      msg({ id: 'r2', role: 'assistant', content: 'Reading the logs.', toolCalls: [call('c3', 'get_pod_logs'), call('p1', 'propose_restart_workload')] }),
+      msg({ id: 'tp', role: 'user', toolResults: [{ toolCallId: 'p1', content: proposal }] }),
+      msg({ id: 'ans', role: 'assistant', content: 'It runs out of memory.' }),
+    ]
+    const live = liveSteps(messages)
+    expect(live?.stepIds).toEqual(['r1', 't1', 'r2'])
+    expect(live?.steps).toBe(3)
+    expect(live?.phrase).toBe('Reading the logs.')
+  })
+
+  it('is nothing before the first call', () => {
+    expect(liveSteps([msg({ role: 'user', content: 'hi' }), msg({ role: 'assistant', content: 'Thinking out loud' })])).toBeUndefined()
+    expect(liveSteps([])).toBeUndefined()
   })
 })

@@ -3,10 +3,12 @@ import { useCopilot } from '@/contexts/CopilotContext'
 import { parseActionProposal, type CopilotMessage } from '@/services/copilot/types'
 import type { KobiFaceState } from '@/components/kobi'
 import { toolTitle } from './toolTitles'
+import { useActionActivity, type ActionActivity } from './actionActivity'
 
-// Kobi's live state, for the two places that show it: the floating head and
-// the panel header. Everywhere else the face is still, or Watching (brand
-// guidelines, «Where the face lives in the product»).
+// Kobi's live state, for the two places that show it — the floating head and
+// the panel header — and the chat's live line, which repeats the header's.
+// Everywhere else the face is still, or Watching (brand guidelines, «Where
+// the face lives in the product»).
 
 export interface KobiPresence {
   state: KobiFaceState
@@ -79,16 +81,21 @@ function lastTurnOutOfCredits(messages: CopilotMessage[]): boolean {
   return false
 }
 
-// Precedence: a question waiting for a free slot is not being worked on yet;
-// then investigating (the model is generating or tools are in flight) wins
-// over awaiting, because active work is the more current signal: the
-// operator may have sent a follow-up before deciding on the card.
+// Precedence: an approved action changing the infrastructure comes first
+// (amber means one thing, and it is happening now); a question waiting for a
+// free slot is not being worked on yet; then investigating (the model is
+// generating or tools are in flight) wins over verifying and awaiting,
+// because active work is the more current signal: the operator may have sent
+// a follow-up before deciding on the card, and a stalled rollout's
+// investigation is Kobi reading, not watching the rollout.
 export function kobiPresenceOf(
   messages: CopilotMessage[],
   isLoading: boolean,
   pendingToolCalls: string[],
   waitingForSlot = false,
+  action?: ActionActivity,
 ): KobiPresence {
+  if (action?.state === 'executing') return { state: 'executing', label: PRESENCE_LABEL.executing, detail: action.detail }
   if (isLoading && waitingForSlot) return { state: 'watching', label: WAITING_FOR_SLOT }
   if (isLoading || pendingToolCalls.length > 0) {
     const call = currentCall(messages)
@@ -99,6 +106,7 @@ export function kobiPresenceOf(
       detail: t ? (t.chip ? `${t.title} · ${t.chip}` : t.title) : undefined,
     }
   }
+  if (action?.state === 'verifying') return { state: 'verifying', label: PRESENCE_LABEL.verifying, detail: action.detail }
   if (lastTurnOutOfCredits(messages)) return { state: 'unavailable', label: OUT_OF_CREDITS }
   if (hasPendingProposal(messages)) return { state: 'awaiting', label: PRESENCE_LABEL.awaiting }
   return { state: 'watching', label: PRESENCE_LABEL.watching }
@@ -107,8 +115,9 @@ export function kobiPresenceOf(
 export function useKobiPresence(): KobiPresence {
   const { messages, isLoading, pendingToolCalls, turnWait } = useCopilot()
   const waiting = turnWait != null
+  const action = useActionActivity()
   return useMemo(
-    () => kobiPresenceOf(messages, isLoading, pendingToolCalls, waiting),
-    [messages, isLoading, pendingToolCalls, waiting],
+    () => kobiPresenceOf(messages, isLoading, pendingToolCalls, waiting, action),
+    [messages, isLoading, pendingToolCalls, waiting, action],
   )
 }

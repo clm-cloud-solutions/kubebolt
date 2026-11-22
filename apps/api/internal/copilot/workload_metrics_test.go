@@ -240,12 +240,12 @@ func TestPromBuilder_RequestsLimits(t *testing.T) {
 		clusterUID: "uid-abc",
 	}
 	gotReq := b.buildRequestsLimits("cpu", "requests")
-	wantReq := `sum(kube_pod_container_resource_requests{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",resource="cpu"})`
+	wantReq := `sum(max by (namespace, pod, container) (kube_pod_container_resource_requests{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",resource="cpu"}))`
 	if gotReq != wantReq {
 		t.Errorf("requests PromQL mismatch:\n  want: %s\n  got:  %s", wantReq, gotReq)
 	}
 	gotLim := b.buildRequestsLimits("memory", "limits")
-	wantLim := `sum(kube_pod_container_resource_limits{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",resource="memory"})`
+	wantLim := `sum(max by (namespace, pod, container) (kube_pod_container_resource_limits{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",resource="memory"}))`
 	if gotLim != wantLim {
 		t.Errorf("limits PromQL mismatch:\n  want: %s\n  got:  %s", wantLim, gotLim)
 	}
@@ -260,7 +260,7 @@ func TestPromBuilder_RequestsLimits_Pod(t *testing.T) {
 		clusterUID: "uid-abc",
 	}
 	got := b.buildRequestsLimits("cpu", "requests")
-	want := `sum(kube_pod_container_resource_requests{cluster_id="uid-abc",namespace="default",pod="single-pod",resource="cpu"})`
+	want := `sum(max by (namespace, pod, container) (kube_pod_container_resource_requests{cluster_id="uid-abc",namespace="default",pod="single-pod",resource="cpu"}))`
 	if got != want {
 		t.Errorf("pod requests PromQL mismatch:\n  want: %s\n  got:  %s", want, got)
 	}
@@ -415,12 +415,12 @@ func TestPromBuilder_RequestsLimits_Node(t *testing.T) {
 		clusterUID: "uid-abc",
 	}
 	gotReq := b.buildRequestsLimits("cpu", "requests")
-	wantReq := `sum(kube_node_status_allocatable{cluster_id="uid-abc",node="kubebolt-dev-worker",resource="cpu"})`
+	wantReq := `sum(max by (node) (kube_node_status_allocatable{cluster_id="uid-abc",node="kubebolt-dev-worker",resource="cpu"}))`
 	if gotReq != wantReq {
 		t.Errorf("node allocatable PromQL mismatch:\n  want: %s\n  got:  %s", wantReq, gotReq)
 	}
 	gotLim := b.buildRequestsLimits("memory", "limits")
-	wantLim := `sum(kube_node_status_capacity{cluster_id="uid-abc",node="kubebolt-dev-worker",resource="memory"})`
+	wantLim := `sum(max by (node) (kube_node_status_capacity{cluster_id="uid-abc",node="kubebolt-dev-worker",resource="memory"}))`
 	if gotLim != wantLim {
 		t.Errorf("node capacity PromQL mismatch:\n  want: %s\n  got:  %s", wantLim, gotLim)
 	}

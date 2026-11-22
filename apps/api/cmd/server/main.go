@@ -1614,6 +1614,22 @@ func main() {
 
 	slog.Info("shutting down")
 
+	// The order matters. HTTP drains first: in-flight requests may still need
+	// an agent's channel to reach their cluster, and a Kobi turn records its
+	// usage when it ends. Then the access sessions server.Shutdown does not
+	// wait for get their close recorded, the agents go, and only then is the
+	// usage store's last batch flushed, with everything the requests and the
+	// ingest recorded in it. It used to close the usage store first, so what the
+	// requests still in flight recorded was dropped.
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout())
+	defer shutdownCancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		slog.Error("HTTP server shutdown error", slog.String("error", err.Error()))
+	}
+	if n := api.CloseOpenAccessSessions("server shutdown"); n > 0 {
+		slog.Info("access sessions closed on shutdown", slog.Int("sessions", n))
+	}
+
 	agentCancel()
 
 	// Final drain of any buffered metering (EE Postgres usage store). No-op for
@@ -1622,12 +1638,6 @@ func main() {
 		if err := c.Close(); err != nil {
 			slog.Warn("usage store flush on shutdown failed", slog.String("error", err.Error()))
 		}
-	}
-
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer shutdownCancel()
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		slog.Error("HTTP server shutdown error", slog.String("error", err.Error()))
 	}
 	// After the server has drained, so no in-flight turn loses its binding
 	// mid-call: this closes the provider sessions the gateway holds and waits

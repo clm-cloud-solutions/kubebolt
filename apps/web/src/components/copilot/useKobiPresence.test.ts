@@ -65,4 +65,31 @@ describe('kobiPresenceOf', () => {
     messages[2] = { ...messages[2], toolResults: [{ toolCallId: 'c1', content: decided }] }
     expect(kobiPresenceOf(messages, false, []).state).toBe('watching')
   })
+
+  it('executes while an approved action runs, then verifies while it converges', () => {
+    const proposal = JSON.stringify({ kind: 'action_proposal', action: 'restart_workload' })
+    const messages: CopilotMessage[] = [
+      prompt('restart it'),
+      { id: 'a1', role: 'assistant', content: '', timestamp: at, toolCalls: [{ id: 'c1', name: 'propose_restart_workload', input: {} }] },
+      { id: 't1', role: 'user', content: '', timestamp: at, toolResults: [{ toolCallId: 'c1', content: proposal }] },
+    ]
+    const executing = { state: 'executing' as const, detail: 'catalog-api' }
+    const verifying = { state: 'verifying' as const, detail: 'catalog-api' }
+    // Executing wins over everything, the card still pending its outcome and
+    // a turn in flight included: amber is happening now.
+    expect(kobiPresenceOf(messages, false, [], false, executing)).toEqual({
+      state: 'executing',
+      label: 'Executing',
+      detail: 'catalog-api',
+    })
+    expect(kobiPresenceOf(messages, true, [], false, executing).state).toBe('executing')
+    // Verifying wins over a pending card, not over a turn in flight (a
+    // stalled rollout's investigation is Kobi reading).
+    expect(kobiPresenceOf(messages, false, [], false, verifying)).toEqual({
+      state: 'verifying',
+      label: 'Verifying',
+      detail: 'catalog-api',
+    })
+    expect(kobiPresenceOf(messages, true, [], false, verifying).state).toBe('investigating')
+  })
 })

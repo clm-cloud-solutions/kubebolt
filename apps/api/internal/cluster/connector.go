@@ -4255,7 +4255,12 @@ func resourceTypeToGVR(resourceType string) (schema.GroupVersionResource, bool) 
 		// YAML view + Delete + PatchMetadata + ApplyYAML dispatchers
 		// for the resource type that the list + detail handlers
 		// already surface (via typed listers, separate code path).
-		"endpoints":                        {Group: "discovery.k8s.io", Version: "v1", Resource: "endpointslices"},
+		"endpoints": {Group: "discovery.k8s.io", Version: "v1", Resource: "endpointslices"},
+		// The core/v1 Endpoints a slice mirrors when its Service has no
+		// selector: the one place such a slice can be edited, since the
+		// mirroring controller copies it back over the slice
+		// (endpointslice_managed.go). YAML view and apply only.
+		"coreendpoints":                    {Group: "", Version: "v1", Resource: "endpoints"},
 		"hpas":                             {Group: "autoscaling", Version: "v1", Resource: "horizontalpodautoscalers"},
 		"horizontalpodautoscalers":         {Group: "autoscaling", Version: "v1", Resource: "horizontalpodautoscalers"},
 		"storageclasses":                   {Group: "storage.k8s.io", Version: "v1", Resource: "storageclasses"},
@@ -5179,6 +5184,13 @@ func (c *Connector) ApplyResourceYAML(ctx context.Context, resourceType, namespa
 	live, err := client.Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("reading the current object: %w", err)
+	}
+	// A slice a controller writes would be rewritten within seconds: refuse it
+	// and say where the edit goes (debt-20).
+	if resourceType == "endpoints" {
+		if managed := managedSlice(live.Object); managed != nil {
+			return managed
+		}
 	}
 	// What the person wrote, every problem in one refusal, before the stored
 	// values come back: a stored value may be binary on purpose.

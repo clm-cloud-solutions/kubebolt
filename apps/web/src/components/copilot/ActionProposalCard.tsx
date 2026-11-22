@@ -22,6 +22,7 @@ import { buildTriggerPrompt } from '@/services/copilot/triggers'
 import { handoffOrigin, handoffPrefix } from '@/services/copilot/handoff'
 import { useScope } from '@/utils/scope'
 import type { ClusterInfo } from '@/types/kubernetes'
+import { setActionActivity } from './actionActivity'
 
 type Status = 'pending' | 'executing' | 'success' | 'error' | 'dismissed'
 
@@ -181,6 +182,9 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
   async function execute() {
     setStatus('executing')
     setError(null)
+    // Kobi's face goes to Executing while the request is in flight; a
+    // cluster switch changes nothing in the infrastructure, so it does not.
+    if (proposal.action !== 'switch_cluster') setActionActivity(toolCallId, { state: 'executing', detail: target.name })
     try {
       // switch_cluster is handled here, not in runProposal: it needs hooks
       // (the switch mutation, and the Kobi panel) that a plain function cannot
@@ -289,6 +293,10 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
       setError(msg)
       setStatus('error')
       recordProposalOutcome(toolCallId, 'failed', msg)
+    } finally {
+      // Done changing: the rollout watch (WorkloadProgress) takes over with
+      // Verifying when there is one to watch.
+      setActionActivity(toolCallId, undefined)
     }
   }
 
@@ -1214,6 +1222,16 @@ function WorkloadProgress({
   }, [timedOut, isComplete, done, line, sendMessage, proposal, recordProposalStalled, toolCallId, timeoutMs, missing])
 
   const isStalled = timedOut && !isComplete
+  // Kobi's face says Verifying while the change converges; a completed,
+  // stalled or unmounted watch hands it back.
+  const verifying = !isComplete && !isStalled && !done
+  const targetName = proposal.target.name
+  useEffect(() => {
+    if (!verifying) return
+    setActionActivity(toolCallId, { state: 'verifying', detail: targetName })
+    return () => setActionActivity(toolCallId, undefined)
+  }, [verifying, toolCallId, targetName])
+
   const Icon = isComplete ? CheckCircle2 : isStalled ? AlertTriangle : Loader2
   const colorCls = isComplete
     ? 'text-kobi-st-ok'
