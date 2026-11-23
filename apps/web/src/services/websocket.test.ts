@@ -13,7 +13,10 @@ class FakeSocket {
   closed = false
   sent: string[] = []
 
-  constructor(public url: string) {
+  constructor(
+    public url: string,
+    public protocols?: string[],
+  ) {
     FakeSocket.instances.push(this)
   }
   send(data: string) {
@@ -113,5 +116,27 @@ describe('wsManager.disconnect', () => {
     vi.advanceTimersByTime(30_000)
 
     expect(FakeSocket.instances.length).toBeGreaterThan(1)
+  })
+})
+
+describe('wsManager auth', () => {
+  afterEach(() => {
+    vi.doUnmock('@/services/api')
+  })
+
+  it('lleva el token en el subprotocolo, nunca en la URL', async () => {
+    // En la URL quedaba escrito en el log de acceso del proxy.
+    vi.doMock('@/services/api', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@/services/api')>()),
+      getAccessToken: () => 'eyJhbGciOiJIUzI1NiJ9.eyJ1aWQiOiJ1MSJ9.c2ln',
+    }))
+    const ws = await freshManager()
+    ws.connect()
+
+    const socket = FakeSocket.instances[0]
+    expect(socket.url).not.toContain('token')
+    expect(socket.protocols?.[0]).toBe('kubebolt.v1')
+    expect(socket.protocols?.[1]).toMatch(/^base64url\.bearer\.kubebolt\.io\.[A-Za-z0-9_-]+$/)
+    ws.disconnect()
   })
 })

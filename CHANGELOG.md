@@ -6,6 +6,37 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.7.3] — 2026-11-23
+
+The WebSocket access token leaves the URL, a connected cluster says how long
+it has been connected, and a finished pod is not a warning. Drop-in, no
+migration; the agent stays on 1.4.10.
+Full note: [docs/releases/v2.7.3.md](docs/releases/v2.7.3.md).
+
+### Security
+
+- **The WebSocket access token leaves the URL.** The web sends it as a
+  subprotocol (`base64url.bearer.kubebolt.io.…`, next to `kubebolt.v1`) on
+  `/api/v1/ws` and `/ws/exec`, so a proxy's access log can no longer write it.
+  The server selects `kubebolt.v1` and never echoes the token. `?token=` is
+  still accepted for cached web bundles, with a one-time warning.
+
+### Changed
+
+- **A connected cluster says how long it has been connected.** `GET /clusters`
+  returns `connectedSince` for a connected cluster and `lastSeen` only for one
+  that is not; `lastSeen` used to carry the agent's registration time, so a
+  cluster reporting right now read "live 2d". Fleet reads
+  "live · connected 2d".
+
+### Fixed
+
+- **A finished pod is not a warning.** A pod in phase `Succeeded` (a Job's, or
+  one a node shutdown stopped cleanly and its ReplicaSet left behind) no
+  longer turns a namespace tile amber or red: it is counted apart and drawn
+  neutral. Its READY `0/1` in the pod list is neutral too. A `Failed` pod
+  still counts as not ready.
+
 ## [2.7.2] — 2026-11-22
 
 A store that does not answer is not a bad credential, and insights survive an

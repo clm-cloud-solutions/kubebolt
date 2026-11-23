@@ -287,8 +287,13 @@ function facts(row: FleetRow): string {
     parts.push(money(row.costMonthly) + costDeltaSuffix(row.costDelta))
   }
   parts.push(
+    // «live 2d» puesto con lastSeen leía como «visto hace dos días» en un cluster
+    // que reporta ahora: era la hora del registro del agente. Conectado se dice
+    // con connectedSince; lastSeen es sólo de un cluster que no lo está.
     row.cluster.agentConnected
-      ? `live ${ago(row.cluster.lastSeen)}`
+      ? row.cluster.connectedSince
+        ? `live · connected ${ago(row.cluster.connectedSince)}`
+        : 'live'
       : row.cluster.lastSeen
         ? `seen ${ago(row.cluster.lastSeen)} ago`
         : 'no agent',
@@ -363,4 +368,4 @@ function Row({ row, disabled, onOpen }: { row: FleetRow; disabled: boolean; onOp
   )
 }
 
-export { sortRows }
+export { sortRows, facts }

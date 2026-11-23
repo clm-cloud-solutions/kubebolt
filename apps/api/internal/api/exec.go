@@ -76,7 +76,10 @@ func (w *stderrWriter) Write(p []byte) (int, error) {
 }
 
 var execUpgrader = gorilla.Upgrader{
-	CheckOrigin:     func(r *http.Request) bool { return true },
+	CheckOrigin: func(r *http.Request) bool { return true },
+	// Selected when the browser offers it, so the bearer subprotocol it sends
+	// alongside is never echoed back (auth.WSToken).
+	Subprotocols:    []string{auth.WSProtocol},
 	ReadBufferSize:  4096,
 	WriteBufferSize: 4096,
 }
@@ -172,10 +175,10 @@ func (h *handlers) handleExec(w http.ResponseWriter, r *http.Request) {
 	// WebSocket, so this route authenticates from the query string and the
 	// context carries no claims (see accessActor).
 	actor := actorFromRequest(r)
-	// Validate auth + Editor role for exec (token via query param)
+	// Validate auth + Editor role for exec. The token arrives in
+	// Sec-WebSocket-Protocol (auth.WSToken), or in the deprecated ?token=.
 	if h.authHandlers != nil && h.authHandlers.IsEnabled() {
-		token := r.URL.Query().Get("token")
-		claims := h.authHandlers.ValidateWSToken(token)
+		claims := h.authHandlers.ValidateWSToken(auth.WSToken(r))
 		if claims == nil {
 			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return

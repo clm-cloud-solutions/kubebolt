@@ -326,9 +326,11 @@ export interface ClusterInfo {
   // agent registry; the add-cluster wizard treats an absent value as "just
   // registered ⇒ live".
   agentConnected?: boolean
-  // Most recent agent contact (RFC3339) for an offline agent-proxy cluster, from
-  // the durable agent record — drives the "last seen …" tooltip. Absent when the
-  // cluster is live or has no durable record.
+  // When the current agent registered (RFC3339). Only while agentConnected.
+  connectedSince?: string
+  // Last agent contact (RFC3339) of an agent-proxy cluster that is NOT
+  // connected: when its last agent left, or else its last registration. Absent
+  // while the cluster is live (see connectedSince) or with no durable record.
   lastSeen?: string
   // Dónde corre el cluster y sobre qué. Vienen de la caché de perfiles del
   // backend (cluster/profile.go), no de una conexión: la flota se pinta a

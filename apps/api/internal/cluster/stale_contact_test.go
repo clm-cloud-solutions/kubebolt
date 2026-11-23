@@ -146,3 +146,45 @@ func TestManager_ListClusters_LastSeenIsWhenTheAgentLeft(t *testing.T) {
 		t.Fatalf("lastSeen = %v, want %v (when the agent left)", got.LastSeen, since)
 	}
 }
+
+// A connected cluster says how long it has been connected, not "last seen":
+// the durable record is stamped when its agent registers, so a cluster
+// reporting right now used to read "last seen two days ago". lastSeen is only
+// for a cluster that is not connected.
+func TestManager_ListClusters_ConnectedSinceWhileConnected(t *testing.T) {
+	m := newBareManager()
+	reg := channel.NewAgentRegistry()
+	store := channel.NewMemoryAgentStore()
+	reg.SetStore(store)
+	m.SetAgentRegistry(reg)
+	if _, err := m.AddAgentProxyCluster("c-live", "Live"); err != nil {
+		t.Fatal(err)
+	}
+	a := channel.NewAgent("c-live", "a1", "node-0", nil, []string{"kube-proxy"}, nil)
+	reg.Register(a)
+	recs, _ := store.List()
+	if len(recs) != 1 || recs[0].LastSeen.IsZero() {
+		t.Fatalf("precondition: the registration must leave a durable record, got %+v", recs)
+	}
+	registered := recs[0].LastSeen
+
+	got := m.ListClusters(context.Background())[0]
+	if !got.AgentConnected {
+		t.Fatal("precondition: the agent is connected")
+	}
+	if got.LastSeen != nil {
+		t.Errorf("a connected cluster carries lastSeen %v; it must carry connectedSince instead", got.LastSeen)
+	}
+	if got.ConnectedSince == nil || !got.ConnectedSince.Equal(registered) {
+		t.Errorf("connectedSince = %v, want the registration %v", got.ConnectedSince, registered)
+	}
+
+	reg.Unregister(a)
+	got = m.ListClusters(context.Background())[0]
+	if got.ConnectedSince != nil {
+		t.Errorf("a disconnected cluster carries connectedSince %v", got.ConnectedSince)
+	}
+	if got.LastSeen == nil {
+		t.Error("a disconnected cluster lost its lastSeen")
+	}
+}
