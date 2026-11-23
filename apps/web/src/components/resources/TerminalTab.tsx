@@ -6,6 +6,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import { useDeploymentPods, useStatefulSetPods, useDaemonSetPods, useJobPods } from '@/hooks/useResources'
 import { getAccessToken, wsOrigin } from '@/services/api'
+import { wsProtocols } from '@/services/wsAuth'
 import { useAuth } from '@/contexts/AuthContext'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
@@ -21,9 +22,7 @@ function buildExecUrl(namespace: string, name: string, container: string, shell:
   const params = new URLSearchParams()
   if (container) params.set('container', container)
   if (shell) params.set('shell', shell)
-  // Attach auth token for WebSocket authentication
-  const token = getAccessToken()
-  if (token) params.set('token', token)
+  // No token here: it travels as a subprotocol (wsAuth.ts), never in the URL.
   return `${wsOrigin()}/ws/exec/${namespace}/${name}?${params}`
 }
 
@@ -303,7 +302,7 @@ function TerminalSession({
 
     const connectTimer = setTimeout(() => {
       if (disposed) return
-      ws = new WebSocket(url)
+      ws = new WebSocket(url, wsProtocols(getAccessToken()))
 
       ws.onopen = () => {
         // Send resize before any output arrives so the shell knows the terminal size

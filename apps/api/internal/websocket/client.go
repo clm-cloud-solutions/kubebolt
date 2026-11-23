@@ -7,6 +7,8 @@ import (
 	"time"
 
 	gorilla "github.com/gorilla/websocket"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 )
 
 const (
@@ -19,6 +21,9 @@ const (
 var upgrader = gorilla.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
+	// Selected when the browser offers it, so the bearer subprotocol it sends
+	// alongside is never echoed back (auth.WSToken).
+	Subprotocols: []string{auth.WSProtocol},
 	CheckOrigin: func(r *http.Request) bool {
 		return true // CORS handled at HTTP layer
 	},
