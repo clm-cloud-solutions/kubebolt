@@ -1,6 +1,8 @@
 // A workload asked to run nothing (a Deployment scaled to 0) is neither
-// healthy nor failing: neutral, never the green of "Running".
-const IDLE_STATUSES = ['scaled to 0']
+// healthy nor failing: neutral, never the green of "Running". 'neutral' is the
+// same tone for a value that is expected as it is, such as the READY 0/1 of a
+// pod that finished (Succeeded).
+const IDLE_STATUSES = ['scaled to 0', 'neutral']
 
 export function getStatusColor(status: string): string {
   const s = status.toLowerCase()

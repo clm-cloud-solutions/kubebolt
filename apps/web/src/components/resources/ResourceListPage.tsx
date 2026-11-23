@@ -193,6 +193,9 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
           const val = String(info.getValue() ?? '0/0')
           const [r, t] = val.split('/')
           const ok = r === t && t !== '0'
+          // A pod that finished (Succeeded, «Completed» in kubectl) is at 0/N
+          // by design: neutral, never the amber of a pod that should be ready.
+          if (info.row.original.status === 'Succeeded') return <StatusBadge status="neutral" label={val} />
           return <StatusBadge status={ok ? 'Running' : 'Warning'} label={val} />
         },
       },

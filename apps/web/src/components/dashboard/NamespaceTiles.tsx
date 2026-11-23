@@ -98,14 +98,26 @@ type Health = 'healthy' | 'degraded' | 'critical' | 'empty'
 // tileStats — a namespace's pod tally and health, shared by the tile and the
 // ordering so both read the same rule: all ready → healthy, at least half →
 // degraded, fewer → critical, no pods → empty.
-function tileStats(nsw: NamespaceWorkload) {
+//
+// A pod in phase Succeeded finished its work: it is neither ready nor not
+// ready. A Job's pods end that way, and so does a long-running pod a node
+// shutdown stopped cleanly, which stays listed until something deletes it.
+// Counted as not ready, it painted a healthy namespace amber, or red once it
+// outnumbered the live pods. It is counted apart (completedPods) and drawn
+// neutral. A Failed pod still counts as not ready: that one is worth a look.
+export function tileStats(nsw: NamespaceWorkload) {
   let totalPods = 0
   let readyPods = 0
+  let completedPods = 0
   const kindCounts: Record<string, number> = {}
   const unhealthy: WorkloadSummary[] = []
   for (const w of nsw.workloads ?? []) {
     kindCounts[w.kind] = (kindCounts[w.kind] ?? 0) + 1
     for (const p of w.pods ?? []) {
+      if (p.status === 'Succeeded') {
+        completedPods++
+        continue
+      }
       totalPods++
       if (p.ready) readyPods++
     }
@@ -114,11 +126,11 @@ function tileStats(nsw: NamespaceWorkload) {
     }
   }
   let health: Health
-  if (totalPods === 0) health = 'empty'
+  if (totalPods === 0) health = completedPods > 0 ? 'healthy' : 'empty'
   else if (readyPods === totalPods) health = 'healthy'
   else if (readyPods >= totalPods / 2) health = 'degraded'
   else health = 'critical'
-  return { totalPods, readyPods, kindCounts, unhealthy, health }
+  return { totalPods, readyPods, completedPods, kindCounts, unhealthy, health }
 }
 
 // Namespaces that need someone first — critical, then degraded — and the
@@ -159,9 +171,12 @@ function NamespaceTile({
   quota?: NamespaceQuotaSummary
 }) {
   const workloads = nsw.workloads ?? []
-  const { totalPods, readyPods, kindCounts, unhealthy, health } = tileStats(nsw)
+  const { totalPods, readyPods, completedPods, kindCounts, unhealthy, health } = tileStats(nsw)
 
-  const ratio = totalPods === 0 ? 0 : readyPods / totalPods
+  // The bar splits every pod the namespace lists: ready, not ready, and
+  // finished (neutral). The header counts them all, as the pod list does.
+  const allPods = totalPods + completedPods
+  const share = (n: number) => (allPods === 0 ? 0 : (n / allPods) * 100)
 
   const dotColors = {
     healthy: 'bg-status-ok',
@@ -250,7 +265,8 @@ function NamespaceTile({
                 value={`${kindCounts[k]}`}
               />
             ))}
-          <TooltipRow color={null} label="pods" value={`${readyPods}/${totalPods}`} />
+          {totalPods > 0 && <TooltipRow color={null} label="pods ready" value={`${readyPods}/${totalPods}`} />}
+          {completedPods > 0 && <TooltipRow color={null} label="completed" value={`${completedPods}`} />}
         </div>
       </>
     ) : null
@@ -325,7 +341,7 @@ function NamespaceTile({
         </span>
         <span className="flex items-center gap-2 shrink-0">
           <span className="text-[10px] font-mono text-kb-text-tertiary tabular-nums">
-            {totalPods} {totalPods === 1 ? 'pod' : 'pods'}
+            {allPods} {allPods === 1 ? 'pod' : 'pods'}
           </span>
           <span className="inline-flex items-center gap-0.5">
             {dotPattern.map((state, i) => (
@@ -392,13 +408,16 @@ function NamespaceTile({
           needed. */}
       <div className="mt-2.5 h-[3px] rounded-full bg-kb-elevated overflow-hidden flex">
         {readyPods > 0 && (
-          <div className="h-full bg-status-ok" style={{ width: `${ratio * 100}%` }} />
+          <div className="h-full bg-status-ok" style={{ width: `${share(readyPods)}%` }} />
         )}
         {totalPods - readyPods > 0 && (
           <div
             className={`h-full ${health === 'critical' ? 'bg-status-error' : 'bg-status-warn'}`}
-            style={{ width: `${(1 - ratio) * 100}%` }}
+            style={{ width: `${share(totalPods - readyPods)}%` }}
           />
+        )}
+        {completedPods > 0 && (
+          <div className="h-full bg-kb-text-tertiary" style={{ width: `${share(completedPods)}%` }} />
         )}
       </div>
     </Link>
