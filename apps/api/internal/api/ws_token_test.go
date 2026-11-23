@@ -65,6 +65,15 @@ func TestWebSocket_TokenTravelsInTheSubprotocol(t *testing.T) {
 		t.Fatalf("the deprecated URL token must keep working for cached web bundles: %v", err)
 	}
 	legacy.Close()
+
+	// The terminal reads the token the same way. A viewer is refused for its
+	// role (403), which proves the token was read: without it the answer is 401.
+	execSrv := httptest.NewServer(http.HandlerFunc(h.handleExec))
+	t.Cleanup(execSrv.Close)
+	execURL := "ws" + strings.TrimPrefix(execSrv.URL, "http") + "/ws/exec/default/pod-a"
+	if _, resp, _ := d.Dial(execURL, nil); statusOf(resp) != http.StatusForbidden {
+		t.Errorf("exec with the token in the subprotocol: status %d, want 403 (viewer, token read)", statusOf(resp))
+	}
 }
 
 func statusOf(resp *http.Response) int {
