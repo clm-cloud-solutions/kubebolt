@@ -950,9 +950,18 @@ type ClusterInfo struct {
 	// visibly distinct from a live one. Always false for non-agent-proxy contexts.
 	AgentConnected bool `json:"agentConnected"`
 
-	// LastSeen is the most recent agent contact for an agent-proxy cluster (from
-	// the durable agent record). Lets the UI show "last seen …" on an offline
-	// cluster. Nil when unknown (non-agent-proxy, or no durable record).
+	// ConnectedSince is when the agent-proxy cluster's current agent registered.
+	// Set only while AgentConnected.
+	ConnectedSince *time.Time `json:"connectedSince,omitempty"`
+
+	// LastSeen is the last agent contact of an agent-proxy cluster that is NOT
+	// connected: the moment its last agent left, when this process saw it, or
+	// else the last registration (the durable record), which is the earliest the
+	// contact can have ended. Nil while connected (see ConnectedSince), and when
+	// unknown (non-agent-proxy, or no durable record).
+	//
+	// It used to be set while connected too, to the registration time: a cluster
+	// reporting right now read "last seen two days ago".
 	LastSeen *time.Time `json:"lastSeen,omitempty"`
 
 	// Mode distinguishes a metrics-only cluster ("metrics-only" — the agent ships
@@ -1235,7 +1244,7 @@ func (m *Manager) ListClusters(_ context.Context) []ClusterInfo {
 		// Liveness for the UI badge: a live gRPC channel (or, for metrics-only,
 		// fresh VM ingest) means the agent-proxy cluster is reporting right now.
 		agentConnected := false
-		var lastSeen *time.Time
+		var lastSeen, connectedSince *time.Time
 		if source == "agent-proxy" {
 			agentConnected = clusterID != "" && m.agentRegistry != nil && m.agentRegistry.CountByCluster(clusterID) > 0
 			if !agentConnected && metricsOnlyCID != "" {
@@ -1254,6 +1263,11 @@ func (m *Manager) ListClusters(_ context.Context) []ClusterInfo {
 				lsCopy := ls
 				lastSeen = &lsCopy
 			}
+			// Connected: the record's time is when the agent registered, which
+			// says how long it has been connected, not when it was last seen.
+			if agentConnected {
+				connectedSince, lastSeen = lastSeen, nil
+			}
 		}
 		clusters = append(clusters, ClusterInfo{
 			Name:           ctx.Cluster,
@@ -1267,6 +1281,7 @@ func (m *Manager) ListClusters(_ context.Context) []ClusterInfo {
 			ClusterID:      clusterID,
 			AgentConnected: agentConnected,
 			AgentUpdate:    m.agentUpdateOf(clusterID, ctxName, isActive),
+			ConnectedSince: connectedSince,
 			LastSeen:       lastSeen,
 			Mode:           mode,
 
