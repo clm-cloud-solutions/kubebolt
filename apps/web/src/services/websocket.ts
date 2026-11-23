@@ -1,5 +1,6 @@
 import type { WSEvent, WSMessage } from '@/types/kubernetes'
 import { getAccessToken, wsOrigin } from '@/services/api'
+import { wsProtocols } from '@/services/wsAuth'
 
 type MessageHandler = (event: WSEvent) => void
 
@@ -15,12 +16,11 @@ class WebSocketManager {
     if (this.ws?.readyState === WebSocket.OPEN || this.isConnecting) return
     this.isConnecting = true
 
-    const token = getAccessToken()
-    const tokenParam = token ? `?token=${encodeURIComponent(token)}` : ''
-    const url = `${wsOrigin()}/api/v1/ws${tokenParam}`
+    // The token travels as a subprotocol, never in the URL (wsAuth.ts).
+    const url = `${wsOrigin()}/api/v1/ws`
 
     try {
-      this.ws = new WebSocket(url)
+      this.ws = new WebSocket(url, wsProtocols(getAccessToken()))
 
       this.ws.onopen = () => {
         this.isConnecting = false

@@ -861,10 +861,10 @@ func (h *handlers) getMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handlers) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	// Validate auth for WebSocket connections (token via query param)
+	// Validate auth for WebSocket connections: the token arrives in
+	// Sec-WebSocket-Protocol (auth.WSToken), or in the deprecated ?token=.
 	if h.authHandlers != nil && h.authHandlers.IsEnabled() {
-		token := r.URL.Query().Get("token")
-		if h.authHandlers.ValidateWSToken(token) == nil {
+		if h.authHandlers.ValidateWSToken(auth.WSToken(r)) == nil {
 			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return
 		}
