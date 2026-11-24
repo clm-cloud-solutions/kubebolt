@@ -74,11 +74,12 @@
 # subscription and a service group is refused (azurePinned).
 
 # 2026-11-19: victoria-metrics and vmagent v1.156.0-scratch (built on Go 1.27.3)
-# carry CVE-2026-97054 (net/http: an HTTP/1 server reads past MaxBytesReader's
-# limit), HIGH, fixed in Go 1.26.11 / 1.27.4. v1.156.0 (2026-11-09) is the latest
-# VictoriaMetrics release; none is built on a fixed Go yet. Our own binaries move
-# to Go 1.26.11 in the same change, so `.trivyignore` stays empty. VictoriaMetrics
-# runs as a ClusterIP Service that only the API calls, and vmagent pushes to it
-# from the cluster: neither is reachable from outside. Move both pins to the
-# first VictoriaMetrics release on Go >= 1.27.4 and delete this entry.
-CVE-2026-97054  # 2026-11-19 lmaina — Go stdlib (net/http) in victoria-metrics/vmagent v1.156.0-scratch; no fixed vendor release yet. Remove-by 2026-12-03
+# carried CVE-2026-97054 (net/http: an HTTP/1 server reads past MaxBytesReader's
+# limit), HIGH, fixed in Go 1.26.11 / 1.27.4, and no VictoriaMetrics release was
+# built on a fixed Go yet: waived, remove-by 2026-12-03.
+#
+# 2026-11-24: the three pins move to the v1.157.0-scratch final (released
+# 2026-11-23), whose stdlib is go1.27.4 on both images (v1.156.0's is go1.27.3).
+# Trivy reports 0 CRITICAL/HIGH on both. The Trivy DB of 2026-11-24 no longer
+# flags CVE-2026-97054 on v1.156.0 either, so the evidence is the Go version.
+# The CVE-2026-97054 waiver is removed.
