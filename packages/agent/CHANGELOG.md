@@ -9,6 +9,18 @@ each tag.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.11] — 2026-11-25
+
+The scrape sidecar moves to vmagent v1.157.0. The agent itself is unchanged
+from 1.4.10: same code, same v1.0 metric/label schema, drop-in within 1.x.
+
+### Security
+
+- **vmagent v1.157.0-scratch** (`scrape.image.tag`), built on Go 1.27.4, which
+  fixes CVE-2026-97054 (`net/http`, HIGH) that v1.156.0 carried. vmagent runs
+  only with `scrape.enabled=true`; an install without the scrape sidecar gets
+  nothing new from this release.
+
 ## [1.4.10] — 2026-11-21
 
 OpenCost's cost reaches KubeBolt whole and alone, the agent is sized for the

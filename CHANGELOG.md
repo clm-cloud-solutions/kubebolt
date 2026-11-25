@@ -6,6 +6,26 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.7.4] — 2026-11-25
+
+VictoriaMetrics and vmagent move to v1.157.0, built on a Go that fixes
+CVE-2026-97054. Drop-in, no migration; agent 1.4.11 only moves its vmagent.
+Full note: [docs/releases/v2.7.4.md](docs/releases/v2.7.4.md).
+
+### Security
+
+- **VictoriaMetrics and vmagent v1.157.0-scratch** (the chart, the compose
+  file and the agent chart). v1.157.0 is built on Go 1.27.4, which fixes
+  CVE-2026-97054 (net/http, an HTTP/1 server could read past
+  `MaxBytesReader`'s limit; HIGH); v1.156.0 was built on 1.27.3. The waiver in
+  `.trivyignore-thirdparty` is removed, and the file has no entries.
+
+### Changed
+
+- **Agent 1.4.11** is the same agent with the new vmagent pin; vmagent runs
+  only with `scrape.enabled=true`. KubeBolt lists 1.4.11 as the latest agent:
+  clusters on 1.4.10 read *update available*, with no reason to upgrade now.
+
 ## [2.7.3] — 2026-11-23
 
 The WebSocket access token leaves the URL, a connected cluster says how long
