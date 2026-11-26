@@ -709,7 +709,7 @@ function HeartbeatList({ agents }: { agents: AdminAgentEntry[] }) {
           </thead>
           <tbody className="divide-y divide-kb-border">
             {sorted.map((a) => (
-              <tr key={`${a.clusterId}/${a.agentId}`} className="hover:bg-kb-card-hover">
+              <tr key={`${a.clusterId}/${a.agentId}`} className="kb-row">
                 <td className="px-3 py-1.5 font-mono text-kb-text-primary truncate max-w-[160px]" title={a.nodeName}>
                   {a.nodeName || '—'}
                 </td>

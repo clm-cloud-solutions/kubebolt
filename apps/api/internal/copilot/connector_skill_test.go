@@ -2,6 +2,7 @@ package copilot
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -98,5 +99,61 @@ func TestCallStatus_ReadsTheAnswerNotTheAttachedProcedure(t *testing.T) {
 		if status != c.wantStatus || reason != c.wantReason {
 			t.Errorf("%s: CallStatus = (%q, %q), want (%q, %q)", c.name, status, reason, c.wantStatus, c.wantReason)
 		}
+	}
+}
+
+// create_plan's procedure (kobi-plans) travels with the conversation's first
+// plan, once, and never with an error: nothing was made to present.
+func TestWithConnectorSkill_TheFirstPlanCarriesItsProcedure(t *testing.T) {
+	call := ToolCall{ID: "p1", Name: "create_plan", Input: json.RawMessage(`{"kind":"rightsizing"}`)}
+	answer := `{"outcome":"created","planId":"pln_1"}`
+	first := WithConnectorSkill(nil, nil, call, ToolResult{ToolCallID: "p1", Content: answer})
+	if !strings.HasPrefix(first.Content, "[KubeBolt] kobi-plans,") || !strings.HasSuffix(first.Content, answer) {
+		t.Fatalf("first plan: %.120s", first.Content)
+	}
+	if got := WithoutConnectorSkill(first.Content); got != answer {
+		t.Errorf("stripped = %q, want the tool's own answer", got)
+	}
+
+	history := []Message{{Role: "user", ToolResults: []ToolResult{first}}}
+	again := WithConnectorSkill(history, nil, ToolCall{ID: "p2", Name: "create_plan"}, ToolResult{ToolCallID: "p2", Content: answer})
+	if again.Content != answer {
+		t.Errorf("a second plan carried the procedure again")
+	}
+	sameRound := WithConnectorSkill(nil, []ToolResult{first}, ToolCall{ID: "p3", Name: "create_plan"}, ToolResult{ToolCallID: "p3", Content: answer})
+	if sameRound.Content != answer {
+		t.Errorf("a parallel plan in the same round carried the procedure again")
+	}
+
+	failed := WithConnectorSkill(nil, nil, call, ToolResult{ToolCallID: "p1", Content: `{"error":"x"}`, IsError: true})
+	if failed.Content != `{"error":"x"}` {
+		t.Errorf("an error carried the procedure")
+	}
+	other := WithConnectorSkill(nil, nil, ToolCall{ID: "r", Name: "get_right_sizing"}, ToolResult{Content: "{}"})
+	if other.Content != "{}" {
+		t.Errorf("a tool without a procedure carried one")
+	}
+}
+
+// A consolidation plan carries kobi-plans and its own procedure, each once:
+// after a right-sizing plan, only its own.
+func TestWithConnectorSkill_AConsolidationPlanCarriesBothProcedures(t *testing.T) {
+	answer := `{"outcome":"created"}`
+	call := ToolCall{ID: "c1", Name: "create_plan", Input: json.RawMessage(`{"kind":"consolidation"}`)}
+	first := WithConnectorSkill(nil, nil, call, ToolResult{ToolCallID: "c1", Content: answer})
+	names, rest := attachedTo(first.Content)
+	if !slices.Equal(names, []string{"kobi-plans", "kobi-plans-consolidation"}) || rest != answer || WithoutConnectorSkill(first.Content) != answer {
+		t.Fatalf("attached %v, rest %.80q", names, rest)
+	}
+
+	rs := WithConnectorSkill(nil, nil, ToolCall{ID: "r1", Name: "create_plan", Input: json.RawMessage(`{"kind":"rightsizing"}`)}, ToolResult{ToolCallID: "r1", Content: answer})
+	history := []Message{{Role: "user", ToolResults: []ToolResult{rs}}}
+	after := WithConnectorSkill(history, nil, call, ToolResult{ToolCallID: "c1", Content: answer})
+	if names, _ := attachedTo(after.Content); !slices.Equal(names, []string{"kobi-plans-consolidation"}) {
+		t.Fatalf("after a right-sizing plan: %v", names)
+	}
+	history = append(history, Message{Role: "user", ToolResults: []ToolResult{after}})
+	if again := WithConnectorSkill(history, nil, call, ToolResult{ToolCallID: "c2", Content: answer}); again.Content != answer {
+		t.Fatalf("a second consolidation plan carried a procedure again: %.80q", again.Content)
 	}
 }

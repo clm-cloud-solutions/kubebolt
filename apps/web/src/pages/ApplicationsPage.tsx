@@ -161,7 +161,7 @@ export function ApplicationsPage() {
 
 function ReleaseRow({ release: r }: { release: HelmRelease }) {
   return (
-    <tr className="border-b border-kb-border last:border-0 hover:bg-kb-card-hover transition-colors">
+    <tr className="border-b border-kb-border last:border-0 kb-row">
       <td className="px-3 py-2.5 text-xs">
         <Link
           to={`/applications/${encodeURIComponent(r.namespace)}/${encodeURIComponent(r.name)}`}

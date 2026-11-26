@@ -6,6 +6,12 @@ package copilot
 // at the call; Autopilot's agents read the full text, which has none of that
 // around it. A key here must name a tool in ToolDefinitions (tested).
 var chatDescriptions = map[string]string{
+	// The rules, insufficientHistory and lowConfidence ride in the output, with
+	// what to say about each.
+	"get_right_sizing": "Get right-sizing recommendations, the engine and numbers of the Capacity and Cost " +
+		"screens: near-limit, over-provisioned and no-specs workloads from the 7-day P95 against requests and " +
+		"limits, with suggested values and the reclaimable total. To act on them: create_plan.",
+
 	"get_resource_describe": "Get kubectl describe output: events, conditions, detailed status and related " +
 		"resources, for any workload, networking, config, storage, cluster, RBAC or policy/quota type. Best " +
 		"for scheduling, pending pods, quota, policy denials and conditions.",

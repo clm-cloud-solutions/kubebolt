@@ -746,3 +746,21 @@ func respondJSON(w http.ResponseWriter, status int, data interface{}) {
 func respondError(w http.ResponseWriter, status int, msg string) {
 	respondJSON(w, status, map[string]string{"error": msg})
 }
+
+// UserDisplayName is the name a person chose to be shown by, else their
+// username; empty when the id is unknown or no store is wired. For screens
+// that say who did something (a plan's author): read at display time, so a
+// renamed person shows their name of today.
+func (h *Handlers) UserDisplayName(ctx context.Context, id string) string {
+	if h == nil || h.store == nil || id == "" {
+		return ""
+	}
+	u, err := h.store.GetUser(ctx, id)
+	if err != nil || u == nil {
+		return ""
+	}
+	if n := strings.TrimSpace(u.Name); n != "" {
+		return n
+	}
+	return u.Username
+}

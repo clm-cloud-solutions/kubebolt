@@ -1,4 +1,5 @@
 // Copilot frontend types — mirror the backend `internal/copilot/types.go`.
+import type { PlanRef } from '@/types/kobiPlans'
 
 export type CopilotRole = 'user' | 'assistant' | 'system' | 'tool'
 
@@ -71,6 +72,8 @@ export interface CopilotToolResult {
   /** For a call that did not read: the error's first sentence (never what the
    *  result tells the model to do). */
   reason?: string
+  /** create_plan's plan, for the chat's plan card (the model never sees it). */
+  plan?: PlanRef
 }
 
 // Usage reported by the provider for a single Chat call or an aggregated
@@ -120,6 +123,7 @@ export interface CopilotStreamEvent {
   durationMs?: number
   digest?: string
   reason?: string
+  plan?: PlanRef
   error?: string
   // "error" payload: 'busy' when the question waited in line for a free turn
   // and none freed; the panel says it in blue, as a limit, not a failure.
@@ -240,6 +244,10 @@ export interface ActionProposal {
   rationale: string
   risk: ActionProposalRisk
   reversible: boolean
+  // The plan step this change applies (plans-15), in words: no ids. Running
+  // it marks the step applied; deviates says the values are the person's and
+  // the plan will keep them; belowEngine, a request below the engine's.
+  planStep?: { order: number; plan: string; deviates?: boolean; belowEngine?: boolean }
   // Execution metadata — written by the frontend AFTER the user acts on the
   // card (Execute or Dismiss) so the LLM sees the outcome on the next turn
   // and doesn't re-propose the same action. Absent on freshly-emitted

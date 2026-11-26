@@ -348,8 +348,12 @@ var metricSelectorRE = regexp.MustCompile(`\{([^}]*)\}`)
 // did not — an unscoped `sum(pv_hourly_cost)` would have summed
 // EVERY tenant's volume costs on a shared VM. Exactly the
 // multi-cluster leak the lifecycle demo plan warned about.
+// `kubecost` (26-nov) for the rest of OpenCost's families: the load
+// balancers, the management fee, spot. A Kobi Plan's baseline reads the
+// cluster's bill straight from VictoriaMetrics, with no extra_filters behind
+// it, so `sum(kubecost_load_balancer_cost)` summed every tenant's.
 var bareMetricRE = regexp.MustCompile(
-	`\b(?:node|pod|container|kubebolt|kubelet|kube|hubble|pv)_[a-zA-Z0-9_]+\b`,
+	`\b(?:node|pod|container|kubebolt|kubelet|kube|kubecost|hubble|pv)_[a-zA-Z0-9_]+\b`,
 )
 
 // groupingClauseRE matches the start of a PromQL aggregation grouping

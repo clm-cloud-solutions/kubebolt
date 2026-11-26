@@ -423,7 +423,7 @@ function SessionsTable({
                   <tr
                     key={s.id}
                     onClick={() => onSelect(s)}
-                    className="border-b border-kb-border hover:bg-kb-card-hover cursor-pointer"
+                    className="border-b border-kb-border kb-row cursor-pointer"
                   >
                     <td className="px-4 py-2 text-kb-text-secondary font-mono">
                       {fmtRelative(s.timestamp)}

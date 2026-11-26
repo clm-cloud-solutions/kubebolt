@@ -47,7 +47,8 @@ func ChatToolDefinitions(actionsEnabled, destructiveEnabled bool) []ToolDefiniti
 		}
 		defs[i] = withChatProperties(defs[i])
 	}
-	return defs
+	// The plan tools go last and only here (plans_tool.go).
+	return append(defs, planToolDefinitions()...)
 }
 
 func loadSkillDescription(index string) string {

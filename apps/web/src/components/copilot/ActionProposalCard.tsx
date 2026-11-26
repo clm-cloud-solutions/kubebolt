@@ -214,6 +214,11 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
       queryClient.invalidateQueries({
         queryKey: ['resource-detail', target.type, target.namespace || '_', target.name],
       })
+      // A change that applied a plan step moved the plan (plans-15).
+      if (proposal.planStep) {
+        queryClient.invalidateQueries({ queryKey: ['kobi-plan'] })
+        queryClient.invalidateQueries({ queryKey: ['kobi-plans'] })
+      }
       // Take the user to the place where they can watch the action land.
       // Workload actions go to the "Pods" tab so they see pods cycling;
       // rollbacks go there too (the new=old RS spawns fresh pods); deletes
@@ -397,6 +402,15 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
               </span>
             )}
           </div>
+          {proposal.planStep && (
+            <div className="text-[11px] text-kobi-text-secondary mt-1 leading-4">
+              Step {proposal.planStep.order} of plan «{proposal.planStep.plan}»
+              {proposal.planStep.deviates && ' · with values other than the plan\'s: the plan will keep yours'}
+              {proposal.planStep.belowEngine && (
+                <span className="text-kobi-st-warn"> · a request below what the engine measured as needed</span>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -724,7 +738,8 @@ async function runProposal(p: ActionProposal, conversationId?: string | null): P
         containers as Parameters<typeof api.setResourcesResource>[3],
         SOURCE,
       )
-      return `Resources patched (${r.toResources.length} container${r.toResources.length === 1 ? '' : 's'})`
+      const steps = (r.planSteps ?? []).map((s) => `step ${s.step} of plan «${s.plan}» marked applied${s.asProposed ? '' : ' with these values'}`)
+      return `Resources patched (${r.toResources.length} container${r.toResources.length === 1 ? '' : 's'})${steps.length ? ` · ${steps.join(' · ')}` : ''}`
     }
     case 'set_image': {
       const images = (p.params.images as unknown[]) ?? []

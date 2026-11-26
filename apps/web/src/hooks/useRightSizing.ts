@@ -44,14 +44,27 @@ export interface Recommendation {
   // CPU values are in millicores; memory in bytes.
   cpu: ResourceFinding
   mem: ResourceFinding
+  // The cloud provider that reconciles the workload (aks, eks, gke,
+  // addon-manager): nobody else can resize it, so its saving is not in the
+  // totals (P17, plans-12).
+  managedBy?: string
 }
 
 export interface RightSizingTotals {
   count: number
   // Σ(request − suggested request) across over-provisioned findings —
-  // what the cluster could hand back by applying the recommendations.
+  // what the cluster could hand back by applying the recommendations. The
+  // provider's workloads are left out (providerManaged counts them).
   reclaimCpuMilli: number
   reclaimMemBytes: number
+  providerManaged?: number
+}
+
+const PROVIDER_NAME: Record<string, string> = { aks: 'AKS', eks: 'EKS', gke: 'GKE', 'addon-manager': 'the addon manager' }
+
+// managedByWords: «managed by AKS».
+export function managedByWords(ref: string): string {
+  return `managed by ${PROVIDER_NAME[ref] ?? ref}`
 }
 
 export interface RightSizingResult {

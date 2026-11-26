@@ -177,6 +177,27 @@ describe('ActionProposalCard dispatch — new propose_* arms', () => {
     )
   })
 
+  // plans-15: a change that applies a plan step says which, with the
+  // person's values called out, and the result says the step was recorded.
+  it('set_resources on a plan step names the step and reports it applied', async () => {
+    apiCalls.setResourcesResource.mockResolvedValue({
+      status: 'patched',
+      toResources: [{ container: 'api' }],
+      fromResources: [{ container: 'api' }],
+      resource: null,
+      planSteps: [{ plan: 'Right-sizing kube-system', step: 2, asProposed: false }],
+    })
+    const proposal = {
+      ...baseProposal('set_resources', { containers: [{ container: 'api', requests: { cpu: '30m' } }] }),
+      planStep: { order: 2, plan: 'Right-sizing kube-system', deviates: true },
+    }
+    renderCard(proposal)
+    expect(screen.getByText(/Step 2 of plan «Right-sizing kube-system»/)).toBeTruthy()
+    expect(screen.getByText(/the plan will keep yours/)).toBeTruthy()
+    await userEvent.click(screen.getByRole('button', { name: /Execute/i }))
+    expect(await screen.findByText(/step 2 of plan «Right-sizing kube-system» marked applied with these values/)).toBeTruthy()
+  })
+
   it('set_image calls setImageResource with the requested images', async () => {
     apiCalls.setImageResource.mockResolvedValue({
       status: 'patched',

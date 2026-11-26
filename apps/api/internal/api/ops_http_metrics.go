@@ -75,7 +75,7 @@ func routeGroup(method, pattern string) string {
 		return "actions"
 	case p == "/copilot/chat":
 		return "copilot_chat"
-	case has("/copilot", "/admin/copilot"):
+	case has("/copilot", "/admin/copilot", "/plans"): // Kobi Plans are Kobi's
 		return "copilot"
 	case has("/mcp"):
 		return "mcp"

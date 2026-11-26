@@ -7,7 +7,7 @@ package copilot
 // replaces this file with kubebolt_docs_ee.go.
 //
 // Rule for this file: describe only what the OSS build ships. Surfaces that
-// exist only in KubeBolt Cloud / Enterprise (Autopilot, plans, billing, AI
+// exist only in KubeBolt Cloud / Enterprise (Autopilot, price plans, billing, AI
 // credits, multiple teams/organizations, OAuth sign-up, cluster environment
 // classification) keep a topic here — the model asks for them, and an
 // "Unknown topic" makes it improvise — but the topic says plainly that the
@@ -17,13 +17,13 @@ package copilot
 // (adminItems) and the hub tabs in apps/web/src/pages/admin/*Hub*.tsx.
 // Refreshed 2026-09 for OSS 2.1.
 var kubebolt_docs = map[string]string{
-	"overview": `KubeBolt (open-source edition) is a Kubernetes operations platform — one place to see, understand and operate your clusters — with Kobi, a bring-your-own-key AI copilot. Connect clusters from your kubeconfig, by importing one, or with the KubeBolt agent (Helm). You get dashboards, 24 rule-based insights with episode history, a live Cluster Map, resource views with logs/terminal/files/actions, Security findings from your own scanners, and Kobi, which investigates and proposes fixes you approve. Autopilot, plans, billing, AI credits and multiple teams/orgs are KubeBolt Cloud features (https://kubebolt.io), not part of this edition.`,
+	"overview": `KubeBolt (open-source edition) is a Kubernetes operations platform — one place to see, understand and operate your clusters — with Kobi, a bring-your-own-key AI copilot. Connect clusters from your kubeconfig, by importing one, or with the KubeBolt agent (Helm). You get dashboards, 24 rule-based insights with episode history, a live Cluster Map, resource views with logs/terminal/files/actions, Security findings from your own scanners, and Kobi, which investigates, proposes fixes you approve and drafts right-sizing plans you review and export (Kobi Plans, beta). Autopilot, consolidation plans, price plans and billing, AI credits and multiple teams/orgs are KubeBolt Cloud features (https://kubebolt.io), not part of this edition.`,
 
 	"add-cluster": `Fleet → "Connect cluster" (or Clusters → "Add cluster"; admin only) offers two paths. Import kubeconfig — KubeBolt dials the apiserver directly; best with a ServiceAccount token and an apiserver reachable from the backend. Install agent — a wizard gives the Helm command; the agent dials back over gRPC and the cluster appears when it registers. Contexts in the kubeconfig KubeBolt started with (or the in-cluster ServiceAccount under Helm) show up automatically. Agent tokens: Administration → Agents & Ingest → Agent Tokens.`,
 
 	"agents": `One Helm chart (kubebolt-agent): a DaemonSet ships node/pod metrics (plus Hubble flows where Cilium+Hubble run — off by default, hubble.enabled=true); an optional promread Deployment reads an existing Prometheus instead. rbac.mode: metrics (telemetry only), reader (default; live resource views through the agent tunnel), operator (exec/restart/scale/delete too; enable agent auth — strongly recommended). Administration → Agents & Ingest: Agent Tokens, Activity (who is sending), Integrations, Configuration (channel auth, rate limits, auto-registration, remote_write, tunnel timeouts).`,
 
-	"plans-billing": `Plans, billing, invoices and plan limits are KubeBolt Cloud features (https://kubebolt.io); they are not available in the open-source edition. OSS has no plans, no invoices and no plan caps: the only limits are the ones the operator sets (ingest rate limits and the active-series cap in Administration → Agents & Ingest → Configuration), and Kobi's cost is whatever your own LLM provider bills for your API key.`,
+	"plans-billing": `Price plans, billing, invoices and plan limits are KubeBolt Cloud features (https://kubebolt.io); they are not available in the open-source edition. Kobi Plans, the right-sizing plans Kobi drafts, are a different thing and are in this edition. OSS has no plans, no invoices and no plan caps: the only limits are the ones the operator sets (ingest rate limits and the active-series cap in Administration → Agents & Ingest → Configuration), and Kobi's cost is whatever your own LLM provider bills for your API key.`,
 
 	"credits": `AI credits are a KubeBolt Cloud concept (https://kubebolt.io) and do not exist in the open-source edition. OSS Kobi runs on your own API key (bring your own key): you pay your LLM provider directly and there is no credit pool or monthly ceiling. Administration → AI (Kobi) → Usage shows sessions, token spend and an estimated cost from public model pricing; the session budget and auto-compact settings live in Administration → AI (Kobi) → Configuration.`,
 

@@ -193,3 +193,54 @@ func TestQueryMetrics_CautionsWhenARepublishedFamilyIsReadTwice(t *testing.T) {
 		}
 	}
 }
+
+// A filtered call's reclaimable total is the matched rows', not the
+// cluster's: one namespace's rows next to the whole cluster's 560m read as
+// that namespace's (Kobi Plans live test, 25-nov).
+func TestRightSizing_ReclaimableFollowsTheFilter(t *testing.T) {
+	days := 3.1
+	over := func(ns, name string, request, suggest int64) rightsizing.Recommendation {
+		return rightsizing.Recommendation{Namespace: ns, Kind: "Deployment", Name: name, Severity: rightsizing.Warning,
+			CPU: rightsizing.Finding{Request: request, P95: suggest - 2, State: rightsizing.Over, Suggest: suggest}}
+	}
+	res := rightsizing.Result{
+		Recs:       []rightsizing.Recommendation{over("kyverno", "a", 100, 10), over("kyverno", "b", 100, 30), over("kube-system", "coredns", 200, 60)},
+		Totals:     rightsizing.Totals{Count: 3, ReclaimCPUMilli: 300},
+		WindowDays: &days,
+	}
+	reclaimable := func(namespace string) any {
+		var payload map[string]any
+		b, _ := json.Marshal(summarizeRightSizing(res, namespace, "", defaultRightSizingRows))
+		_ = json.Unmarshal(b, &payload)
+		return payload["reclaimable"].(map[string]any)["cpu"]
+	}
+	if got := reclaimable("kyverno"); got != "160m" {
+		t.Errorf("kyverno reclaimable = %v, want 160m", got)
+	}
+	if got := reclaimable(""); got != "300m" {
+		t.Errorf("cluster reclaimable = %v, want 300m", got)
+	}
+}
+
+// A workload the provider reconciles is named as such and is not reclaimable
+// (P17, plans-12): nobody but the provider can resize it.
+func TestRightSizing_ProviderManagedIsNotReclaimable(t *testing.T) {
+	over := func(ns, name string, request, suggest int64, managedBy string) rightsizing.Recommendation {
+		return rightsizing.Recommendation{Namespace: ns, Kind: "DaemonSet", Name: name, Severity: rightsizing.Warning, ManagedBy: managedBy,
+			CPU: rightsizing.Finding{Request: request, P95: suggest - 2, State: rightsizing.Over, Suggest: suggest}}
+	}
+	res := rightsizing.Result{Recs: []rightsizing.Recommendation{over("kube-system", "azure-cns", 400, 30, "aks"), over("shop", "web", 200, 60, "")}}
+	var payload map[string]any
+	b, _ := json.Marshal(summarizeRightSizing(res, "", "", defaultRightSizingRows))
+	_ = json.Unmarshal(b, &payload)
+	if got := payload["reclaimable"].(map[string]any)["cpu"]; got != "140m" {
+		t.Fatalf("reclaimable = %v, want 140m (azure-cns left out)", got)
+	}
+	if payload["managedByNote"] == nil {
+		t.Fatal("no note says what managedBy means")
+	}
+	rows := payload["recommendations"].([]any)
+	if rows[0].(map[string]any)["managedBy"] != "AKS" || rows[1].(map[string]any)["managedBy"] != nil {
+		t.Fatalf("rows = %v", rows)
+	}
+}

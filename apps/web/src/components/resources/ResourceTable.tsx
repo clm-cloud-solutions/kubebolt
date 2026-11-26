@@ -83,7 +83,7 @@ export function ResourceTable<T>({ data, columns, resourceType }: ResourceTableP
           {table.getRowModel().rows.map((row) => (
             <tr
               key={row.id}
-              className="border-b border-kb-border hover:bg-kb-card-hover transition-colors"
+              className="border-b border-kb-border kb-row"
             >
               {row.getVisibleCells().map((cell) => (
                 <td key={cell.id} className="px-3 py-2.5 text-xs font-mono text-kb-text-primary">

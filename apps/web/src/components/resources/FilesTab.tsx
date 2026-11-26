@@ -185,7 +185,7 @@ export function FilesTab({ namespace, name, item }: { namespace: string; name: s
               {/* Parent directory */}
               {currentPath !== '/' && (
                 <tr
-                  className="border-t border-kb-border hover:bg-kb-card-hover cursor-pointer transition-colors"
+                  className="border-t border-kb-border kb-row cursor-pointer"
                   onClick={() => navigateToSegment(pathSegments.length - 2)}
                 >
                   <td className="px-4 py-2 flex items-center gap-2">
@@ -208,7 +208,7 @@ export function FilesTab({ namespace, name, item }: { namespace: string; name: s
                 return (
                   <tr
                     key={entry.name}
-                    className="border-t border-kb-border hover:bg-kb-card-hover cursor-pointer transition-colors"
+                    className="border-t border-kb-border kb-row cursor-pointer"
                     onClick={() => navigateTo(entry)}
                   >
                     <td className="px-4 py-2">

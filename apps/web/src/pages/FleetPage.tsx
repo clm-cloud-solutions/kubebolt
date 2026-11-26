@@ -14,6 +14,7 @@ import { FleetKpis } from '@/components/fleet/FleetKpis'
 import { KPI_COLOR, Sparkline } from '@/components/shared/kpi/MiniCharts'
 import { AddClusterButton } from '@/components/admin/AddClusterButton'
 import { CloudProviderIcon, providerLabel } from '@/components/shared/CloudProviderIcon'
+import { TD, TD_NUM, TR, Th } from '@/components/shared/table/Th'
 import {
   clusterVerdict,
   healthLabel,
@@ -72,28 +73,6 @@ function timeAgo(iso?: string | null): string {
 function money(v: number | null): string {
   if (v === null) return '—'
   return `$${Math.round(v).toLocaleString()}`
-}
-
-// Cabecera de columna. Existe para que las nueve celdas de <thead> no repitan
-// la misma cadena de clases, que es como una de ellas acaba desalineada.
-function Th({
-  children,
-  right,
-  className = '',
-}: {
-  children: React.ReactNode
-  right?: boolean
-  className?: string
-}) {
-  return (
-    <th
-      className={`px-3 py-2.5 text-[10px] font-mono font-medium uppercase tracking-[0.08em] text-kb-text-secondary ${
-        right ? 'text-right' : ''
-      } ${className}`}
-    >
-      {children}
-    </th>
-  )
 }
 
 function count(v: number | null): string {
@@ -640,7 +619,7 @@ export function FleetPage() {
                     <tr
                       key={c.context}
                       onClick={() => switchMutation.mutate(c.context)}
-                      className="border-b border-kb-border last:border-0 hover:bg-kb-card-hover cursor-pointer transition-colors"
+                      className={TR}
                     >
                       <td className="px-3 py-2.5">
                         <div className="text-xs text-kb-text-primary">{parseClusterDisplayName(c)}</div>
@@ -653,7 +632,7 @@ export function FleetPage() {
                       {/* Proveedor · región · versión. El icono identifica antes
                           que el texto al recorrer la columna. */}
                       <td className="px-3 py-2.5 hidden lg:table-cell">
-                        <div className="flex items-center gap-1.5 text-[10px] font-mono text-kb-text-secondary">
+                        <div className="flex items-center gap-1.5 text-xs font-mono text-kb-text-secondary">
                           {c.cloudProvider && (
                             <CloudProviderIcon provider={c.cloudProvider} className="w-3 h-3 shrink-0" />
                           )}
@@ -675,7 +654,7 @@ export function FleetPage() {
                         </span>
                       </td>
 
-                      <td className="px-3 py-2.5 text-[10px] font-mono tabular-nums text-right">
+                      <td className={TD_NUM}>
                         {sev ? (
                           <>
                             <span className="text-kb-text-secondary">{totalFindings}</span>
@@ -688,10 +667,10 @@ export function FleetPage() {
                         )}
                       </td>
 
-                      <td className="px-3 py-2.5 text-[10px] font-mono tabular-nums text-right text-kb-text-secondary">
+                      <td className={`${TD_NUM} text-kb-text-secondary`}>
                         {count(r?.pods ?? null)}
                       </td>
-                      <td className="px-3 py-2.5 text-[10px] font-mono tabular-nums text-right text-kb-text-secondary">
+                      <td className={`${TD_NUM} text-kb-text-secondary`}>
                         {count(r?.nodes ?? null)}
                       </td>
 
@@ -700,7 +679,7 @@ export function FleetPage() {
                           repeating "needs OpenCost" on every row would be noise
                           where the card shows it once. */}
                       <td
-                        className="px-3 py-2.5 text-[10px] font-mono tabular-nums text-right text-kb-text-secondary"
+                        className={`${TD_NUM} text-kb-text-secondary`}
                         title={r?.costMonthly == null ? 'Needs the OpenCost integration' : undefined}
                       >
                         {money(r?.costMonthly ?? null)}
@@ -719,7 +698,7 @@ export function FleetPage() {
                       {/* El estado del ENLACE. Un cluster puede estar sano y con
                           el agente ausente, o reportando y enfermo: son dos
                           hechos y la fila tiene que poder decir los dos. */}
-                      <td className="px-3 py-2.5 text-[10px] font-mono">
+                      <td className={TD}>
                         {c.agentConnected ? (
                           <span className="text-status-ok">live · {timeAgo(c.lastSeen)}</span>
                         ) : (

@@ -27,12 +27,16 @@ var (
 	copilotSessionsBucket = []byte("copilot_sessions")      // copilot usage analytics
 	copilotConvBucket     = []byte("copilot_conversations") // persistent Kobi conversation transcripts (per user)
 	copilotFeedbackBucket = []byte("copilot_feedback")      // 👍/👎 on Kobi answers (per user, per turn)
-	agentsBucket          = []byte("agents")                // persistent agent registry records
-	insightsBucket        = []byte("insights")              // persistent insight records (Sprint 0)
-	findingsBucket        = []byte("findings")              // normalized security findings (E2 SEC-C)
-	runtimeEventsBucket   = []byte("runtime_events")        // runtime security events (E2 SEC-E)
-	kobiActionsBucket     = []byte("kobi_actions")          // durable mutation audit trail (Sprint 1)
-	orgSettingsBucket     = []byte("org_settings")          // per-org UI settings blobs (keyed org\x00key)
+	// Kobi Plans: each plan's current version (key: plan id) and its earlier
+	// versions (key: id\0version).
+	kobiPlansBucket        = []byte("kobi_plans")
+	kobiPlanVersionsBucket = []byte("kobi_plans_versions")
+	agentsBucket           = []byte("agents")         // persistent agent registry records
+	insightsBucket         = []byte("insights")       // persistent insight records (Sprint 0)
+	findingsBucket         = []byte("findings")       // normalized security findings (E2 SEC-C)
+	runtimeEventsBucket    = []byte("runtime_events") // runtime security events (E2 SEC-E)
+	kobiActionsBucket      = []byte("kobi_actions")   // durable mutation audit trail (Sprint 1)
+	orgSettingsBucket      = []byte("org_settings")   // per-org UI settings blobs (keyed org\x00key)
 	// Insight lifecycle (2.1.0): episodes + their append-only history, the
 	// per-resource silences, the per-user presence anchor of the shift report,
 	// the deterministic operational bursts, and the per-rule policy overrides.
@@ -161,7 +165,7 @@ func NewStore(dataDir string) (*Store, error) {
 
 	// Create buckets (auth + cross-package state like cluster management)
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, bucket := range [][]byte{usersBucket, usernameIdxBucket, refreshTokenBucket, settingsBucket, clustersBucket, clusterDisplayBucket, clusterUIDBucket, findingsBucket, runtimeEventsBucket, copilotSessionsBucket, copilotConvBucket, copilotFeedbackBucket, agentsBucket, insightsBucket, kobiActionsBucket, orgSettingsBucket, insightEpisodesBucket, insightTransitionsBucket, insightMutesBucket, insightMuteKeysBucket, dashboardSeenBucket, operationalEpisodesBucket, rulePoliciesBucket} {
+		for _, bucket := range [][]byte{usersBucket, usernameIdxBucket, refreshTokenBucket, settingsBucket, clustersBucket, clusterDisplayBucket, clusterUIDBucket, findingsBucket, runtimeEventsBucket, copilotSessionsBucket, copilotConvBucket, copilotFeedbackBucket, kobiPlansBucket, kobiPlanVersionsBucket, agentsBucket, insightsBucket, kobiActionsBucket, orgSettingsBucket, insightEpisodesBucket, insightTransitionsBucket, insightMutesBucket, insightMuteKeysBucket, dashboardSeenBucket, operationalEpisodesBucket, rulePoliciesBucket} {
 			if _, err := tx.CreateBucketIfNotExists(bucket); err != nil {
 				return fmt.Errorf("create bucket %s: %w", bucket, err)
 			}
@@ -199,6 +203,13 @@ func CopilotConversationsBucket() []byte {
 func CopilotFeedbackBucket() []byte {
 	return copilotFeedbackBucket
 }
+
+// KobiPlansBucket and KobiPlanVersionsBucket hold Kobi Plans on the
+// single-tenant installs: each plan's current version, and every earlier one
+// (copilot.BoltPlanStore).
+func KobiPlansBucket() []byte { return kobiPlansBucket }
+
+func KobiPlanVersionsBucket() []byte { return kobiPlanVersionsBucket }
 
 // CopilotSessionsBucket returns the bucket name for copilot usage records.
 func CopilotSessionsBucket() []byte {

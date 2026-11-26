@@ -83,9 +83,12 @@ export function CostKpis({ cost, savingsMonthly, recCount, ratesAvailable, right
   const idleNodes = cost.byNode.filter((n) => n.idleMonthly > 0).sort((a, b) => b.idleMonthly - a.idleMonthly)
   const money = (v: number) => formatMoney(v, { exact: v < 100_000 })
   const topNs = [...cost.byNamespace].filter((n) => n.monthly > 0).sort((a, b) => b.monthly - a.monthly)
-  const recoverPct =
-    ratesAvailable && savingsMonthly > 0 && cost.idleMonthly > 0
-      ? Math.min(100, (savingsMonthly / cost.idleMonthly) * 100)
+  // What rightsizing frees joins the idle spend: the requests go, the nodes
+  // stay. The gauge is the share of the node spend idle after it, which only
+  // consolidating onto fewer nodes turns into a lower bill.
+  const idleAfterPct =
+    ratesAvailable && savingsMonthly > 0 && cost.monthly > 0
+      ? Math.min(100, ((cost.idleMonthly + savingsMonthly) / cost.monthly) * 100)
       : null
   let cpuUsed = 0
   let cpuAlloc = 0
@@ -217,20 +220,19 @@ export function CostKpis({ cost, savingsMonthly, recCount, ratesAvailable, right
               system overhead (kubelet, container runtime, kernel) and kube/system-reserved,
               which no namespace requests — so not all of it is reclaimable waste. And some
               is intentional: the burst headroom + HA margin a demand spike or a lost node
-              needs. Reclaiming the real slack means right-sizing requests down or
-              consolidating onto fewer nodes — a resilience-for-cost trade, not free money.
+              needs. Only consolidating onto fewer or smaller nodes turns it into a lower
+              bill; right-sizing requests down adds to it until then. A resilience-for-cost
+              trade, not free money.
             </TooltipNote>
           </>
         }
       />
       <KpiCard
         value={ratesAvailable && savingsMonthly > 0 ? formatMoney(savingsMonthly, { exact: true }) : '—'}
-        unit="/mo savings"
+        unit="/mo freed"
         description={
           rightSizing === 'recs'
-            ? `rightsizing ${recCount} ${recCount === 1 ? 'workload' : 'workloads'}${
-                recoverPct != null ? ` · ${recoverPct < 1 ? '<1' : Math.round(recoverPct)}% of idle` : ''
-              }`
+            ? `rightsizing ${recCount} ${recCount === 1 ? 'workload' : 'workloads'} · list prices`
             : rightSizing === 'loading'
               ? 'computing from 7d P95…'
               : rightSizing === 'error'
@@ -240,16 +242,16 @@ export function CostKpis({ cost, savingsMonthly, recCount, ratesAvailable, right
                   : 'well sized — nothing to hand back'
         }
         viz={
-          recoverPct != null ? (
+          idleAfterPct != null ? (
             <SemiGauge
-              percent={recoverPct}
+              percent={idleAfterPct}
               color={KPI_COLOR.ok}
               legend={
                 <Legend
                   rows={[
-                    // An estimate of what rightsizing would hand back, not money already saved.
-                    { color: KPI_COLOR.ok, label: `${money(savingsMonthly)} recoverable` },
-                    { color: KPI_COLOR.muted, label: `${money(Math.max(0, cost.idleMonthly - savingsMonthly))} still idle` },
+                    // Capacity rightsizing would free, not money saved: it joins the idle spend.
+                    { color: KPI_COLOR.ok, label: `${money(savingsMonthly)} freed` },
+                    { color: KPI_COLOR.muted, label: `${money(cost.idleMonthly)} idle today` },
                   ]}
                 />
               }
@@ -262,19 +264,23 @@ export function CostKpis({ cost, savingsMonthly, recCount, ratesAvailable, right
               ? collectedLabel(windowDays, minHistoryHours)
               : rightSizing === 'error'
                 ? 'P95 not computed'
-                : 'P95 over 7d'}
+                : rightSizing === 'recs'
+                  ? 'a saving only once nodes go'
+                  : 'P95 over 7d'}
           </>
         }
         info={
           <>
-            <TooltipHeader right="P95 over 7d">Rightsizing savings</TooltipHeader>
-            <TooltipRow color="#22d68a" label="Basis" value="reclaimable × node rates" />
+            <TooltipHeader right="P95 over 7d">Rightsizing: capacity freed</TooltipHeader>
+            <TooltipRow color="#22d68a" label="Basis" value="reclaimable × node list prices" />
             <TooltipNote>
-              Estimated monthly saving from applying the recommendations below — the
-              reclaimable cores / GiB (each workload's P95 over 7 days plus headroom)
-              priced at this cluster's CPU and RAM hourly rates. The gauge is that saving
-              as a share of the idle spend: what requests alone can recover, before
-              consolidating nodes.
+              What the recommendations below would free: the reclaimable cores / GiB (each
+              workload&apos;s P95 over 7 days plus headroom) priced at this cluster&apos;s CPU and RAM
+              list prices. It is not a saving yet: freed requests become idle on the same
+              nodes, and the bill falls only when nodes or disks are removed. The gauge is
+              the share of the node spend idle after rightsizing, what consolidating onto
+              fewer nodes could turn into a lower bill. These are suggestions: measure each
+              change before and after.
             </TooltipNote>
           </>
         }

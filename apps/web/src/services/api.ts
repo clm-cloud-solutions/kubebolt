@@ -16,6 +16,7 @@ import type {
 } from '@/types/kubernetes'
 import type { AuthConfig, AuthUser, LoginResponse, RefreshResponse, Team, TeamMember } from '@/types/auth'
 import type { ConversationSummary, ConversationDetail, CopilotFeedback, CopilotFeedbackRating, CopilotFeedbackReason } from '@/services/copilot/types'
+import type { KobiPlanSummary, KobiPlanView, PlanBillPath, PlanExportFormat, PlanExportResponse, PlanSetResources, PlanStatus } from '@/types/kobiPlans'
 
 // API origin — empty string keeps every call same-origin (the nginx-proxied
 // self-hosted / Docker deploy, unchanged). Set VITE_API_URL at build time to
@@ -1193,6 +1194,40 @@ export const api = {
     }>(`${API_BASE}/findings/${encodeURIComponent(fingerprint)}${qs}`)
   },
 
+  // Kobi Plans (plans-04): one plan, as the chat's card and /plans/:id read
+  // it. A plan of a cluster the caller may not read is a 404.
+  getPlan: (id: string) => fetchJSON<KobiPlanView>(`${API_BASE}/plans/${encodeURIComponent(id)}`),
+  // The export's text, for the screen: changes nothing.
+  previewPlanExport: (id: string, format: PlanExportFormat) =>
+    fetchJSON<PlanExportResponse>(`${API_BASE}/plans/${encodeURIComponent(id)}/export?format=${format}`),
+  // Someone took the text (Copy or Download): recorded, the plan becomes
+  // exported and, the first time, its baseline is measured. Editor+.
+  exportPlan: (id: string, format: PlanExportFormat) =>
+    postJSON<PlanExportResponse>(`${API_BASE}/plans/${encodeURIComponent(id)}/export`, { format }),
+  // A person's values for a pending step (plans-06): a new version, or a
+  // 422 that says why the value was refused. Editor+.
+  reviseStep: (id: string, stepId: string, body: PlanSetResources) =>
+    putJSON<KobiPlanView>(`${API_BASE}/plans/${encodeURIComponent(id)}/steps/${encodeURIComponent(stepId)}`, body),
+  // Verify now (plans-07): the hourly sweep's checks, for one plan; 503 when
+  // its cluster is not connected. Editor+.
+  verifyPlan: (id: string) => postJSON<KobiPlanView>(`${API_BASE}/plans/${encodeURIComponent(id)}/verify`, {}),
+  // Ends a live plan (plans-06): nothing changes in the cluster. Editor+.
+  discardPlan: (id: string) => postJSON<KobiPlanView>(`${API_BASE}/plans/${encodeURIComponent(id)}/discard`, {}),
+
+  // The bill's path (plans-16): one cluster's bill and what its live plans
+  // do to it; without a cluster, the fleet's.
+  getPlanBillPath: (clusterId?: string) =>
+    fetchJSON<PlanBillPath>(`${API_BASE}/plans/bill-path${clusterId ? `?cluster=${encodeURIComponent(clusterId)}` : ''}`),
+
+  listPlans: (opts?: { cluster?: string; status?: PlanStatus[]; limit?: number }) => {
+    const qs = new URLSearchParams()
+    if (opts?.cluster) qs.set('cluster', opts.cluster)
+    if (opts?.status?.length) qs.set('status', opts.status.join(','))
+    if (opts?.limit) qs.set('limit', String(opts.limit))
+    const q = qs.toString()
+    return fetchJSON<{ plans: KobiPlanSummary[] }>(`${API_BASE}/plans${q ? `?${q}` : ''}`)
+  },
+
   // Runtime security events (E2 SEC-E, Falco): org-scoped, newest first.
   // `since` takes a Go duration ("24h") or RFC3339; `limit` is capped at 500
   // server-side — Falco can emit thousands of hits a day per cluster.
@@ -1359,6 +1394,8 @@ export const api = {
       fromResources: ContainerResourcePair[]
       toResources: ContainerResourcePair[]
       resource: ResourceItem | null
+      // Plan steps this change applied (plans-15).
+      planSteps?: { plan: string; step: number; asProposed: boolean }[]
     }>(
       `${API_BASE}/resources/${type}/${namespace}/${name}/set-resources`,
       { containers },

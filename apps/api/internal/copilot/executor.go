@@ -186,6 +186,9 @@ type Executor struct {
 	metricsQuery MetricsQuerySource
 	// rightSizing is GET /right-sizing's computation behind get_right_sizing.
 	rightSizing RightSizingSource
+	// plans creates Kobi Plans for the chat's person and conversation (see
+	// plans_tool.go). nil everywhere else: the MCP doors never create one.
+	plans PlanSource
 	// fleet answers across clusters. nil means no persisted insight store, and
 	// the tool says so rather than reporting a healthy fleet.
 	fleet FleetSource
@@ -360,6 +363,16 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 	}
 
 	res := ToolResult{ToolCallID: call.ID}
+
+	// A Kobi Plan, read through its page's address (plans-16): a stored
+	// record, so it answers before any cluster is resolved, and only where
+	// the chat wired the plans; every other caller keeps the resource answer.
+	if call.Name == "get_resource_detail" && e.plans != nil {
+		if t, _, name := nsResourceArgs(parseArgs(call.Input)); (t == "plans" || t == "plan") && name != "" {
+			res.Content, res.IsError = e.readPlan(ctx, name)
+			return res
+		}
+	}
 
 	// A nil manager is a legitimate Executor — one wired for the tools that
 	// read no cluster state at all. Resolving through it unconditionally would
@@ -959,6 +972,12 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 		}
 		res.Content = jsonString(out)
 
+	case "create_plan":
+		res.Content, res.IsError, res.Plan = e.runCreatePlan(ctx, args)
+
+	case "revise_plan":
+		res.Content, res.IsError, res.Plan = e.runRevisePlan(ctx, args)
+
 	case "get_right_sizing":
 		if e.rightSizing == nil {
 			res.Content = `{"error":"right-sizing is not available on this install"}`
@@ -1544,6 +1563,14 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 		// so heavier than restart. LLM can override per riskProp.
 		p.Risk = resolveRisk(stringArg(args, "risk"), "medium")
 		p.Reversible = true
+		// A change that applies a plan step carries the plan's risk, worked
+		// out from these values, and says which step (plans-15).
+		if e.plans != nil {
+			if m := e.plans.MatchStep(ctx, t, ns, name, containers); m != nil {
+				p.Risk = m.Risk
+				p.PlanStep = &ProposalPlanStep{Order: m.Order, Plan: m.PlanTitle, Deviates: m.Deviates, BelowEngine: m.BelowEngine}
+			}
+		}
 		res.Content = jsonString(p)
 
 	case "propose_set_image":

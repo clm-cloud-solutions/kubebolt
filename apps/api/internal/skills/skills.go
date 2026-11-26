@@ -155,6 +155,50 @@ func ForConnector(connectorID string) (string, bool) {
 	return name, ok
 }
 
+// toolProcedures maps a built-in tool to its procedure, attached the same way
+// to a conversation's first answer from that tool (copilot.WithConnectorSkill):
+// how to present what the tool made is read once, when it is needed, and costs
+// nothing in the tool definitions every turn carries.
+var toolProcedures = map[string]string{"create_plan": "kobi-plans"}
+
+// ForTool is the procedure attached to a built-in tool's first answer.
+func ForTool(tool string) (string, bool) {
+	name, ok := toolProcedures[tool]
+	return name, ok
+}
+
+// toolKindProcedures add a procedure for one kind of what a tool makes, after
+// the tool's own: a consolidation plan is presented with kobi-plans and with
+// kobi-plans-consolidation, which kobi-plans has no room left for.
+var toolKindProcedures = map[string]map[string]string{"create_plan": {"consolidation": "kobi-plans-consolidation"}}
+
+// ForToolKind is the extra procedure for a tool's answer about one kind.
+func ForToolKind(tool, kind string) (string, bool) {
+	name, ok := toolKindProcedures[tool][kind]
+	return name, ok
+}
+
+// IsAttachedProcedure reports whether a skill travels in front of a tool's
+// answer: a connector's procedure or a built-in tool's.
+func IsAttachedProcedure(name string) bool {
+	if IsConnectorProcedure(name) {
+		return true
+	}
+	for _, n := range toolProcedures {
+		if n == name {
+			return true
+		}
+	}
+	for _, kinds := range toolKindProcedures {
+		for _, n := range kinds {
+			if n == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // IsConnectorProcedure reports whether a skill is some connector's procedure.
 func IsConnectorProcedure(name string) bool {
 	for _, n := range connectorProcedures {

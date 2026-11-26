@@ -381,6 +381,8 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 	sse.event("meta", map[string]any{"conversationId": conversationID})
+	// create_plan belongs to this person and this conversation (plans_tool.go).
+	executor.WithPlans(h.planSourceFor(auth.ContextTenantID(r), convUserID, requestUserName(r), conversationID))
 	// The turn's id: the SessionRecord's, and stamped on the turn's final
 	// answer so a 👍/👎 can name it (copilot_feedback.go).
 	turnID := newTurnID()
@@ -1104,9 +1106,10 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 				// Text in the result written as an instruction to an AI gets a
 				// mark Kobi reads with it (copilot.MarkEmbeddedInstructions).
 				result.Content = copilot.MarkEmbeddedInstructions(call.Name, result.Content)
-				if connectorCall {
-					result = copilot.WithConnectorSkill(messages, toolResults, call, result)
-				} else {
+				// The procedure of a connector, or of a built-in tool that has
+				// one (create_plan), travels with the conversation's first call.
+				result = copilot.WithConnectorSkill(messages, toolResults, call, result)
+				if !connectorCall {
 					result = h.withEntryOnRead(r.Context(), call, result)
 				}
 			}
@@ -1147,6 +1150,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 				"isError":    result.IsError,
 				"digest":     result.Digest,
 				"reason":     result.Reason,
+				"plan":       result.Plan,
 			})
 
 			logger.Debug("copilot tool call",

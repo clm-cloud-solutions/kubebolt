@@ -41,6 +41,7 @@ import {
   Boxes,
   House,
   ShieldAlert,
+  ClipboardList,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useUIConfig } from '@/hooks/useUIConfig'
@@ -200,6 +201,9 @@ const globalSections: NavSection[] = [
       { label: 'Home', path: '/home', icon: <House className="w-4 h-4" /> },
       { label: 'Fleet', path: '/fleet', icon: <Boxes className="w-4 h-4" /> },
       { label: 'Security', path: '/security', icon: <ShieldAlert className="w-4 h-4" /> },
+      // Kobi Plans (Beta): where a plan is found again once its conversation
+      // is closed, until the Kobi Workspace holds them (plans-10).
+      { label: 'Plans', path: '/plans', icon: <ClipboardList className="w-4 h-4" />, badge: 'Beta' },
       ...eePinnedFor('global'),
     ],
   },

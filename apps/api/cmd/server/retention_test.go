@@ -226,3 +226,29 @@ func withMultiTenantMain(t *testing.T) {
 	auth.MultiTenantEnabled = true
 	t.Cleanup(func() { auth.MultiTenantEnabled = prev })
 }
+
+// Kobi Plans keep their own horizon (P13): 90 days by default, moved by the
+// env var, and an unparseable value keeps the default.
+func TestRetentionPass_KobiPlansFollowTheirOwnHorizon(t *testing.T) {
+	t.Setenv("KUBEBOLT_KOBI_PLANS_RETENTION_HORIZON", "")
+	plans := newFakePruner()
+	run := func() {
+		runRetentionPass(retentionDeps{tenants: &fakeOrgs{orgs: []auth.Tenant{{ID: "org"}}}, plans: plans}, passNow)
+	}
+
+	run()
+	if got := daysBefore(t, passNow, plans.cutoffs["org"]); got != 90 {
+		t.Errorf("plans cutoff = %v days back, want the 90-day default", got)
+	}
+
+	t.Setenv("KUBEBOLT_KOBI_PLANS_RETENTION_HORIZON", "720h")
+	run()
+	if got := daysBefore(t, passNow, plans.cutoffs["org"]); got != 30 {
+		t.Errorf("with the env var at 720h, cutoff = %v days back, want 30", got)
+	}
+
+	t.Setenv("KUBEBOLT_KOBI_PLANS_RETENTION_HORIZON", "nonsense")
+	if kobiPlansRetentionHorizon() != 90*24*time.Hour {
+		t.Error("an unparseable horizon must keep the default, never disable retention")
+	}
+}

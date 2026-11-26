@@ -764,7 +764,7 @@ function EnvironmentsTab() {
                     <tr
                       key={r.id}
                       onClick={() => setEditing(r)}
-                      className="border-b border-kb-border last:border-0 cursor-pointer hover:bg-kb-card-hover align-top"
+                      className="border-b border-kb-border last:border-0 cursor-pointer kb-row align-top"
                       title={
                         boolMalfunction
                           ? 'Boolean malfunction — open to see why there is no dial'

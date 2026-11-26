@@ -249,7 +249,7 @@ export function FindingDetailBody({ finding }: { finding: FindingRow }) {
                         {c.packages.map((p, i) => (
                           <tr
                             key={`${p.name}-${i}`}
-                            className="border-t border-kb-border hover:bg-kb-card-hover transition-colors"
+                            className="border-t border-kb-border kb-row"
                           >
                             <td className="px-3 py-2 font-mono text-kb-text-primary break-all">
                               {p.name}
@@ -503,7 +503,7 @@ function ComplianceBody({
                 {rows.map((r, i) => (
                   <tr
                     key={`${r.namespace}-${r.name}-${i}`}
-                    className="border-t border-kb-border hover:bg-kb-card-hover transition-colors"
+                    className="border-t border-kb-border kb-row"
                   >
                     <td className="px-3 py-2 font-mono text-kb-text-primary break-all">{r.name}</td>
                     <td className="px-3 py-2 font-mono text-kb-text-tertiary">{r.kind || '—'}</td>

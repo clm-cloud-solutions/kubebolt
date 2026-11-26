@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/fieldmanager"
 )
 
@@ -221,6 +222,23 @@ func (h *handlers) handleSetResources(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dryRun := dryRunRequested(r)
+
+	// A pending step of a live plan this change touches (plans-15): found
+	// before the change, while the workload is as the plan saw it, with the
+	// plan's baseline measured now if it has none.
+	var (
+		planLinks     []planStepLink
+		planBase      map[string]planBaselines
+		planClusterID string
+		change        = setResourcesChange(body.Containers)
+	)
+	if store := kobiPlanStore(); store != nil && !dryRun {
+		planClusterID = h.activeClusterUID(r.Context())
+		planLinks = touchedPlanSteps(store, auth.ContextTenantID(r), planClusterID, liveSpecHash(conn, resourceType, namespace, name), resourceType, namespace, name, change, time.Now().UTC())
+		if len(planLinks) > 0 {
+			planBase = h.measureLinkedBaselines(ctx, store, auth.ContextTenantID(r), planLinks)
+		}
+	}
 	resOpts := metav1.PatchOptions{FieldManager: fieldmanager.For(ctx), DryRun: dryRunAll(dryRun)}
 	switch resourceType {
 	case "deployments":
@@ -248,14 +266,22 @@ func (h *handlers) handleSetResources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	planSteps := h.recordAppliedPlanSteps(r, planClusterID, planLinks, change, planBase)
+	if len(planSteps) > 0 {
+		params["planSteps"] = planSteps
+	}
 	auditMutation(r, "set_resources", resourceType, namespace, name, params, nil)
 	resource, _ := conn.GetResourceDetail(resourceType, namespace, name)
-	respondJSON(w, http.StatusOK, map[string]interface{}{
+	out := map[string]interface{}{
 		"status":        "patched",
 		"fromResources": fromResources,
 		"toResources":   toResources,
 		"resource":      resource,
-	})
+	}
+	if len(planSteps) > 0 {
+		out["planSteps"] = planSteps
+	}
+	respondJSON(w, http.StatusOK, out)
 }
 
 // validateResourceQuantity parses every non-empty cpu/memory quantity

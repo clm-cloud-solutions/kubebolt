@@ -316,6 +316,11 @@ func TestScopeQueryCostFamilies(t *testing.T) {
 			in:   `sum(pod_pvc_allocation)`,
 			want: `sum(pod_pvc_allocation{` + inj + `})`,
 		},
+		{
+			name: "load balancers and management fee (the kubecost prefix)",
+			in:   `sum(max by (namespace, service_name) (kubecost_load_balancer_cost)) + max(kubecost_cluster_management_cost)`,
+			want: `sum(max by (namespace, service_name) (kubecost_load_balancer_cost{` + inj + `})) + max(kubecost_cluster_management_cost{` + inj + `})`,
+		},
 	}
 
 	for _, tt := range tests {

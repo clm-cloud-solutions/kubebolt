@@ -583,6 +583,30 @@ func NewRouter(
 				r.Get("/findings/{fingerprint}", h.handleFindingDetail)
 				r.Get("/runtime-events", h.handleListRuntimeEvents)
 
+				// Kobi Plans (plans-04): stored records, so outside
+				// requireConnector; a plan of a cluster the caller may not read
+				// is a 404 (kobiplans_routes.go).
+				r.Get("/plans", h.handleListPlans)
+				// The bill's path (plans-16): one cluster's bill and what
+				// its live plans do to it. Before /plans/{id}, which would
+				// take «bill-path» for an id. 409 requires_ee in this edition.
+				r.Get("/plans/bill-path", h.handlePlanBillPath)
+				r.Get("/plans/{id}", h.handleGetPlan)
+				// Exporting (plans-05): the text to copy, and recording that
+				// someone took it, which makes the plan exported (editor;
+				// audited in the handler).
+				r.Get("/plans/{id}/export", h.handlePreviewPlanExport)
+				r.With(auth.RequireRole(auth.RoleEditor)).Post("/plans/{id}/export", h.handleExportPlan)
+				// Discarding (plans-06): the plan stops being live (editor;
+				// audited in the handler).
+				r.With(auth.RequireRole(auth.RoleEditor)).Post("/plans/{id}/discard", h.handleDiscardPlan)
+				// A person's values for a pending step (plans-06, d85): a new
+				// version, or a refusal under the P95 (editor; audited).
+				r.With(auth.RequireRole(auth.RoleEditor)).Put("/plans/{id}/steps/{step}", h.handleReviseStep)
+				// Verify now (plans-07): the hourly sweep's check, for one
+				// plan (editor; changes nothing in the cluster).
+				r.With(auth.RequireRole(auth.RoleEditor)).Post("/plans/{id}/verify", h.handleVerifyPlan)
+
 				r.Get("/insights/summary", h.handleInsightsSummary)
 
 				// Episode history (2.1.0) — OUTSIDE requireConnector on purpose:
@@ -815,6 +839,9 @@ func NewRouter(
 
 	// Port-forward reverse proxy (outside JSON middleware — proxied content has its own content-type)
 	r.HandleFunc("/pf/{id}/*", h.handlePortForwardProxy)
+
+	// The plan sweep (plans-07) runs outside a request: it uses these handlers.
+	planSweepHandlers.Store(h)
 
 	return r
 }

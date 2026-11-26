@@ -82,6 +82,23 @@ describe('investigationRuns', () => {
     expect(runs.get('ans2')).toMatchObject({ reads: 1, stepIds: ['p0'], proposals: 1, proposalIds: ['pu'] })
   })
 
+  // A plan is a card after the answer, like a proposal, but it is neither a
+  // proposal nor a read.
+  it('puts the plan card after the answer without counting it', () => {
+    const m = run()
+    m.push(msg({ id: 'q2', role: 'user', content: 'make me a plan for kyverno' }))
+    m.push(msg({ id: 'p0', role: 'assistant', toolCalls: [call('r', 'get_right_sizing'), call('cp', 'create_plan')] }))
+    m.push(
+      msg({
+        id: 'pu',
+        role: 'user',
+        toolResults: [res('r', 'ok'), { toolCallId: 'cp', content: '{"outcome":"created"}', plan: { id: 'pln_1', outcome: 'created' } }],
+      }),
+    )
+    m.push(msg({ id: 'ans2', role: 'assistant', content: 'Plan created.', turnId: 't2' }))
+    expect(investigationRuns(m).get('ans2')).toMatchObject({ reads: 1, stepIds: ['p0'], proposals: 0, proposalIds: ['pu'] })
+  })
+
   it('counts the charts the answer brings', () => {
     const metrics = (trend: number[]) =>
       JSON.stringify({

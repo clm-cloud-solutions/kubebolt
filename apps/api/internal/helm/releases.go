@@ -80,6 +80,9 @@ type helmReleaseJSON struct {
 		Notes         string    `json:"notes"`
 	} `json:"info"`
 	Chart struct {
+		// Values are the chart's defaults; Config above holds only what the
+		// person set. Read by DecodeEffectiveValues.
+		Values   map[string]any `json:"values"`
 		Metadata struct {
 			Name         string            `json:"name"`
 			Version      string            `json:"version"`

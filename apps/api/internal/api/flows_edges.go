@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strconv"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -574,8 +575,17 @@ type vmRow struct {
 }
 
 func runInstantQuery(ctx context.Context, query string) ([]vmRow, error) {
+	return runInstantQueryAt(ctx, query, time.Time{})
+}
+
+// runInstantQueryAt evaluates the query at a moment in the past (a window
+// that ended before now); the zero time is now.
+func runInstantQueryAt(ctx context.Context, query string, at time.Time) ([]vmRow, error) {
 	target, _ := url.Parse(metricsStorageURL() + "/api/v1/query")
 	params := url.Values{"query": {query}}
+	if !at.IsZero() {
+		params.Set("time", strconv.FormatInt(at.Unix(), 10))
+	}
 	target.RawQuery = params.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
