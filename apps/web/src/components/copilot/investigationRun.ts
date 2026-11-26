@@ -125,7 +125,8 @@ export function investigationRuns(messages: CopilotMessage[]): Map<string, Inves
     const clouds = new Map<string, number>()
     for (const m of span) {
       for (const call of m.toolCalls ?? []) {
-        if (isProposal(call)) continue
+        // A proposal or a plan is a card the run ends with, not a read.
+        if (isProposal(call) || call.name === 'create_plan') continue
         if (call.name === 'get_workload_metrics' && rendersChart(results.get(call.id))) charts++
         if (isGuide(call)) {
           guides++
@@ -142,9 +143,9 @@ export function investigationRuns(messages: CopilotMessage[]): Map<string, Inves
     const stepIds = span
       .slice(0, answerIdx)
       .filter((m) => !m.kind && m.role !== 'system')
-      .filter((m) => !(m.role === 'user' && m.toolResults?.some((r) => isProposalResult(r))))
+      .filter((m) => !(m.role === 'user' && m.toolResults?.some((r) => isCardResult(r))))
       .map((m) => m.id)
-    const proposalMessages = span.filter((m) => m.role === 'user' && m.toolResults?.some(isProposalResult))
+    const proposalMessages = span.filter((m) => m.role === 'user' && m.toolResults?.some(isCardResult))
     const notice = span.find((m) => m.kind === 'maxrounds-notice')
     const elapsed = answer.timestamp.getTime() - question.timestamp.getTime()
     out.set(answer.id, {
@@ -200,6 +201,12 @@ export function turnEndings(messages: CopilotMessage[]): Map<string, 'stopped' |
 }
 
 // A proposal's result renders as its own actionable card: it is never folded.
+// isCardResult: a result the panel draws as a card after the answer — an
+// action proposal or a plan (create_plan's, named in r.plan).
+function isCardResult(r: CopilotToolResult): boolean {
+  return isProposalResult(r) || !!r.plan
+}
+
 function isProposalResult(r: CopilotToolResult): boolean {
   try {
     return JSON.parse(r.content)?.kind === 'action_proposal'

@@ -290,6 +290,10 @@ func main() {
 	// next to the transcripts and pruned with them. Nil without persistence:
 	// the feedback endpoints then answer 503.
 	var copilotFeedback copilot.FeedbackStore
+	// kobiPlans keeps Kobi Plans (kobiplan.Plan): each plan's current version
+	// and every earlier one. Nil without persistence. plans-03 hands it to
+	// create_plan; until then only the retention pass reads it.
+	var kobiPlans copilot.PlanStore
 	// settingsRuntime backs UI-editable config (spec #09). Nil when auth
 	// is disabled — same gate as the rest of the admin surface, since
 	// persistence requires BoltDB to be open. Constructed inside the
@@ -510,6 +514,13 @@ func main() {
 		} else {
 			copilotFeedback = fb
 			api.SetCopilotFeedbackStore(fb)
+		}
+		if ps, err := newPlanStore(boltHandle(store), auth.KobiPlansBucket(), auth.KobiPlanVersionsBucket()); err != nil {
+			fatal("failed to open kobi plans store", slog.String("error", err.Error()))
+		} else {
+			kobiPlans = ps
+			api.SetKobiPlanStore(ps)
+			api.ConfigureKobiPlans()
 		}
 
 		// W1 identity-model bootstrap invariant: every install has a default
@@ -1420,6 +1431,7 @@ func main() {
 		audit:         actionAuditStore,
 		conversations: copilotConversations,
 		feedback:      copilotFeedback,
+		plans:         kobiPlans,
 		episodes:      episodePruner,
 		refreshTokens: refreshTokens,
 	}
@@ -1449,6 +1461,9 @@ func main() {
 		}
 	}
 	startRetention(agentCtx, deps)
+	// Kobi Plans (plans-07): verify the exported plans hourly, measure their
+	// impact, expire drafts nobody exported. Idempotent per plan.
+	go api.RunKobiPlanSweep(agentCtx)
 
 	// Auto-register agent-proxy clusters: when an agent advertises the
 	// kube-proxy capability AND this flag is on, its cluster shows up

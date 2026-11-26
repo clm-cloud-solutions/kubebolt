@@ -233,7 +233,7 @@ export function BootedWithModal({ onClose }: { onClose: () => void }) {
                   <table className="w-full text-[11px]">
                     <tbody className="divide-y divide-kb-border">
                       {entries.map((e) => (
-                        <tr key={e.name} className="hover:bg-kb-card-hover">
+                        <tr key={e.name} className="kb-row">
                           <td className="px-3 py-1.5 font-mono text-kb-text-primary whitespace-nowrap align-top">
                             {e.name}
                           </td>

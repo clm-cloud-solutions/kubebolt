@@ -83,6 +83,21 @@ type ToolResult struct {
 	// (CallStatus): the error's first sentence, never the instructions a
 	// result gives the model.
 	Reason string `json:"reason,omitempty"`
+	// Plan is the plan a create_plan call made or found, for the chat's plan
+	// card, which reads the plan itself from GET /plans/{id}. Stored with the
+	// conversation so a reopened one shows the card; never sent to the model,
+	// which is not given plan ids (Kobi showed one in an action card).
+	Plan *PlanRef `json:"plan,omitempty"`
+}
+
+// PlanRef names a stored plan for the chat's card.
+type PlanRef struct {
+	ID string `json:"id"`
+	// Outcome is create_plan's: created; existing_live_plan when the
+	// organization's plan allows one live plan per cluster; or
+	// existing_same_scope when a live plan already covers the same workloads
+	// (plans-06); revised for revise_plan. Only the card reads it.
+	Outcome string `json:"outcome"`
 }
 
 // ToolDefinition describes a callable tool that the LLM can invoke.

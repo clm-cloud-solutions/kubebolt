@@ -21,6 +21,8 @@ import { RBACPage } from '@/components/resources/RBACPage'
 import { ResourceDetailPage } from '@/components/resources/ResourceDetailPage'
 import { InsightsList } from '@/components/insights/InsightsList'
 import { EpisodeDetailPage } from '@/components/insights/EpisodeDetailPage'
+import { PlanDetailPage } from '@/components/kobiPlans/PlanDetailPage'
+import { PlansListPage } from '@/components/kobiPlans/PlansListPage'
 import { InsightsHubPage } from '@/pages/admin/InsightsHubPage'
 import { ClusterMap } from '@/components/map/ClusterMap'
 import { ClustersPage } from '@/pages/ClustersPage'
@@ -157,6 +159,10 @@ export default function App() {
                   it in later is a one-line change. */}
               <Route path="/home" element={<HomePage />} />
               <Route path="/fleet" element={<FleetPage />} />
+              {/* Kobi Plans (plans-04): stored records, global so they answer
+                  when their cluster is down. */}
+              <Route path="/plans" element={<PlansListPage />} />
+              <Route path="/plans/:id" element={<PlanDetailPage />} />
               <Route path="/security" element={<SecurityPage group="vulnerability" />} />
               <Route path="/security/configuration" element={<SecurityPage group="configuration" />} />
               <Route path="/security/permissions" element={<SecurityPage group="rbac" />} />

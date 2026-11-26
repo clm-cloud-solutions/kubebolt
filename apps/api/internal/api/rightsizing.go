@@ -8,8 +8,11 @@ import (
 	"sync"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
+	"github.com/kubebolt/kubebolt/apps/api/internal/kobiplan"
 	"github.com/kubebolt/kubebolt/apps/api/internal/rightsizing"
 )
 
@@ -56,6 +59,13 @@ var rightSizingCache sync.Map // "tenant|clusterUID" → rightSizingEntry
 // computeRightSizing runs the three queries confined to the caller's org and
 // the request's cluster and applies the rules to the connector's workloads.
 func (h *handlers) computeRightSizing(ctx context.Context, conn *cluster.Connector) (rightsizing.Result, error) {
+	res, _, err := h.computeRightSizingAt(ctx, conn)
+	return res, err
+}
+
+// computeRightSizingAt is computeRightSizing with the moment the answer was
+// computed, which a cached answer predates (a plan's engine.computedAt).
+func (h *handlers) computeRightSizingAt(ctx context.Context, conn *cluster.Connector) (rightsizing.Result, time.Time, error) {
 	uid := h.activeClusterUID(ctx)
 	tenant := metricsTenantPinCtx(ctx)
 	minHours := h.rightSizingMinHistoryHours(ctx)
@@ -64,20 +74,47 @@ func (h *handlers) computeRightSizing(ctx context.Context, conn *cluster.Connect
 	key := tenant + "|" + uid + "|" + strconv.Itoa(minHours)
 	if v, ok := rightSizingCache.Load(key); ok {
 		if e := v.(rightSizingEntry); time.Since(e.at) < rightSizingTTL {
-			return e.res, nil
+			return e.res, e.at, nil
 		}
 	}
 	scope := func(q string) string { return scopeQueryByTenant(scopeQueryByCluster(q, uid), tenant) }
 
 	in, err := readRightSizingInputs(ctx, scope)
 	if err != nil {
-		return rightsizing.Result{}, err
+		return rightsizing.Result{}, time.Time{}, err
 	}
 	res := rightsizing.Evaluate(conn.NamespaceWorkloads(),
 		p95Index(in.cpu, 1000), // cores → millicores
 		p95Index(in.mem, 1), in.windowDays, minHours)
-	rightSizingCache.Store(key, rightSizingEntry{at: time.Now(), res: res})
-	return res, nil
+	res.MarkProviderManaged(providerManagedWorkloads(conn))
+	at := time.Now().UTC()
+	rightSizingCache.Store(key, rightSizingEntry{at: at, res: res})
+	return res, at, nil
+}
+
+// providerManagedWorkloads names, by the engine's key, the workloads a cloud
+// provider reconciles: the provider markers a plan excludes as
+// provider_managed (kobiplan.DetectOwner), read from the caches' labels and
+// annotations (P17, plans-12). The plan also reads EKS's field manager with
+// a GET per candidate; the view does without, the EKS label covers its
+// add-ons.
+func providerManagedWorkloads(conn *cluster.Connector) map[string]string {
+	out := map[string]string{}
+	add := func(kind string, m metav1.ObjectMeta) {
+		if owner, _ := kobiplan.DetectOwner(kobiplan.ObjectFacts{Labels: m.Labels, Annotations: m.Annotations}); owner.Kind == kobiplan.OwnerProvider {
+			out[rightsizing.Key(m.Namespace, kind, m.Name)] = owner.Ref
+		}
+	}
+	for _, d := range conn.GetDeployments() {
+		add("Deployment", d.ObjectMeta)
+	}
+	for _, s := range conn.GetStatefulSets() {
+		add("StatefulSet", s.ObjectMeta)
+	}
+	for _, d := range conn.GetDaemonSets() {
+		add("DaemonSet", d.ObjectMeta)
+	}
+	return out
 }
 
 // rightSizingMinHistoryHours is the platform's minimum usage history for

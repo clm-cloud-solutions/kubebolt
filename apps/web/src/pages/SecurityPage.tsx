@@ -1135,7 +1135,7 @@ export function SecurityPage({ group = 'vulnerability' }: { group?: SecurityGrou
                     <tr
                       key={`${f.clusterId}/${f.fingerprint}`}
                       onClick={() => setSelected(f)}
-                      className="border-b border-kb-border last:border-0 hover:bg-kb-card-hover transition-colors cursor-pointer"
+                      className="border-b border-kb-border last:border-0 kb-row cursor-pointer"
                     >
                       <td className="px-4 py-3">
                         <div className="text-xs text-kb-text-primary truncate max-w-[28rem]" title={f.title}>
@@ -1595,7 +1595,7 @@ function RuntimeOnly({ cluster }: { cluster: string }) {
                   <tr
                     key={e.id || `${e.at}-${i}`}
                     onClick={() => setSelected(e)}
-                    className="border-b border-kb-border last:border-0 hover:bg-kb-card-hover transition-colors cursor-pointer"
+                    className="border-b border-kb-border last:border-0 kb-row cursor-pointer"
                   >
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2 min-w-0">

@@ -181,6 +181,22 @@ func (h *handlers) liveCopilotConfig() config.CopilotConfig {
 	return h.copilotConfig
 }
 
+// orgPlan is the caller's org's price plan, empty when there is none (a
+// single-tenant install sells no plans).
+func (h *handlers) orgPlan(ctx context.Context) string {
+	if h.tenantsStore == nil {
+		return ""
+	}
+	org := auth.TenantIDFromContext(ctx)
+	if org == "" {
+		return ""
+	}
+	if t, err := h.tenantsStore.GetTenant(org); err == nil && t != nil {
+		return t.Plan
+	}
+	return ""
+}
+
 func (h *handlers) listClusters(w http.ResponseWriter, r *http.Request) {
 	clusters := h.manager.ListClusters(r.Context())
 	clusters = h.filterClustersByOrg(r, clusters)

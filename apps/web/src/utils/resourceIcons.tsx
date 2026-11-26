@@ -27,6 +27,7 @@ import {
   Lightbulb,
   Activity,
   UserCog,
+  ClipboardList,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -65,6 +66,7 @@ const resourceTypeIconMap: Record<string, LucideIcon> = {
   ciliumclusterwidenetworkpolicies: ShieldCheck,
   applications: Package,
   insights: Lightbulb,
+  plans: ClipboardList,
   clusters: Server,
   rbac: Shield,
   events: Activity,
@@ -103,6 +105,7 @@ const resourceTypeDescriptionMap: Record<string, string> = {
   ciliumnetworkpolicies: 'Cilium L3-L7 traffic rules (namespaced).',
   ciliumclusterwidenetworkpolicies: 'Cilium L3-L7 traffic rules (cluster-wide).',
   insights: 'Detected issues and recommendations across the cluster.',
+  plans: 'Reviewable drafts of changes that Kobi builds from KubeBolt\'s engines.',
   clusters: 'Kubernetes clusters connected to KubeBolt.',
   rbac: 'Roles and bindings that govern access.',
   events: 'Recent events emitted by the cluster.',

@@ -211,3 +211,19 @@ func TestClampMinHistoryHours(t *testing.T) {
 		}
 	}
 }
+
+// The provider's workloads stay in the list, named, and out of the totals
+// (P17, plans-12).
+func TestMarkProviderManaged(t *testing.T) {
+	res := Result{Recs: []Recommendation{
+		{Namespace: "kube-system", Kind: "DaemonSet", Name: "azure-cns", CPU: Finding{Request: 400, Suggest: 30, State: Over}},
+		{Namespace: "shop", Kind: "Deployment", Name: "web", CPU: Finding{Request: 200, Suggest: 60, State: Over}, Mem: Finding{Request: 1 << 30, Suggest: 1 << 28, State: Over}},
+	}}
+	res.MarkProviderManaged(map[string]string{Key("kube-system", "DaemonSet", "azure-cns"): "aks"})
+	if res.Recs[0].ManagedBy != "aks" || res.Recs[1].ManagedBy != "" {
+		t.Fatalf("recs = %+v", res.Recs)
+	}
+	if res.Totals.Count != 2 || res.Totals.ProviderManaged != 1 || res.Totals.ReclaimCPUMilli != 140 || res.Totals.ReclaimMemBytes != 3<<28 {
+		t.Fatalf("totals = %+v", res.Totals)
+	}
+}

@@ -51,7 +51,9 @@ func kobiPromptPieces() []promptPiece {
 		{name: "system prompt (BuildSystemPrompt)", budget: 54000, size: len(BuildSystemPrompt())},
 		// Raised from 33000 when develop merged in (2026-10-25): its seven new
 		// tools came without a budget. Trimming them is pending review.
-		{name: "chat tool definitions (ChatToolDefinitions)", budget: 43000, size: len(tools)},
+		// 43000 → 44000 for revise_plan (plans-06), raised with the user's OK
+		// on 26-nov: a person's values for a plan step enter through the chat.
+		{name: "chat tool definitions (ChatToolDefinitions)", budget: 44000, size: len(tools)},
 		{name: "per-session notes, largest case", budget: 6000, size: len(notes)},
 	}
 }

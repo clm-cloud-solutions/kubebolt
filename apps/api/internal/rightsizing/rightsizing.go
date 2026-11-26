@@ -89,13 +89,20 @@ type Recommendation struct {
 	Reason    string   `json:"reason"`
 	CPU       Finding  `json:"cpu"`
 	Mem       Finding  `json:"mem"`
+	// ManagedBy names the cloud provider that reconciles the workload (aks,
+	// eks, gke, addon-manager): nobody else can resize it, so its saving is
+	// not in the totals (P17, plans-12). Empty for everything else.
+	ManagedBy string `json:"managedBy,omitempty"`
 }
 
-// Totals is what applying the Over recommendations would hand back.
+// Totals is what applying the Over recommendations would hand back. A
+// workload the provider manages is counted in Count and ProviderManaged, never
+// in what is reclaimable.
 type Totals struct {
 	Count           int   `json:"count"`
 	ReclaimCPUMilli int64 `json:"reclaimCpuMilli"`
 	ReclaimMemBytes int64 `json:"reclaimMemBytes"`
+	ProviderManaged int   `json:"providerManaged,omitempty"`
 }
 
 // Result is the whole answer.
@@ -170,17 +177,35 @@ func Evaluate(workloads []models.NamespaceWorkload, cpuP95, memP95 map[string]in
 		}
 		return Key(recs[i].Namespace, recs[i].Kind, recs[i].Name) < Key(recs[j].Namespace, recs[j].Kind, recs[j].Name)
 	})
-	res := Result{Recs: recs, Totals: Totals{Count: len(recs)}, WindowDays: windowDays,
-		MinHistoryHours: minHistoryHours, LowConfidence: lowConfidence}
-	for _, r := range recs {
-		if r.CPU.State == Over {
-			res.Totals.ReclaimCPUMilli += r.CPU.Request - r.CPU.Suggest
+	res := Result{Recs: recs, WindowDays: windowDays, MinHistoryHours: minHistoryHours, LowConfidence: lowConfidence}
+	res.sumTotals()
+	return res
+}
+
+// MarkProviderManaged names, by Key, the workloads a cloud provider
+// reconciles and takes their saving out of the totals (P17).
+func (r *Result) MarkProviderManaged(managedBy map[string]string) {
+	for i := range r.Recs {
+		rec := &r.Recs[i]
+		rec.ManagedBy = managedBy[Key(rec.Namespace, rec.Kind, rec.Name)]
+	}
+	r.sumTotals()
+}
+
+func (r *Result) sumTotals() {
+	r.Totals = Totals{Count: len(r.Recs)}
+	for _, rec := range r.Recs {
+		if rec.ManagedBy != "" {
+			r.Totals.ProviderManaged++
+			continue
 		}
-		if r.Mem.State == Over {
-			res.Totals.ReclaimMemBytes += r.Mem.Request - r.Mem.Suggest
+		if rec.CPU.State == Over {
+			r.Totals.ReclaimCPUMilli += rec.CPU.Request - rec.CPU.Suggest
+		}
+		if rec.Mem.State == Over {
+			r.Totals.ReclaimMemBytes += rec.Mem.Request - rec.Mem.Suggest
 		}
 	}
-	return res
 }
 
 // ClampMinHistoryHours resolves the platform's minimum history: 0 (unset) is

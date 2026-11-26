@@ -46,6 +46,39 @@ are looking at when the answer lives in another one. It changes nothing in any c
 `propose_set_resources`, `propose_set_image`, `propose_set_env`, `propose_patch_hpa`. A
 proposal changes nothing by itself; see [Actions and approval](#actions-and-approval).
 
+**Plans (Beta)** — `create_plan` drafts a Kobi Plan: a reviewable set of changes to the current
+cluster that KubeBolt builds from its own deterministic engine (right-sizing). Kobi picks the
+scope; every value comes from the engine. Each step carries the value per pod, its risk, who
+manages the workload (provider, operator, GitOps, Helm, or unknown) and what it frees in CPU and
+memory, and in money when OpenCost prices the cluster (in OpenCost's currency). Workloads the
+cloud provider manages (AKS, EKS and GKE add-ons), operator-owned workloads, HPA targets,
+multi-container pods and workloads whose pod count changed during the window are listed as
+excluded, with the reason. A plan applies nothing, stays available when actions are off, and is
+not served to MCP hosts. A draft nobody exports expires after 7 days. The plan appears in the
+chat as a card with what it frees; **Open plan** shows it in full at `/plans/<id>`: each step's
+change, its risk, who manages the workload, the checks that follow it and the command that undoes
+it, and what was left out with its reason. **Export** (on the card and the plan) gives the plan as
+commands or as a diff, each change where its owner keeps it: kubectl for a workload nobody
+manages, a values file with `helm diff` and `helm upgrade --reuse-values` for a Helm release (at
+the path found in the release's own values), the change in words for Argo CD or Flux. Copying or
+downloading it marks the plan exported and records what the workloads and the cluster's bill cost
+before (with OpenCost), to measure the impact against; nothing is applied. A step's values can be
+changed before it is applied, with **Edit values** in the plan or by telling Kobi
+(`revise_plan`): the plan refuses a value under the per-pod P95 it measured, takes one under the
+engine's at high risk and keeps the engine's as a reference. **Discard** ends a plan that still
+has steps to do. An exported plan is verified every hour, and with **Verify now**: a step whose
+workload has its values is applied, even when someone applied it outside KubeBolt; 24 hours later
+its checks run (rollout complete, no OOMKilled, no restarts, P95 under 80 % of the limit), and 7
+days after it was applied its impact is measured against the baseline. What a plan frees is
+priced at OpenCost's list prices and is not a saving: freed requests sit idle on the same nodes,
+and the bill (nodes, disks priced by their size, load balancers, the provider's management fee)
+falls only when nodes or disks are removed. The observed impact is that bill, before and after.
+Consolidation plans, which say which nodes each pool could do without, and the bill's path across
+plans come with KubeBolt Cloud and Enterprise. A plan is KubeBolt's suggestion: whether and how
+to apply each step is yours to decide and measure. **Plans** in the sidebar lists every plan of
+the clusters you can see, live (draft or exported) or all, with what each one frees. Plans are in
+beta: the pages link to the feedback form.
+
 **Cloud connectors** — when the cause sits outside the cluster, Kobi reads the AWS or Azure
 resources a workload depends on (`mcp__aws__…`, `mcp__azure__…`), read-only by
 construction, at most 12 cloud calls per question, each one audited. An administrator sets
@@ -229,6 +262,10 @@ See [Conversation memory](#conversation-memory) for how compaction works.
 |---|---|---|
 | `KUBEBOLT_COPILOT_CONVERSATION_RETENTION_HORIZON` | `2160h` (90 days) | Conversations not updated within this window are pruned by the hourly retention pass |
 | `KUBEBOLT_COPILOT_CONVERSATION_MAX_PER_USER` | `200` | Per-user cap; the oldest conversations drop out once exceeded |
+| `KUBEBOLT_KOBI_PLANS_RETENTION_HORIZON` | `2160h` (90 days) | Kobi Plans not updated within this window are deleted, every version with them, by the hourly retention pass. Their own horizon, independent of the other retention windows; deleting a conversation does not delete its plans |
+| `KUBEBOLT_KOBI_PLAN_SWEEP_INTERVAL` | `1h` | How often the plan sweep verifies the exported plans of every live cluster and expires drafts nobody exported |
+| `KUBEBOLT_KOBI_PLAN_VERIFY_AFTER` | `24h` | How long after a step is applied its checks run (rollout complete, no OOMKilled, restarts not up, P95 under 80 % of the limit) |
+| `KUBEBOLT_KOBI_PLAN_IMPACT_AFTER` | `168h` (7 days) | How long after a step is applied its impact is measured against the baseline. Shorten these three only on a test stack |
 
 `KUBEBOLT_AI_DEBUG=1` is a legacy shortcut that forces debug-level logging (same as
 `LOG_LEVEL=debug`).

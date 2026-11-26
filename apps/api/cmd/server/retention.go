@@ -88,6 +88,11 @@ type retentionDeps struct {
 	// feedback holds the 👍/👎 on Kobi's answers, a 👎's comment included: the
 	// user's words, kept as long as the transcripts they rate.
 	feedback orgPruner
+	// plans holds Kobi Plans. They follow their own horizon
+	// (KUBEBOLT_KOBI_PLANS_RETENTION_HORIZON, decision P13), not the plan
+	// band: a plan is deleted with every version a fixed time after its last
+	// update, like the audit trail.
+	plans orgPruner
 	// Orphan sweep (in-vivo 2026-09-15): security data whose cluster is no
 	// longer REGISTERED in the org. The sweeper can never resolve it (no
 	// connector) and PruneOrg never touches actives, so without this a
@@ -119,6 +124,12 @@ func envHorizon(name string, def time.Duration) time.Duration {
 		}
 	}
 	return def
+}
+
+// kobiPlansRetentionHorizon is how long a Kobi Plan is kept after its last
+// update (P13). Default 90 days; a bad or non-positive value keeps the default.
+func kobiPlansRetentionHorizon() time.Duration {
+	return envHorizon("KUBEBOLT_KOBI_PLANS_RETENTION_HORIZON", 90*24*time.Hour)
 }
 
 // auditRetentionHorizon is how long the mutation trail is kept.
@@ -234,12 +245,25 @@ func runRetentionPass(d retentionDeps, now time.Time) {
 		warn("retention: cannot list orgs", slog.String("error", err.Error()))
 		return
 	}
-	var totalInsights, totalFindings, totalEvents, totalAudit, totalConversations, totalFeedback, totalEpisodes, totalOrphans int
+	var totalInsights, totalFindings, totalEvents, totalAudit, totalConversations, totalFeedback, totalPlans, totalEpisodes, totalOrphans int
 	auditCutoff := now.Add(-auditRetentionHorizon())
+	plansCutoff := now.Add(-kobiPlansRetentionHorizon())
 	insightsCutoff := now.Add(-insightsRetentionHorizon())
 	findingsCutoff := now.Add(-findingsRetentionHorizon())
 	conversationsCutoff := now.Add(-conversationsRetentionHorizon())
 	for _, org := range orgs {
+		// Kobi Plans follow their own horizon, like the audit trail. Keyed like
+		// the conversations they come from (conversationTenants).
+		if d.plans != nil {
+			for _, key := range conversationTenants(org) {
+				if n, err := d.plans.PruneOrg(key, plansCutoff); err != nil {
+					warn("retention: kobi plans prune failed",
+						slog.String("org", key), slog.String("error", err.Error()))
+				} else {
+					totalPlans += n
+				}
+			}
+		}
 		if d.audit != nil {
 			if n, err := d.audit.PruneOrg(org.ID, auditCutoff); err != nil {
 				warn("retention: audit prune failed",
@@ -314,6 +338,7 @@ func runRetentionPass(d retentionDeps, now time.Time) {
 		slog.Int("audit_records_pruned", totalAudit),
 		slog.Int("conversations_pruned", totalConversations),
 		slog.Int("copilot_feedback_pruned", totalFeedback),
+		slog.Int("kobi_plans_pruned", totalPlans),
 		slog.Int("expired_refresh_tokens_pruned", refreshPruned),
 	)
 	if failed == 0 {

@@ -59,6 +59,7 @@ const GLOBAL_ROUTES = [
   '/fleet', // implementación de referencia del modelo (scope=fleet)
   '/security', // + /security/{configuration,permissions,compliance,runtime}
   '/admin', // access · agents · ai · system · api-tokens
+  '/plans', // Kobi Plans: la lista y /plans/:id, registros guardados; responden con el cluster caído
   // La edición añade las suyas: /account (plan & usage) y /platform (consola
   // del operador) sólo existen en EE, y se declaran en su registry.
   ...eeRouteScopes.global,

@@ -1098,6 +1098,20 @@ input:-webkit-autofill:active {
   background: linear-gradient(180deg, #212221, #1a1b1a);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 24px 60px -30px rgba(0, 0, 0, 0.9);
 }
+/* Every table row. The hover has to show on whatever surface the table sits
+   on: in dark, --kb-card-hover is a panel's own colour and barely differs
+   from a card's, so a row lit with it looked unlit. The dark veil takes the
+   panel border's warm white. Colour only: Autopilot's live rows
+   (`kb-row-live`) paint an image. */
+.kb-row {
+  transition: background-color 150ms ease;
+}
+.kb-row:hover {
+  background-color: var(--kb-card-hover);
+}
+.dark .kb-row:hover {
+  background-color: rgba(245, 242, 236, 0.05);
+}
 /* A panel that is itself the link (Fleet's cluster cards). */
 .kb-panel-hover {
   cursor: pointer;

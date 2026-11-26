@@ -172,7 +172,7 @@ func TestKobiChat_ConnectorToolsEndToEnd(t *testing.T) {
 
 	// The model sees the built-ins first, unchanged, then the org's
 	// connector tools in the gateway's order.
-	builtins := toolNames(copilot.GovernedToolDefinitions(true, true))
+	builtins := toolNames(copilot.ChatToolDefinitions(true, true))
 	got := toolNames(reqs[0].Tools)
 	want := append(append([]string(nil), builtins...), "mcp__fake__call", "mcp__fake__search_documentation")
 	if strings.Join(got, ",") != strings.Join(want, ",") {
@@ -579,7 +579,7 @@ func TestKobiChat_NoGatewayIsTheChatWithoutConnectors(t *testing.T) {
 
 	w.chat(t, "is orders-db healthy?")
 	reqs := prov.requests()
-	if got, want := toolNames(reqs[0].Tools), toolNames(copilot.GovernedToolDefinitions(true, true)); strings.Join(got, ",") != strings.Join(want, ",") {
+	if got, want := toolNames(reqs[0].Tools), toolNames(copilot.ChatToolDefinitions(true, true)); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("tools with the feature off:\n got %v\nwant %v", got, want)
 	}
 	prefix := firstUserText(reqs[0])

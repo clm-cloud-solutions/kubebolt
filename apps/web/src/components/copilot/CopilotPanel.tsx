@@ -33,6 +33,7 @@ import { api } from '@/services/api'
 import { PRESENCE_LABEL, useKobiPresence } from './useKobiPresence'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ActionProposalCard } from './ActionProposalCard'
+import { PlanCard } from './PlanCard'
 import { ToolCallCard } from './ToolCallCard'
 import { KobiMetricChartCard } from './KobiMetricChartCard'
 import { AnswerFeedback } from './AnswerFeedback'
@@ -688,11 +689,14 @@ export function CopilotPanel() {
               m.role === 'user' &&
               !m.content &&
               m.toolResults &&
-              m.toolResults.some((tr) => parseActionProposal(tr.content) !== null)
+              m.toolResults.some((tr) => !!tr.plan || parseActionProposal(tr.content) !== null)
             ) {
               return (
                 <div key={m.id} className="flex flex-col gap-1">
                   {m.toolResults.map((tr) => {
+                    // A plan create_plan made or found: the card reads it
+                    // from the API, so it shows the plan's state today.
+                    if (tr.plan) return <PlanCard key={tr.toolCallId} planRef={tr.plan} />
                     const proposal = parseActionProposal(tr.content)
                     if (!proposal) return null
                     return (

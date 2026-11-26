@@ -146,7 +146,7 @@ export function DeploysList({ deploys, windowMinutes }: Props) {
                 return (
                   <tr
                     key={key}
-                    className="group border-t border-kb-border transition-colors hover:bg-kb-card-hover"
+                    className="group border-t border-kb-border kb-row"
                   >
                     <td className="py-1.5 pr-3 max-w-[180px]">
                       {path ? (

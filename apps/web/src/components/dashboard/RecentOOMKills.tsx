@@ -189,7 +189,7 @@ export function RecentOOMKills({ installed, topN = 10 }: Props) {
                 return (
                   <tr
                     key={`${r.namespace}/${r.pod}/${r.container}`}
-                    className="group border-t border-kb-border transition-colors hover:bg-kb-card-hover"
+                    className="group border-t border-kb-border kb-row"
                   >
                     <td className="py-1.5 pr-3 max-w-[200px]">
                       <Link

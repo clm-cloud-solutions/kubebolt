@@ -741,7 +741,7 @@ export function AgentTokensPage() {
           </thead>
           <tbody>
             {tokens?.map(tok => (
-              <tr key={tok.id} className="border-b border-kb-border last:border-b-0 hover:bg-kb-card-hover transition-colors">
+              <tr key={tok.id} className="border-b border-kb-border last:border-b-0 kb-row">
                 <td className="px-4 py-2.5 text-xs font-medium text-kb-text-primary">{tok.label}</td>
                 <td className="px-4 py-2.5 text-xs font-mono text-kb-text-secondary">{tok.prefix}…</td>
                 <td className="px-4 py-2.5"><StatusBadge token={tok} /></td>

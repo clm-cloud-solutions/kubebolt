@@ -43,3 +43,9 @@ export const eeInsightEnvironments = false
 // The Enterprise build starts at credits: on SaaS a dollar figure must never
 // show, not even for a moment.
 export const eeAiSpendUnitDefault: 'credits' | 'usd' = 'usd'
+
+// Kobi Plans in each edition (P22, 26-nov): this build has right-sizing plans
+// end to end; consolidation plans and the bill's path come with KubeBolt Cloud
+// and Enterprise. The API draws the line (requires_ee); this flag only words
+// it in the UI.
+export const eeConsolidationPlans = false

@@ -4,13 +4,16 @@ import { HoverTooltip, TooltipHeader, TooltipRow, TooltipNote } from '@/componen
 import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
 import { formatMoney, formatCPU, formatMemory } from '@/utils/formatters'
 import { estimateMonthlySavings, type NodeRates } from '@/hooks/useClusterCost'
-import { historyNeededLabel, type Recommendation, type RightSizingState } from '@/hooks/useRightSizing'
+import { historyNeededLabel, managedByWords, type Recommendation, type RightSizingState } from '@/hooks/useRightSizing'
 
 // CostRightsizing — the FinOps lens on the shared right-sizing engine
 // (design/kubebolt-cost-redesign.html "Rightsizing recommendations").
 // Same recommendations RightSizingPanel renders on Capacity, but
 // framed by MONEY: each over-provisioned workload's reclaimable
-// cores/GiB priced at the cluster's node rates, sorted by $/mo saved.
+// cores/GiB priced at the cluster's node list prices, sorted by $/mo.
+// That money is the price of capacity freed, not a saving: freed requests
+// become idle on the same nodes, and the bill falls only once nodes or
+// disks are removed (26-nov).
 //
 // Only over-provisioned findings appear here — near-limit and
 // no-specs recs are a sizing concern with no dollar saving, so they
@@ -46,34 +49,37 @@ interface Priced {
   memReclaimBytes: number
 }
 
+// The provider's workloads (P17) go last, named, and price nothing: only the
+// provider can resize them, and the total leaves them out.
 function priceRecs(recs: Recommendation[], rates: NodeRates): Priced[] {
   return recs
     .map((rec) => {
       const cpuReclaimMilli = rec.cpu.state === 'over' ? rec.cpu.request - rec.cpu.suggest : 0
       const memReclaimBytes = rec.mem.state === 'over' ? rec.mem.request - rec.mem.suggest : 0
-      const savings = estimateMonthlySavings(cpuReclaimMilli, memReclaimBytes, rates)
+      const savings = rec.managedBy ? 0 : estimateMonthlySavings(cpuReclaimMilli, memReclaimBytes, rates)
       return { rec, savings, cpuReclaimMilli, memReclaimBytes }
     })
-    .filter((p) => p.savings > 0)
-    .sort((a, b) => b.savings - a.savings)
+    .filter((p) => p.savings > 0 || (p.rec.managedBy && (p.cpuReclaimMilli > 0 || p.memReclaimBytes > 0)))
+    .sort((a, b) => Number(!!a.rec.managedBy) - Number(!!b.rec.managedBy) || b.savings - a.savings)
 }
 
 export function CostRightsizing({ recs, rates, savingsMonthly, rightSizing, minHistoryHours }: Props) {
   const priced = priceRecs(recs, rates)
 
   // Kobi payload — the priced recommendations the user sees, so the
-  // LLM prioritizes by $ saved and risk. Reuses the shared right_sizing
+  // LLM prioritizes by what each frees and risk. Reuses the shared right_sizing
   // panel prompt. Carries the ACTUAL request / P95 / suggested values
   // per resource (not just the reclaim delta) so the LLM never has to
   // infer a spec it wasn't given — the same gap that made it guess an
   // allocation on the cost breakdown.
-  const kobiRows = priced.slice(0, 10).map(({ rec, savings }) => {
+  const kobiRows = priced.filter((p) => !p.rec.managedBy).slice(0, 10).map(({ rec, savings }) => {
     const blob: Record<string, string | number> = {
       workload: `${rec.namespace}/${rec.name}`,
       kind: rec.kind,
       // Keep cents — rounding to whole dollars reported a real
-      // ~$0.39/mo saving as "$0" and the LLM read it as "no saving".
-      savings_usd_per_mo: Math.round(savings * 100) / 100,
+      // ~$0.39/mo as "$0" and the LLM read it as nothing freed. Named for
+      // what it is: the list price of the capacity freed, not a saving.
+      freed_usd_per_mo_at_list_price: Math.round(savings * 100) / 100,
     }
     if (rec.cpu.state === 'over') {
       if (rec.cpu.request > 0) blob.cpu_request_milli = Math.round(rec.cpu.request)
@@ -96,26 +102,27 @@ export function CostRightsizing({ recs, rates, savingsMonthly, rightSizing, minH
             <Scale className="w-4 h-4" />
           </span>
           <h4 className="text-sm font-semibold text-kb-text-primary truncate">
-            Rightsizing savings
+            Rightsizing: capacity freed
           </h4>
           <HoverTooltip
             body={
               <>
-                <TooltipHeader right="P95 over 7d">Rightsizing savings</TooltipHeader>
-                <TooltipRow color="#22d68a" label="Basis" value="reclaimable × node rates" />
+                <TooltipHeader right="P95 over 7d">Rightsizing: capacity freed</TooltipHeader>
+                <TooltipRow color="#22d68a" label="Basis" value="reclaimable × node list prices" />
                 <TooltipNote>
-                  Estimated monthly saving from shrinking over-provisioned workloads to
-                  their P95 usage over 7 days plus headroom, priced at this cluster's CPU
-                  and RAM hourly rates. Only over-provisioned workloads appear here;
-                  near-limit and no-specs recommendations — a sizing concern with no dollar
-                  saving — live on the Capacity tab.
+                  What shrinking over-provisioned workloads to their P95 usage over 7 days
+                  plus headroom would free, priced at this cluster's CPU and RAM list prices.
+                  It is not a saving yet: the freed capacity sits idle on the same nodes, and
+                  the bill falls only when nodes or disks are removed. These are suggestions to
+                  measure before and after. Near-limit and no-specs recommendations, a sizing
+                  concern, live on the Capacity tab.
                 </TooltipNote>
               </>
             }
           >
             <button
               type="button"
-              aria-label="About rightsizing savings"
+              aria-label="About the capacity rightsizing frees"
               className="shrink-0 text-kb-text-tertiary hover:text-kb-text-secondary transition-colors"
             >
               <Info className="w-3 h-3" />
@@ -128,10 +135,10 @@ export function CostRightsizing({ recs, rates, savingsMonthly, rightSizing, minH
                 panel: 'right_sizing',
                 rangeLabel: 'P95 over 7d',
                 rows: kobiRows,
-                truncatedFromTotal: priced.length,
+                truncatedFromTotal: priced.filter((p) => !p.rec.managedBy).length,
               }}
               variant="icon"
-              label="Ask Kobi about rightsizing savings"
+              label="Ask Kobi about these rightsizing suggestions"
             />
           )}
         </div>
@@ -150,7 +157,7 @@ export function CostRightsizing({ recs, rates, savingsMonthly, rightSizing, minH
                 ? `Collecting samples — right-sizing needs ${historyNeededLabel(minHistoryHours)} of usage history`
                 : rates.available
                   ? 'No over-provisioned workloads — well sized'
-                  : 'Cost rates unavailable — savings can’t be priced'}
+                  : 'Cost rates unavailable — the capacity can’t be priced'}
         </div>
       ) : (
         <>
@@ -170,12 +177,16 @@ export function CostRightsizing({ recs, rates, savingsMonthly, rightSizing, minH
                       </span>
                     </div>
                     <div className="text-[10px] font-mono text-kb-text-tertiary truncate mt-0.5">
-                      {detail.join(' · ')} reclaimable
+                      {rec.managedBy ? `${managedByWords(rec.managedBy)} · only the provider can resize it` : `${detail.join(' · ')} reclaimable`}
                     </div>
                   </div>
-                  <span className="text-xs font-mono font-semibold text-kb-accent shrink-0 tabular-nums">
-                    −{formatMoney(savings, { exact: true })}/mo
-                  </span>
+                  {rec.managedBy ? (
+                    <span className="text-[10px] font-mono text-kb-text-tertiary shrink-0">not counted</span>
+                  ) : (
+                    <span className="text-xs font-mono font-semibold text-kb-accent shrink-0 tabular-nums">
+                      {formatMoney(savings, { exact: true })}/mo
+                    </span>
+                  )}
                 </div>
               )
               return (
@@ -209,10 +220,10 @@ export function CostRightsizing({ recs, rates, savingsMonthly, rightSizing, minH
           {savingsMonthly > 0 && (
             <div className="mt-3 pt-3 border-t border-kb-border flex items-center justify-between">
               <span className="text-[11px] font-mono text-kb-text-tertiary">
-                Total reclaimable
+                Freed in all, at list prices · a saving once nodes go
               </span>
               <span className="text-sm font-mono font-semibold text-kb-accent tabular-nums">
-                −{formatMoney(savingsMonthly, { exact: true })}/mo
+                {formatMoney(savingsMonthly, { exact: true })}/mo
               </span>
             </div>
           )}
@@ -222,11 +233,11 @@ export function CostRightsizing({ recs, rates, savingsMonthly, rightSizing, minH
   )
 }
 
-// RowTooltip — the audit trail behind a row's −$X/mo, mirroring
+// RowTooltip — the audit trail behind a row's $X/mo, mirroring
 // Capacity's per-recommendation tooltip but through the cost lens:
 // each over-provisioned resource's request → suggested size, its P95,
-// and the dollars that resource specifically contributes to the
-// saving. Makes the headline figure inspectable instead of a black box.
+// and the dollars that resource specifically contributes to what the
+// row frees. Makes the headline figure inspectable instead of a black box.
 function RowTooltip({
   rec,
   rates,
@@ -240,11 +251,11 @@ function RowTooltip({
   cpuReclaimMilli: number
   memReclaimBytes: number
 }) {
-  const cpuSaving = estimateMonthlySavings(cpuReclaimMilli, 0, rates)
-  const memSaving = estimateMonthlySavings(0, memReclaimBytes, rates)
+  const cpuWorth = estimateMonthlySavings(cpuReclaimMilli, 0, rates)
+  const memWorth = estimateMonthlySavings(0, memReclaimBytes, rates)
   return (
     <>
-      <TooltipHeader right={`−${formatMoney(savings, { exact: true })}/mo`}>
+      <TooltipHeader right={`${formatMoney(savings, { exact: true })}/mo`}>
         {rec.name} · {rec.namespace}
       </TooltipHeader>
       {cpuReclaimMilli > 0 && (
@@ -256,8 +267,8 @@ function RowTooltip({
           />
           <TooltipRow
             color={null}
-            label="CPU P95 · saving"
-            value={`${formatCPU(rec.cpu.p95)} · −${formatMoney(cpuSaving, { exact: true })}/mo`}
+            label="CPU P95 · frees"
+            value={`${formatCPU(rec.cpu.p95)} · ${formatMoney(cpuWorth, { exact: true })}/mo`}
           />
         </>
       )}
@@ -270,14 +281,15 @@ function RowTooltip({
           />
           <TooltipRow
             color={null}
-            label="Mem P95 · saving"
-            value={`${formatMemory(rec.mem.p95)} · −${formatMoney(memSaving, { exact: true })}/mo`}
+            label="Mem P95 · frees"
+            value={`${formatMemory(rec.mem.p95)} · ${formatMoney(memWorth, { exact: true })}/mo`}
           />
         </>
       )}
       <TooltipNote>
-        Suggested size = each resource's P95 over 7d plus headroom. Applying hands back the
-        reclaimable capacity, worth the $/mo at this cluster's node rates.
+        Suggested size = each resource's P95 over 7d plus headroom. Applying it frees the
+        reclaimable capacity, worth the $/mo at this cluster's list prices: a saving only once
+        nodes go.
       </TooltipNote>
     </>
   )

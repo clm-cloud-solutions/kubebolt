@@ -189,7 +189,7 @@ export function TeamsPage() {
           </thead>
           <tbody>
             {members?.map(m => (
-              <tr key={m.userId} className="border-b border-kb-border last:border-b-0 hover:bg-kb-card-hover transition-colors">
+              <tr key={m.userId} className="border-b border-kb-border last:border-b-0 kb-row">
                 <td className="px-4 py-2.5">
                   <div className="flex items-center gap-2">
                     <div className="w-6 h-6 rounded-full bg-kb-elevated flex items-center justify-center text-[10px] font-mono font-semibold text-kb-text-secondary uppercase">

@@ -6,6 +6,7 @@ import {
   useRightSizing,
   historyNeededLabel,
   historySpanLabel,
+  managedByWords,
   type Recommendation,
   type ResourceFinding,
   type ResourceState,
@@ -200,11 +201,12 @@ function Row({ rec }: { rec: Recommendation }) {
   // currency waits for OpenCost): request − suggested request on
   // over-provisioned findings. Near-limit rows have no reclaim (they
   // ask for MORE headroom), so the chip stays absent there.
+  // A workload the provider manages says so and hands back nothing (P17).
   const saveParts: string[] = []
-  if (rec.cpu.state === 'over' && rec.cpu.suggest > 0) {
+  if (!rec.managedBy && rec.cpu.state === 'over' && rec.cpu.suggest > 0) {
     saveParts.push(`−${formatCPU(rec.cpu.request - rec.cpu.suggest)}`)
   }
-  if (rec.mem.state === 'over' && rec.mem.suggest > 0) {
+  if (!rec.managedBy && rec.mem.state === 'over' && rec.mem.suggest > 0) {
     saveParts.push(`−${formatMemory(rec.mem.request - rec.mem.suggest)}`)
   }
   // Inner Link content — keeps the navigable region tight so the
@@ -231,7 +233,11 @@ function Row({ rec }: { rec: Recommendation }) {
           {rec.reason}
         </div>
       </div>
-      {saveParts.length > 0 && (
+      {rec.managedBy ? (
+        <span className="text-[10px] font-mono text-kb-text-tertiary shrink-0" title="Only the provider can resize it: not counted in the total">
+          {managedByWords(rec.managedBy)}
+        </span>
+      ) : saveParts.length > 0 && (
         <span className="text-[10px] font-mono font-semibold text-kb-accent shrink-0 tabular-nums">
           {saveParts.join(' · ')}
         </span>
@@ -284,6 +290,7 @@ function buildRowBlob(r: Recommendation): Record<string, string | number> {
     severity: r.severity,
     reason: r.reason,
   }
+  if (r.managedBy) blob.managed_by = `${managedByWords(r.managedBy)}: only the provider can resize it`
   if (r.cpu.state !== 'ok') {
     blob.cpu_state = r.cpu.state
     if (r.cpu.request > 0) blob.cpu_request_milli = r.cpu.request

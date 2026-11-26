@@ -627,6 +627,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
               durationMs: event.durationMs,
               digest: event.digest || undefined,
               reason: event.reason || undefined,
+              plan: event.plan || undefined,
             }
             const r = round
             setMessages((prev) => applyLiveToolResult(prev, turnKey, r, result))

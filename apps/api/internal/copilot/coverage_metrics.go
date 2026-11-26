@@ -400,20 +400,49 @@ func summarizeRightSizing(res rightsizing.Result, namespace, severity string, li
 		}
 		rows = append(rows, r)
 	}
+	// What the matched rows hand back, the engine's rule (Totals): a filtered
+	// call used to return the whole cluster's total next to one namespace's
+	// rows, and Kobi read it as that namespace's (Kobi Plans live test, 25-nov).
+	var reclaimCPU, reclaimMem int64
+	managed := 0
+	for _, r := range rows {
+		// What the provider reconciles cannot be resized by anyone else: it
+		// is not reclaimable (P17, plans-12).
+		if r.ManagedBy != "" {
+			managed++
+			continue
+		}
+		if r.CPU.State == rightsizing.Over {
+			reclaimCPU += r.CPU.Request - r.CPU.Suggest
+		}
+		if r.Mem.State == rightsizing.Over {
+			reclaimMem += r.Mem.Request - r.Mem.Suggest
+		}
+	}
 	out := map[string]interface{}{
 		"total": len(rows),
 		"reclaimable": map[string]string{
-			"cpu":    formatMilli(res.Totals.ReclaimCPUMilli),
-			"memory": formatBytes(res.Totals.ReclaimMemBytes),
+			"cpu":    formatMilli(reclaimCPU),
+			"memory": formatBytes(reclaimMem),
 		},
 		"rules": "near-limit: P95 >= 80% of the limit (critical, raise the limit); over-provisioned: P95 < 50% of the request and above 50m / 100Mi (warning, lower the request); no-specs: usage with no request or limit (info). Suggestions add headroom over the 7-day P95: x1.2 for a request, x1.5 for a limit.",
 	}
+	// What it frees is capacity, not money saved: freed requests sit idle on
+	// the same nodes until nodes or disks go (26-nov).
+	out["reclaimableNote"] = "requests the suggestions would free: capacity, not a saving. The cluster's bill falls only when nodes or disks are removed; until then the freed capacity sits idle on the same nodes. Never call it a saving."
+	// Whether a node is then left over is the consolidation engine's answer
+	// (plans-16), never one worked out from the node list: asked «is a node
+	// left over?», Kobi added up the nodes itself and gave its own verdict.
+	out["nodesNote"] = "whether a node is left over, and what the bill would fall by, is a consolidation plan's answer (create_plan, kind consolidation): never work it out from the node list."
 	if res.WindowDays != nil {
 		out["historyDays"] = math.Round(*res.WindowDays*10) / 10
 	}
 	if res.InsufficientHistory {
 		out["insufficientHistory"] = true
 		out["insufficientHistoryNote"] = fmt.Sprintf("under %d hours of usage history (the minimum this platform sets): right-sizing is still collecting and makes no recommendations yet — do not suggest resizing anything, and say the data is not ready", res.MinHistoryHours)
+	}
+	if managed > 0 {
+		out["managedByNote"] = "rows with managedBy are reconciled by the cloud provider: nobody but the provider can resize them, so they are not in reclaimable. Say who manages them and never suggest resizing them."
 	}
 	if res.LowConfidence {
 		out["lowConfidence"] = true
@@ -437,6 +466,9 @@ func summarizeRightSizing(res rightsizing.Result, namespace, severity string, li
 		if m := findingRow(r.Mem, formatBytes); m != nil {
 			row["memory"] = m
 		}
+		if r.ManagedBy != "" {
+			row["managedBy"] = providerWords(r.ManagedBy)
+		}
 		list = append(list, row)
 	}
 	out["recommendations"] = list
@@ -447,6 +479,21 @@ func summarizeRightSizing(res rightsizing.Result, namespace, severity string, li
 		out["note"] = "no workload breaks a rule. If the cluster was just connected, get_coverage says whether usage metrics are flowing — without them every P95 is 0 and nothing can be flagged."
 	}
 	return out
+}
+
+// providerWords names the provider a workload's marker points to.
+func providerWords(ref string) string {
+	switch ref {
+	case "aks":
+		return "AKS"
+	case "eks":
+		return "EKS"
+	case "gke":
+		return "GKE"
+	case "addon-manager":
+		return "the Kubernetes addon manager"
+	}
+	return ref
 }
 
 func findingRow(f rightsizing.Finding, format func(int64) string) map[string]interface{} {

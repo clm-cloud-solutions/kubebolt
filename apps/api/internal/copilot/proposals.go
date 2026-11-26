@@ -22,6 +22,20 @@ type ActionProposal struct {
 	// Next is for the model, not the card (the UI ignores it): what to do
 	// once this result is back. Only the switch card sets it.
 	Next string `json:"next,omitempty"`
+	// PlanStep: the change applies a step of a plan (plans-15), said in
+	// words. Running it marks the step applied; the risk is the plan's.
+	PlanStep *ProposalPlanStep `json:"planStep,omitempty"`
+}
+
+// ProposalPlanStep names the plan step a proposal applies, without ids.
+type ProposalPlanStep struct {
+	Order int    `json:"order"`
+	Plan  string `json:"plan"`
+	// Deviates: the values are not the plan's; the plan will keep these and
+	// the engine's as a reference. BelowEngine: a request goes below what the
+	// engine measured as needed.
+	Deviates    bool `json:"deviates,omitempty"`
+	BelowEngine bool `json:"belowEngine,omitempty"`
 }
 
 // ProposalTarget identifies the Kubernetes resource the proposal acts on.
