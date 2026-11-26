@@ -28,7 +28,8 @@ import { api } from '@/services/api'
 // promRead cost matchers, all under allowlisted prefixes):
 //   node_total_hourly_cost   node_cpu_hourly_cost   node_ram_hourly_cost
 //   container_cpu_allocation  container_memory_allocation_bytes
-//   kubecost_load_balancer_cost  kubecost_network_*_egress_cost
+//   pv_hourly_cost × (kube_persistentvolume_capacity_bytes | pod_pvc_allocation)
+//   kubecost_load_balancer_cost  kubecost_cluster_management_cost
 //   kubecost_node_is_spot    kube_pod_status_phase
 //   container_cpu_usage_seconds_total (efficiency numerator)
 
@@ -88,9 +89,12 @@ export interface ClusterCost {
   efficiencyPct: number | null
   costPerPod: number | null
   podCount: number | null
-  // LB + network egress ($/mo) — surfaced separately, not folded
-  // into the compute headline (mockup's Network trend tab).
-  networkMonthly: number
+  // What the cluster pays for outside its nodes ($/mo), listed beside the
+  // compute headline rather than folded into it: disks, load balancers and
+  // the provider's management fee. 0 when OpenCost reports none.
+  storageMonthly: number
+  loadBalancerMonthly: number
+  managementMonthly: number
   byNamespace: NamespaceCost[]
   byWorkload: WorkloadCost[]
   byNode: NodeCost[]
@@ -127,20 +131,40 @@ const ATTRIBUTION_QUERY = [
   ')',
 ].join(' ')
 
-// Network + LB cost. `or` unions the families so absent ones (no NAT
-// gateway on this cluster) simply don't contribute instead of
-// nulling the whole expression the way `sum(a)+sum(b)` would when a
-// is empty. All names start with `kube` → allowlisted. Exported so
-// the spend-trend chart plots the same figure the KPI derives from.
-export const NETWORK_COST_QUERY = [
+// What the cluster pays for outside its nodes, in $/h. Exported so the
+// spend-trend chart plots the same figures the headline card lists.
+//
+// Disks. `pv_hourly_cost` is a PRICE per GiB-hour (OpenCost: "Cost per GB
+// per hour on a persistent disk"), not a volume's cost: a volume costs that
+// price × its size. The size comes from kube_persistentvolume_capacity_bytes
+// (kube-state-metrics, or OpenCost's own copy), else from what the pods claim
+// (pod_pvc_allocation): an OpenCost install without the first sends only the
+// second. `max by (persistentvolume)` keeps one series per volume (two
+// sources, an OpenCost restart). Summing pv_hourly_cost alone showed a 100 GiB
+// disk at a hundredth of its price.
+export const STORAGE_COST_QUERY = [
   'sum(',
-  '  kubecost_load_balancer_cost',
-  '  or kubecost_network_internet_egress_cost',
-  '  or kubecost_network_nat_gateway_egress_cost',
-  '  or kubecost_network_region_egress_cost',
-  '  or kubecost_network_zone_egress_cost',
+  '  max by (persistentvolume) (pv_hourly_cost)',
+  '  * on (persistentvolume) (',
+  '    max by (persistentvolume) (kube_persistentvolume_capacity_bytes)',
+  '    or max by (persistentvolume) (pod_pvc_allocation)',
+  '  ) / 1024 / 1024 / 1024',
   ')',
 ].join(' ')
+
+// Load balancers: $/h per LoadBalancer Service. Keyed by namespace and
+// service_name — the scrape overwrites `service` with OpenCost's own.
+export const LOAD_BALANCER_COST_QUERY =
+  'sum(max by (namespace, service_name) (kubecost_load_balancer_cost))'
+
+// The provider's fee for running the cluster, $/h: OpenCost sets 0.10 on EKS
+// and GKE and 0 on AKS. It does not know about EKS extended support.
+export const MANAGEMENT_COST_QUERY = 'max(kubecost_cluster_management_cost)'
+
+// Network egress is not priced here. kubecost_network_*_egress_cost are
+// prices per GiB; the cost needs the bytes each pod sends
+// (kubecost_pod_network_egress_bytes_total, from an exporter KubeBolt does
+// not ship). Adding the prices up as $/h invented ~$135/mo on every cluster.
 
 // Cluster-wide allocated compute cost ($/h) — ATTRIBUTION_QUERY collapsed to a
 // single cluster total (no per-namespace/pod/node grouping). Paired with
@@ -302,11 +326,27 @@ export function useClusterCost(enabled = true): ClusterCost {
     enabled,
     retry: false,
   })
-  const netQ = useQuery({
-    queryKey: ['cost', 'network'],
-    queryFn: () => api.queryMetrics({ query: NETWORK_COST_QUERY }),
+  const storageQ = useQuery({
+    queryKey: ['cost', 'storage'],
+    queryFn: () => api.queryMetrics({ query: STORAGE_COST_QUERY }),
     staleTime: 30_000,
     refetchInterval: 60_000,
+    enabled,
+    retry: false,
+  })
+  const lbQ = useQuery({
+    queryKey: ['cost', 'load-balancers'],
+    queryFn: () => api.queryMetrics({ query: LOAD_BALANCER_COST_QUERY }),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    enabled,
+    retry: false,
+  })
+  const mgmtQ = useQuery({
+    queryKey: ['cost', 'management'],
+    queryFn: () => api.queryMetrics({ query: MANAGEMENT_COST_QUERY }),
+    staleTime: 5 * 60_000,
+    refetchInterval: 5 * 60_000,
     enabled,
     retry: false,
   })
@@ -336,7 +376,9 @@ export function useClusterCost(enabled = true): ClusterCost {
 
   const hourly = scalar(totalQ.data) ?? 0
   const monthly = hourly * HOURS_PER_MONTH
-  const networkMonthly = (scalar(netQ.data) ?? 0) * HOURS_PER_MONTH
+  const storageMonthly = (scalar(storageQ.data) ?? 0) * HOURS_PER_MONTH
+  const loadBalancerMonthly = (scalar(lbQ.data) ?? 0) * HOURS_PER_MONTH
+  const managementMonthly = (scalar(mgmtQ.data) ?? 0) * HOURS_PER_MONTH
   const podCount = scalar(podsQ.data)
 
   // Attribution: fold per-(ns,pod,node) $/h into namespace / workload
@@ -436,7 +478,9 @@ export function useClusterCost(enabled = true): ClusterCost {
     efficiencyPct,
     costPerPod,
     podCount,
-    networkMonthly,
+    storageMonthly,
+    loadBalancerMonthly,
+    managementMonthly,
     byNamespace,
     byWorkload,
     byNode,

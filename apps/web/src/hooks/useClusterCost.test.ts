@@ -49,3 +49,23 @@ describe('estimateMonthlySavings', () => {
     expect(estimateMonthlySavings(0, 0, KIND_RATES)).toBe(0)
   })
 })
+
+// OpenCost's disk and network families are prices per GiB, not costs: a
+// sum of them is not money. These pin the shapes that price them right.
+describe('the cost queries beyond the nodes', () => {
+  it('prices each volume at its size, one series per volume', async () => {
+    const { STORAGE_COST_QUERY } = await import('./useClusterCost')
+    expect(STORAGE_COST_QUERY).toMatch(/max by \(persistentvolume\) \(pv_hourly_cost\)\s+\* on \(persistentvolume\)/)
+    expect(STORAGE_COST_QUERY).toContain('kube_persistentvolume_capacity_bytes')
+    expect(STORAGE_COST_QUERY).toContain('or max by (persistentvolume) (pod_pvc_allocation)')
+    expect(STORAGE_COST_QUERY).toContain('/ 1024 / 1024 / 1024')
+  })
+
+  it('never adds the network egress prices up as an hourly cost', async () => {
+    const mod = await import('./useClusterCost')
+    for (const q of [mod.STORAGE_COST_QUERY, mod.LOAD_BALANCER_COST_QUERY, mod.MANAGEMENT_COST_QUERY]) {
+      expect(q).not.toMatch(/kubecost_network_/)
+    }
+    expect(mod.LOAD_BALANCER_COST_QUERY).toBe('sum(max by (namespace, service_name) (kubecost_load_balancer_cost))')
+  })
+})

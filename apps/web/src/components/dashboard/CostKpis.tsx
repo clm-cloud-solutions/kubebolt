@@ -95,6 +95,13 @@ export function CostKpis({ cost, savingsMonthly, recCount, ratesAvailable, right
   }
   const eff = cost.efficiencyPct
   const effColor = dotColor(effAccent(eff))
+  // What the cluster pays for outside its nodes, named in the run-rate card's
+  // caption when OpenCost reports it.
+  const beyondNodes = [
+    { label: 'disks', monthly: cost.storageMonthly },
+    { label: 'load balancers', monthly: cost.loadBalancerMonthly },
+    { label: 'cluster fee', monthly: cost.managementMonthly },
+  ].filter((p) => p.monthly > 0)
 
   return (
     <div
@@ -114,16 +121,20 @@ export function CostKpis({ cost, savingsMonthly, recCount, ratesAvailable, right
             />
           ) : undefined
         }
-        caption={`run-rate, not month-to-date${cost.networkMonthly > 0 ? ` · network ${money(cost.networkMonthly)}` : ''}`}
+        caption={`nodes, run-rate${beyondNodes.map((p) => ` · + ${p.label} ${money(p.monthly)}`).join('')}`}
         info={
           <>
             <TooltipHeader right="OpenCost">Monthly run-rate</TooltipHeader>
-            <TooltipRow color="#22d68a" label="Basis" value="node_total_hourly_cost × 730" />
+            <TooltipRow color="#22d68a" label="Nodes" value="node_total_hourly_cost × 730" />
+            {beyondNodes.map((p) => (
+              <TooltipRow key={p.label} label={`+ ${p.label}`} value={money(p.monthly)} />
+            ))}
             <TooltipNote>
-              The cluster's current hourly cost (OpenCost's authoritative per-node total)
-              projected to a month — a run-rate, not month-to-date actuals. On cloud
-              clusters this reflects real billing rates; on a local cluster it reflects
-              the configured custom pricing. The bars are the namespaces it is
+              The nodes' current hourly cost projected to a month: a run-rate, not
+              month-to-date actuals. OpenCost prices at the provider's list prices (or
+              the configured custom pricing): Savings Plans, reservations and committed
+              use discounts are not in it, so the bill can be lower. Network egress is
+              not priced. The bars are the namespaces it is
               attributed to; per pod is the run-rate spread over {cost.podCount ?? 'the'} running
               pods — a density signal, not any workload's bill.
             </TooltipNote>

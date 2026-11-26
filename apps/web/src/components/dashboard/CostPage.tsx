@@ -7,7 +7,9 @@ import {
   useClusterCost,
   useNodeRates,
   estimateMonthlySavings,
-  NETWORK_COST_QUERY,
+  STORAGE_COST_QUERY,
+  LOAD_BALANCER_COST_QUERY,
+  MANAGEMENT_COST_QUERY,
   ALLOCATED_TOTAL_QUERY,
 } from '@/hooks/useClusterCost'
 import { useRightSizing, rightSizingState } from '@/hooks/useRightSizing'
@@ -122,12 +124,13 @@ export function CostPage() {
               {/* Spend run-rate over the range, in $/day (hourly cost ×24),
                   split by OpenCost's cost components:
                     Compute = node_total_hourly_cost (CPU + RAM + GPU)
-                    Network = LB + egress (kubecost_network_*)
-                    Storage = pv_hourly_cost (persistent volumes)
-                  Storage falls back to $0 (`or vector(0)`) on clusters where
-                  OpenCost emits no PV cost — e.g. kind's local-path storage
-                  has no disk pricing — and lights up automatically on cloud
-                  clusters with priced EBS/PD/Azure disks. A gauge-based
+                    Disks = pv_hourly_cost × each volume's size
+                    Load balancers = kubecost_load_balancer_cost
+                    Cluster fee = kubecost_cluster_management_cost
+                  (useClusterCost says why network egress is not here.) Each
+                  falls back to $0 (`or vector(0)`) where OpenCost emits none —
+                  kind's local-path storage has no disk pricing, AKS no fee —
+                  and lights up on clusters that price them. A gauge-based
                   run-rate reads flat when nothing scales — honest: the line
                   moves when node count or pricing changes, which is exactly
                   when spend changes. */}
@@ -139,8 +142,9 @@ export function CostPage() {
                 transform={(v) => v * 24}
                 queries={[
                   { query: 'sum(node_total_hourly_cost)', prefix: 'Compute', accent: '#22d68a' },
-                  { query: NETWORK_COST_QUERY, prefix: 'Network', accent: '#4c9aff' },
-                  { query: 'sum(pv_hourly_cost) or vector(0)', prefix: 'Storage', accent: '#a855f7' },
+                  { query: `${STORAGE_COST_QUERY} or vector(0)`, prefix: 'Disks', accent: '#a855f7' },
+                  { query: `${LOAD_BALANCER_COST_QUERY} or vector(0)`, prefix: 'Load balancers', accent: '#4c9aff' },
+                  { query: `${MANAGEMENT_COST_QUERY} or vector(0)`, prefix: 'Cluster fee', accent: '#f59e0b' },
                 ]}
                 seriesLabel={(_labels, prefix) => prefix ?? ''}
                 chartType="area"
