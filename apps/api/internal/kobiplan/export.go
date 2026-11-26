@@ -423,7 +423,7 @@ func kubectlCommand(t Target, c ContainerResources) string {
 	ref := singular(t.Type) + "/" + t.Name
 	if c.InitContainer {
 		raw, _ := json.Marshal(strategicPatch([]containerChange{{change: c}}))
-		return fmt.Sprintf("kubectl -n %s patch %s --type=strategic -p '%s'", t.Namespace, ref, raw)
+		return fmt.Sprintf("kubectl -n %s patch %s --type=strategic -p %s", t.Namespace, ref, shellQuote(string(raw)))
 	}
 	cmd := fmt.Sprintf("kubectl -n %s set resources %s -c %s", t.Namespace, ref, c.Container)
 	if q := quantityFlag(c.Requests); q != "" {
@@ -433,6 +433,14 @@ func kubectlCommand(t Target, c ContainerResources) string {
 		cmd += " --limits=" + q
 	}
 	return cmd
+}
+
+// shellQuote wraps s in single quotes for a POSIX shell, a single quote
+// inside it closed, escaped and reopened. The patch carries only a container
+// name and quantities, which cannot hold a quote, but the text is meant to be
+// pasted into a shell.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func quantityFlag(r *Resources) string {

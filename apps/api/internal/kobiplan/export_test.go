@@ -269,3 +269,17 @@ func TestExportable(t *testing.T) {
 		t.Fatal("an expired plan is exportable")
 	}
 }
+
+// The patch goes to a shell between single quotes: a quote inside it is
+// closed, escaped and reopened, so it can never end the argument.
+func TestShellQuote(t *testing.T) {
+	for in, want := range map[string]string{
+		`{"name":"migrate"}`: `'{"name":"migrate"}'`,
+		`it's`:               `'it'\''s'`,
+		``:                   `''`,
+	} {
+		if got := shellQuote(in); got != want {
+			t.Errorf("shellQuote(%q) = %s, want %s", in, got, want)
+		}
+	}
+}
