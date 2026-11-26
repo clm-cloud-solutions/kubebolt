@@ -164,7 +164,8 @@ export const MANAGEMENT_COST_QUERY = 'max(kubecost_cluster_management_cost)'
 // Network egress is not priced here. kubecost_network_*_egress_cost are
 // prices per GiB; the cost needs the bytes each pod sends
 // (kubecost_pod_network_egress_bytes_total, from an exporter KubeBolt does
-// not ship). Adding the prices up as $/h invented ~$135/mo on every cluster.
+// not ship). Adding the prices up as $/h showed a price as money: on kind the
+// internet egress price ($0.12 per GiB) read as $88/mo of network.
 
 // Cluster-wide allocated compute cost ($/h) — ATTRIBUTION_QUERY collapsed to a
 // single cluster total (no per-namespace/pod/node grouping). Paired with
