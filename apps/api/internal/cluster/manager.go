@@ -255,8 +255,9 @@ func (m *Manager) bindInsightHooks(eng *insights.Engine, ctxName string) {
 	if m.onNewInsight != nil {
 		hook := m.onNewInsight
 		eng.SetOnNewInsight(func(insight models.Insight) {
-			// Called with engine lock held — keep fast; the notification manager
-			// dispatches async.
+			// Fired after the evaluation released the engine lock, so the
+			// hook may read this manager while a switch rebinds hooks under
+			// m.mu (finding #108).
 			hook(ctxName, insight)
 		})
 	}
