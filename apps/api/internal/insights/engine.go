@@ -29,12 +29,16 @@ func severityRankOf(s string) int {
 
 // Engine runs insight rules and tracks findings.
 type Engine struct {
-	rules      []Rule
-	insights   []models.Insight
-	mu         sync.RWMutex
-	wsHub      *websocket.Hub
-	onNew      func(models.Insight) // hook called when a new insight is detected
-	onResolved func(models.Insight) // hook called when an insight transitions to resolved
+	rules    []Rule
+	insights []models.Insight
+	mu       sync.RWMutex
+	wsHub    *websocket.Hub
+	// Notification hooks, fired after Evaluate releases mu (finding #108): a
+	// hook may read the cluster manager, and the manager rebinds these hooks
+	// while it holds its own lock. Stored atomically so a rebind never waits
+	// for an evaluation.
+	onNew      atomic.Pointer[func(models.Insight)] // a new insight is detected
+	onResolved atomic.Pointer[func(models.Insight)] // an insight resolves
 
 	// Sprint 0: persistence. store may be nil (no durable history — the
 	// engine then behaves exactly as the pre-Sprint-0 in-memory version).
@@ -154,23 +158,40 @@ func (e *Engine) SetStore(store InsightStore, tenantID string) {
 	e.tenantID = tenantID
 }
 
-// SetOnNewInsight registers a callback that is invoked (synchronously, under
-// the engine lock) for every newly detected insight. Keep the callback fast
-// or dispatch asynchronously inside it — the engine holds its write lock while
-// calling this, so slow callbacks block further evaluations.
+// SetOnNewInsight registers a callback invoked for every newly detected
+// insight, by the evaluating goroutine once the evaluation has released the
+// engine lock. It may read the engine and take other locks; it never runs
+// under the engine's (finding #108). Setting it never waits for an evaluation.
 func (e *Engine) SetOnNewInsight(fn func(models.Insight)) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.onNew = fn
+	setHook(&e.onNew, fn)
 }
 
-// SetOnResolvedInsight registers a callback invoked (under the engine lock)
-// when an insight transitions from active to resolved. Same performance
-// caveat as SetOnNewInsight.
+// SetOnResolvedInsight registers a callback invoked when an insight turns
+// from active to resolved, like SetOnNewInsight.
 func (e *Engine) SetOnResolvedInsight(fn func(models.Insight)) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.onResolved = fn
+	setHook(&e.onResolved, fn)
+}
+
+func setHook(h *atomic.Pointer[func(models.Insight)], fn func(models.Insight)) {
+	if fn == nil {
+		h.Store(nil)
+		return
+	}
+	h.Store(&fn)
+}
+
+// fire calls a hook, if one is set, with each insight in order.
+func fire(h *atomic.Pointer[func(models.Insight)], ins []models.Insight) {
+	if len(ins) == 0 {
+		return
+	}
+	fn := h.Load()
+	if fn == nil {
+		return
+	}
+	for _, i := range ins {
+		(*fn)(i)
+	}
 }
 
 // hydrateLocked seeds e.insights from the store's still-active records, so the
@@ -294,8 +315,15 @@ func (e *Engine) Evaluate(state *ClusterState) {
 		produced = append(produced, results...)
 	}
 
+	// The hooks fire after the lock is released, resolved first, as the
+	// evaluation found them (finding #108).
+	var resolvedOut, newOut []models.Insight
 	e.mu.Lock()
-	defer e.mu.Unlock()
+	defer func() {
+		e.mu.Unlock()
+		fire(&e.onResolved, resolvedOut)
+		fire(&e.onNew, newOut)
+	}()
 	e.hiddenByProfile = hidden
 
 	// One-shot, on the first evaluation rather than at construction: SetStore may
@@ -344,9 +372,7 @@ func (e *Engine) Evaluate(state *ClusterState) {
 			// resolving on ANY connected cluster fires its notification. The WS
 			// broadcast above stays gated (parked OSS runtimes don't WS-broadcast);
 			// only this notification hook is un-gated.
-			if e.onResolved != nil {
-				e.onResolved(e.insights[i])
-			}
+			resolvedOut = append(resolvedOut, e.insights[i])
 		}
 	}
 
@@ -397,8 +423,8 @@ func (e *Engine) Evaluate(state *ClusterState) {
 			// Always-on (W2 §10): NOT gated on the active cluster — a new insight
 			// on ANY connected cluster notifies (the engine runs on parked runtimes
 			// too). freshEpisode is the only gate that stays.
-			if freshEpisode && e.onNew != nil {
-				e.onNew(newIns)
+			if freshEpisode {
+				newOut = append(newOut, newIns)
 			}
 		}
 	}
